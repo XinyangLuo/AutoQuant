@@ -43,10 +43,27 @@ def main():
     print(f"Trade dates to fetch: {len(trade_dates)} ({start_date} ~ {today})")
 
     with MarketStorage() as storage:
+        # Resume: skip dates already in DB
+        existing = storage.conn.execute(
+            "SELECT DISTINCT date FROM market_daily"
+        ).fetchdf()["date"].tolist()
+        existing = {d.strftime("%Y%m%d") for d in existing}
+        trade_dates = [d for d in trade_dates if d not in existing]
+        print(f"After skipping existing: {len(trade_dates)} dates to fetch")
+
+        failed_dates = []
         for trade_date in tqdm(trade_dates, desc="Trade dates"):
-            daily_df = process_trade_date(trade_date, list_date_map)
-            if not daily_df.empty:
-                storage.insert_daily(daily_df)
+            try:
+                daily_df = process_trade_date(trade_date, list_date_map)
+                if not daily_df.empty:
+                    storage.insert_daily(daily_df)
+            except Exception as exc:
+                failed_dates.append((trade_date, str(exc)))
+                print(f"\n  WARN: failed {trade_date}: {exc}")
+                continue
+
+        if failed_dates:
+            print(f"\n  Failed dates ({len(failed_dates)}): {[d for d, _ in failed_dates]}")
 
         stats = storage.get_stats()
 
