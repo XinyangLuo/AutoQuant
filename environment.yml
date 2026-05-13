@@ -1,0 +1,15 @@
+name: AutoQuant
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11.15
+  - pandas
+  - pyarrow
+  - numpy
+  - duckdb
+  - pytest
+  - pip
+  - pip:
+      - tushare>=1.3
+      # anthropic / claude-agent-sdk TBD — 等 Agent 模块开工时再加入

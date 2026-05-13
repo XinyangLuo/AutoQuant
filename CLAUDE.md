@@ -1,0 +1,279 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## 1. 项目概览
+
+AutoQuant 是一个面向 A 股的「量化研究 → 信号 → 推送」一体化系统。三大模块分工：
+
+- **回测系统**：数据下载、因子生成、策略组合、回测执行、结果分析的完整流水线
+- **Agent 投研系统**：基于 Claude Agent SDK 的多 agent 协作，自动阅读研报/论文/博客找灵感，调用回测系统验证,沉淀到因子/策略库
+- **交易模块**：第一阶段只做策略信号推送 + 本地仓位跟踪，不直连券商
+
+整体数据流（文字版）：
+
+```
+研报/论文/博客 → Agent (Reader → Idea Miner → Researcher → Curator)
+                       ↓                                ↑
+                  回测系统 (Data → Factors → Strategy → Engine → Analysis)
+                       ↓
+                  交易模块 (Signals → Push / Positions)
+```
+
+## 2. 环境与命令
+
+使用 conda 环境 `AutoQuant`（Python 3.11.15）。所有 Python 命令必须先 `conda activate AutoQuant`。
+
+```bash
+conda activate AutoQuant
+```
+
+**首次初始化**（待 `environment.yml` 落地后）：
+
+```bash
+conda env create -f environment.yml
+conda activate AutoQuant
+pip install -e .            # 等 pyproject.toml 落地后
+```
+
+注意：当前 conda 环境 `AutoQuant` 实际尚未在本机创建，`environment.yml` 也尚未编写。首次开工要先建立这些。
+
+**常用命令占位**（待对应模块实现后补具体命令）：
+
+- 运行回测：`python -m autoquant.backtest.engine <strategy>`
+- 启动 Agent 研究循环：`python -m autoquant.agents.researcher`
+- 跑测试：`pytest`
+- Lint：`ruff check . && black --check .`
+
+**`.env` 字段**：
+
+```
+TUSHARE_TOKEN=...        # Tushare Pro API（已配置）
+ANTHROPIC_API_KEY=...    # Claude Agent SDK
+WECHAT_WEBHOOK=...       # 企微推送（TBD）
+FEISHU_WEBHOOK=...       # 飞书推送（TBD）
+```
+
+## 3. 目录结构（提案）
+
+> 目前仓库只有 `CLAUDE.md` / `.env` / `.claude/`。下列结构是目标布局，尚未落地。
+
+```
+AutoQuant/
+├── autoquant/                # 主 Python 包
+│   ├── backtest/             # 回测系统
+│   │   ├── data/             # 数据下载、缓存、增量更新
+│   │   ├── factors/          # 因子定义与计算
+│   │   ├── strategy/         # 策略组合与选股逻辑
+│   │   ├── engine/           # 回测引擎
+│   │   └── analysis/         # 绩效与归因
+│   ├── agents/               # Claude Agent SDK 投研子 agent
+│   │   ├── readers/          # 研报/论文/博客抓取与摘要
+│   │   ├── researchers/      # 因子/组合发现
+│   │   └── curator/          # 评估、入库、检索
+│   └── trading/              # 交易模块
+│       ├── signals/          # 策略 → 标准化信号
+│       ├── push/             # 推送渠道(企微/飞书/邮件)
+│       └── positions/        # 仓位跟踪
+├── data/
+│   ├── duckdb/               # DuckDB：主表 market_daily（小而稳）+ 因子表 factors_daily（长表）
+│   ├── minute/               # 分钟级数据（parquet，预留）
+│   └── factor_library/       # 因子代码与元数据（registry，因子值在 factors_daily）
+├── results/                  # 回测产出、研究档案、agent 记忆
+├── notebooks/                # 探索与可视化
+├── scripts/                  # 一次性脚本（数据修复、bulk 重跑等）
+├── tests/
+├── environment.yml
+├── pyproject.toml
+└── CLAUDE.md
+```
+
+## 4. 回测系统
+
+### 4.1 数据模块（`autoquant/backtest/data/`）
+
+**职责**：把外部数据拉到本地，建立可重放、可增量更新的行情/基本面/因子数据池。
+
+**核心设计：主表 + 因子长表 双表分工**
+
+#### 主表 `market_daily`（小而稳，回测主用）
+- 主键 `(date, symbol)`，按 `date` 分区
+- 列：`open / high / low / close / volume / amount / adj_factor / 停牌 / 涨跌停 / pe / pb / ...` —— **回测必备 + 半静态基本面**
+- 日更：只 append 最新交易日的行，历史行永不动
+- 扩列：偶发，仅当某个新指标被回测频繁需要才加（如新增 ROE 列）；走 `ALTER TABLE ... ADD COLUMN` + 历史回填脚本
+- 用途：策略/回测/分析的取数源；查询路径稳定、I/O 小
+
+#### 因子表 `factors_daily`（长表，研究主用）
+- Schema：`(date, symbol, factor_name, value)`，按 `date` 分区
+- 加新因子**零 schema 变化**——只是多了一批 `factor_name` 不一样的行
+- 研究友好：IC / RankIC 直接 `GROUP BY factor_name` 算；可用因子列表 = `SELECT DISTINCT factor_name`
+- 多因子组合做回测时，由因子模块负责 pivot 出 `(date, symbol)` 宽表给策略/引擎
+- 用途：Agent 投研系统大量迭代因子的承载
+
+#### 因子晋升机制
+- 在 `factors_daily` 里被验证稳定的因子，可"晋升"为 `market_daily` 的一列（加列 + 回填），让常用因子走更快路径
+- 由 Curator agent 负责晋升决策与执行
+
+#### 其它约定
+- **数据源**：Tushare Pro（主），后续可加 akshare / baostock 做冗余
+- **冷启动**：一次性回灌全市场全历史日线 OHLCV + 复权因子 → `market_daily`
+- **覆盖范围**：行情/复权/基本面(PE/PB)/停牌/涨跌停/北向/主力资金/行业归属 进主表；指数成分、财务三表、交易日历作为独立侧表（时间维度不是日频对齐）
+- **分钟级数据**：预留 `data/minute/`，parquet 格式落盘，**不进 DuckDB**
+- **更新流水线**：按交易日历对齐；记录每表 `last_updated`；带 Tushare API 频率限速与重试
+- **对外接口**：
+  - `get_panel(date, columns=[...])` —— 主表某日横截面
+  - `get_bars(symbols, start, end, columns=[...])` —— 主表时序
+  - `get_factor(factor_name, start, end, symbols=None)` —— 因子表单因子时序
+  - `get_factor_panel(factor_names, date)` —— 因子表 pivot 成多因子宽表
+- **取数优先级**：会话中需要取数据时优先调用 `tushare-data` skill，不要重复造轮子
+
+### 4.2 因子模块（`autoquant/backtest/factors/`）
+
+**职责**：定义、计算、登记、静态评估因子。
+
+- 通过 Python 脚本从数据模块（DuckDB 主表）读数据计算因子
+- 因子 schema：`name / category / lookback / dtype / 公式 or 函数 / 单元测试`
+- **静态评估指标（敲定）**：IC、RankIC、ICIR；附加分组收益、换手率、衰减曲线
+- 批量计算:向量化优先；天然支持横截面与时序两类
+- 因子库登记：因子**代码与元数据**写入 `data/factor_library/`（registry，YAML/JSON）；因子**值**写入 DuckDB 的 `factors_daily` 长表（见 §4.1）
+- 多因子组合给回测使用前，本模块负责从长表 pivot 出宽表
+
+**技术候选（TBD）**：自研 / 参考 qlib Alpha158 集 / 直接复用 qlib
+
+### 4.3 策略模块（`autoquant/backtest/strategy/`）
+
+**职责**：把因子组合成可执行的策略，**输出每日目标仓位**。
+
+- 策略 = 因子组合（权重/打分）+ 选股或择时规则 + 风控（仓位/行业/单票上限）
+- 与回测引擎解耦：策略只产出 "目标持仓"，不关心成交细节
+- 策略也是 Agent 的产物之一，需要稳定的注册/序列化机制
+
+### 4.4 回测引擎（`autoquant/backtest/engine/`）
+
+**职责**：把策略每日目标持仓 + 成本模型 → 真实成交序列与净值曲线。
+
+- 第一阶段：日频、T+1、A 股交易规则（停牌跳过、ST 过滤可选）
+- 成本：固定佣金 + 印花税 + 滑点（参数化）
+- 复权：自动按复权因子处理价格与持仓数量
+- **输出**：`trades.parquet` / `positions.parquet` / `nav.parquet` + **每日净值图**（PNG/HTML），供 analysis 复用
+
+**技术候选（TBD）**：自研轻量框架（最贴需求）/ vectorbt（快、Pythonic）/ backtrader（功能全但慢）/ qlib
+
+### 4.5 分析模块（`autoquant/backtest/analysis/`）
+
+**职责**：从回测产出反推策略质量。
+
+- **绩效指标（敲定）**：年化收益率、波动率、Sharpe、最大回撤
+- 扩展指标：Sortino、Calmar、月度热力
+- 因子级：IC/IR、分组收益曲线、换手率、衰减
+- 归因：行业/风格/因子分解
+- 基准对照：沪深 300 / 中证 500 / 中证 1000 / 自定义
+- 可视化：notebook 探索 + 静态 HTML 报告
+
+## 5. Agent 投研系统
+
+### 5.1 底座
+
+**已敲定使用 Claude Agent SDK（Python）**。每个子 agent 都是一个独立 SDK agent，通过 orchestrator 或直接 tool-call 编排。
+
+### 5.2 子 agent 分工
+
+- **Reader**：抓取并摘要研报 PDF、arXiv 论文、券商研究公众号、雪球/知乎博客；输出结构化摘要（核心论点、可能可量化的信号）
+- **Idea Miner**：从大量摘要中挑出"看起来可以量化"的因子/策略灵感，转成结构化的因子假设（数据需求、计算公式雏形、预期方向）
+- **Researcher**：把因子假设转成代码，调用回测系统 Python API，完成 "写因子 → 跑回测 → 读结果" 闭环，做多轮调参
+- **Curator**：根据回测指标做通过/不通过判定，把通过的因子/策略写入因子库与研究档案，并生成可检索的标签；负责"因子晋升"（长表 → 主表列）的执行
+
+### 5.3 工具接口（agent 可调用）
+
+- `register_factor(name, code, metadata)`
+- `run_backtest(strategy_config) -> result_id`
+- `get_backtest_result(result_id) -> 指标字典`
+- `search_factor_library(query) -> 候选因子列表`
+- `promote_factor(factor_name)` —— 把因子从 `factors_daily` 晋升为 `market_daily` 的一列
+
+### 5.4 持久化
+
+- 因子代码 + 元数据：`data/factor_library/`
+- 因子值：DuckDB `factors_daily`（长表）
+- 研究档案：`results/research/<date>/<topic>/`（原始摘要、假设、回测结果、最终判定）
+- Agent 记忆：按 Claude Agent SDK 约定持久化（含 prompt cache）
+
+**技术候选（TBD）**：
+
+- PDF/文档解析：unstructured / PyMuPDF / Claude 多模态（PDF 直传）
+- 抓取：feedparser（RSS）/ Playwright（动态页）/ httpx + bs4（静态页）
+- 向量检索（如因子库规模上升）：chroma / lancedb
+
+## 6. 交易模块
+
+### 6.1 第一阶段（已敲定）
+
+**仅做信号推送 + 仓位跟踪**，不直连券商，风险最低。
+
+### 6.2 信号流转（`autoquant/trading/signals/`）
+
+- 策略 → 标准化信号文件（JSON 或 parquet）
+- 信号 schema：`asof_date / symbol / target_weight / action(buy/sell/hold) / reason / strategy_id`
+- 每个交易日盘前/盘后批量生成
+- 信号目录：`results/signals/<strategy_id>/<date>.json`
+
+### 6.3 推送（`autoquant/trading/push/`）
+
+- 监听信号目录，把当日信号渲染成可读消息推送出去
+- 推送内容：策略名、调仓建议、风险提示、回测最近表现
+- **推送渠道（TBD）**：企业微信机器人 / 飞书 webhook / Server酱 / 邮件
+
+### 6.4 仓位跟踪（`autoquant/trading/positions/`）
+
+- 手动维护本地持仓表：`data/positions/<account>.yaml`
+- 字段：账户、标的、数量、成本、买入日、所属策略
+- 提供 CLI 录入/编辑入口，避免裸改 YAML
+- 后续可扩展：读券商对账单 CSV，自动对账
+
+### 6.5 第二阶段路线（仅记录，暂不实现）
+
+对接 QMT / Ptrade / easytrader 等通道，把"推送"演进为"半自动下单"。
+
+## 7. 模块协作 / 接口契约
+
+| 边界 | 提供方 | 消费方 | 形式 |
+|---|---|---|---|
+| 因子注册 / 回测调用 / 晋升 | 回测系统 | Agent 投研系统 | Python tool 接口（§5.3） |
+| 标准化信号 | 回测系统 + 策略 | 交易模块（推送） | JSON/parquet（§6.2） |
+| 持仓回写 | 交易模块 | 回测系统（实盘对比） | YAML/CSV（§6.4） |
+| 数据访问 | 数据模块 | 因子/策略/Agent | Python API（§4.1） |
+
+上表里的边界要尽量稳定；内部实现允许重构。
+
+## 8. 编码与协作约定
+
+- Python 3.11；默认开类型注解（`from __future__ import annotations` + `typing`）
+- 风格：PEP 8；Lint/Format 候选 ruff + black（TBD）
+- 测试：pytest；至少覆盖数据接口的 schema、回测引擎的核心成交逻辑
+- 命名：
+  - 因子函数 `snake_case`（如 `momentum_20d`）
+  - 策略类 `PascalCase`（如 `MomentumLongShort`）
+  - 模块/包小写下划线
+- 注释：中文允许，但标识符必须英文
+- Commit message：`feat / fix / refactor / docs / test / chore` 前缀
+
+## 9. Claude Code 协作提示
+
+- **环境**：任何 Python 命令前先 `conda activate AutoQuant`
+- **数据**：取行情/财务/资金/板块数据时优先调用 `tushare-data` skill
+- **耗时任务**：回测、批量抓取、批量因子计算用 `run_in_background: true` 起背景任务
+- **改动**：动手前先读对应模块小节，确认接口契约（§7）
+- **Agent 实现**：写 Claude Agent SDK 相关代码时使用 `claude-api` skill 的最佳实践（含 prompt caching）
+- **新模块骨架**：每个 `autoquant/<module>/<sub>/` 至少有 `__init__.py` + `README.md`
+
+## 10. 待决事项（TBD 清单）
+
+- [ ] 回测引擎选型（自研 / vectorbt / backtrader / qlib）
+- [ ] 推送渠道选型（企微 / 飞书 / Server酱 / 邮件）
+- [ ] 文档解析方案（unstructured / PyMuPDF / Claude 多模态）
+- [ ] 网页抓取方案（feedparser / Playwright / httpx+bs4）
+- [ ] 是否需要向量检索（取决于因子库规模）
+- [ ] `environment.yml` 实际依赖清单（tushare、pandas、pyarrow、duckdb、anthropic、claude-agent-sdk、…）
+- [ ] 是否启用 `pyproject.toml`（建议是，便于 `pip install -e .`）
+
+**已敲定**：DuckDB 双表设计——主表 `market_daily`（主键 `(date, symbol)`、按 `date` 分区、日更只 append、回测主用）+ 因子表 `factors_daily`（长表 `(date, symbol, factor_name, value)`、研究主用、稳定因子可晋升回主表）；parquet（分钟级、回测产出）；Claude Agent SDK；交易模块第一阶段仅信号推送 + 仓位跟踪；静态因子评估 IC/RankIC/ICIR；绩效核心指标 Sharpe/年化/波动/最大回撤。
