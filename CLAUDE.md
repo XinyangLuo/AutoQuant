@@ -90,85 +90,13 @@ AutoQuant/
 
 ## 4. 回测系统
 
-### 4.1 数据模块（`autoquant/backtest/data/`）
+详见 [`backtest/CLAUDE.md`](backtest/CLAUDE.md)。简要概览：
 
-**职责**：把外部数据拉到本地，建立可重放、可增量更新的行情/基本面/因子数据池。
-
-**核心设计：主表 + 因子长表 双表分工**
-
-#### 主表 `market_daily`（小而稳，回测主用）
-- 主键 `(date, symbol)`，按 `date` 分区
-- 列：`open / high / low / close / volume / amount / adj_factor / 停牌 / 涨跌停 / pe / pb / ...` —— **回测必备 + 半静态基本面**
-- 日更：只 append 最新交易日的行，历史行永不动
-- 扩列：偶发，仅当某个新指标被回测频繁需要才加（如新增 ROE 列）；走 `ALTER TABLE ... ADD COLUMN` + 历史回填脚本
-- 用途：策略/回测/分析的取数源；查询路径稳定、I/O 小
-
-#### 因子表 `factors_daily`（长表，研究主用）
-- Schema：`(date, symbol, factor_name, value)`，按 `date` 分区
-- 加新因子**零 schema 变化**——只是多了一批 `factor_name` 不一样的行
-- 研究友好：IC / RankIC 直接 `GROUP BY factor_name` 算；可用因子列表 = `SELECT DISTINCT factor_name`
-- 多因子组合做回测时，由因子模块负责 pivot 出 `(date, symbol)` 宽表给策略/引擎
-- 用途：Agent 投研系统大量迭代因子的承载
-
-#### 因子晋升机制
-- 在 `factors_daily` 里被验证稳定的因子，可"晋升"为 `market_daily` 的一列（加列 + 回填），让常用因子走更快路径
-- 由 Curator agent 负责晋升决策与执行
-
-#### 其它约定
-- **数据源**：Tushare Pro（主），后续可加 akshare / baostock 做冗余
-- **冷启动**：一次性回灌全市场全历史日线 OHLCV + 复权因子 → `market_daily`
-- **覆盖范围**：行情/复权/基本面(PE/PB)/停牌/涨跌停/北向/主力资金/行业归属 进主表；指数成分、财务三表、交易日历作为独立侧表（时间维度不是日频对齐）
-- **分钟级数据**：预留 `data/minute/`，parquet 格式落盘，**不进 DuckDB**
-- **更新流水线**：按交易日历对齐；记录每表 `last_updated`；带 Tushare API 频率限速与重试
-- **对外接口**：
-  - `get_panel(date, columns=[...])` —— 主表某日横截面
-  - `get_bars(symbols, start, end, columns=[...])` —— 主表时序
-  - `get_factor(factor_name, start, end, symbols=None)` —— 因子表单因子时序
-  - `get_factor_panel(factor_names, date)` —— 因子表 pivot 成多因子宽表
-- **取数优先级**：会话中需要取数据时优先调用 `tushare-data` skill，不要重复造轮子
-
-### 4.2 因子模块（`autoquant/backtest/factors/`）
-
-**职责**：定义、计算、登记、静态评估因子。
-
-- 通过 Python 脚本从数据模块（DuckDB 主表）读数据计算因子
-- 因子 schema：`name / category / lookback / dtype / 公式 or 函数 / 单元测试`
-- **静态评估指标（敲定）**：IC、RankIC、ICIR；附加分组收益、换手率、衰减曲线
-- 批量计算:向量化优先；天然支持横截面与时序两类
-- 因子库登记：因子**代码与元数据**写入 `data/factor_library/`（registry，YAML/JSON）；因子**值**写入 DuckDB 的 `factors_daily` 长表（见 §4.1）
-- 多因子组合给回测使用前，本模块负责从长表 pivot 出宽表
-
-**技术候选（TBD）**：自研 / 参考 qlib Alpha158 集 / 直接复用 qlib
-
-### 4.3 策略模块（`autoquant/backtest/strategy/`）
-
-**职责**：把因子组合成可执行的策略，**输出每日目标仓位**。
-
-- 策略 = 因子组合（权重/打分）+ 选股或择时规则 + 风控（仓位/行业/单票上限）
-- 与回测引擎解耦：策略只产出 "目标持仓"，不关心成交细节
-- 策略也是 Agent 的产物之一，需要稳定的注册/序列化机制
-
-### 4.4 回测引擎（`autoquant/backtest/engine/`）
-
-**职责**：把策略每日目标持仓 + 成本模型 → 真实成交序列与净值曲线。
-
-- 第一阶段：日频、T+1、A 股交易规则（停牌跳过、ST 过滤可选）
-- 成本：固定佣金 + 印花税 + 滑点（参数化）
-- 复权：自动按复权因子处理价格与持仓数量
-- **输出**：`trades.parquet` / `positions.parquet` / `nav.parquet` + **每日净值图**（PNG/HTML），供 analysis 复用
-
-**技术候选（TBD）**：自研轻量框架（最贴需求）/ vectorbt（快、Pythonic）/ backtrader（功能全但慢）/ qlib
-
-### 4.5 分析模块（`autoquant/backtest/analysis/`）
-
-**职责**：从回测产出反推策略质量。
-
-- **绩效指标（敲定）**：年化收益率、波动率、Sharpe、最大回撤
-- 扩展指标：Sortino、Calmar、月度热力
-- 因子级：IC/IR、分组收益曲线、换手率、衰减
-- 归因：行业/风格/因子分解
-- 基准对照：沪深 300 / 中证 500 / 中证 1000 / 自定义
-- 可视化：notebook 探索 + 静态 HTML 报告
+- **数据模块**：行情/基本面数据下载、缓存、增量更新。详见 [`backtest/data/CLAUDE.md`](backtest/data/CLAUDE.md)。
+- **因子模块**：定义、计算、登记、静态评估（IC/RankIC/ICIR）。因子值写入 `factors_daily` 长表；稳定因子可晋升回 `market_daily`。
+- **策略模块**：因子组合 + 选股/择时 + 风控 → **每日目标持仓**（与引擎解耦）。
+- **回测引擎**：目标持仓 + 成本模型 → 成交序列 + 净值曲线。日频、T+1、A 股规则。
+- **分析模块**：绩效指标（Sharpe/年化/波动/回撤）+ 归因 + 可视化。
 
 ## 5. Agent 投研系统
 
@@ -241,7 +169,7 @@ AutoQuant/
 | 因子注册 / 回测调用 / 晋升 | 回测系统 | Agent 投研系统 | Python tool 接口（§5.3） |
 | 标准化信号 | 回测系统 + 策略 | 交易模块（推送） | JSON/parquet（§6.2） |
 | 持仓回写 | 交易模块 | 回测系统（实盘对比） | YAML/CSV（§6.4） |
-| 数据访问 | 数据模块 | 因子/策略/Agent | Python API（§4.1） |
+| 数据访问 | 数据模块 | 因子/策略/Agent | Python API（详见 backtest/data/CLAUDE.md） |
 
 上表里的边界要尽量稳定；内部实现允许重构。
 

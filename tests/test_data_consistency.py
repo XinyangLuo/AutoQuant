@@ -56,7 +56,9 @@ def check_daily(db_row: pd.Series, api_df: pd.DataFrame) -> list[str]:
     if not ok:
         errors.append(msg)
 
-    ok, msg = compare_float(db_row["amount"], api["amount"], "amount")
+    # Amount: DB stores yuan (×1000), API returns 千元
+    api_amt = float(api["amount"]) * 1000 if pd.notna(api["amount"]) else None
+    ok, msg = compare_float(db_row["amount"], api_amt, "amount", rel_tol=1e-9, abs_tol=1)
     if not ok:
         errors.append(msg)
 

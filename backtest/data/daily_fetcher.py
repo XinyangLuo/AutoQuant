@@ -30,6 +30,16 @@ def fetch_st_status(trade_date: str) -> pd.DataFrame:
     return _fetch_by_date(pro.stock_st, trade_date)
 
 
+def fetch_limit_prices(trade_date: str) -> pd.DataFrame:
+    """Fetch all stocks' limit_up / limit_down prices for a single trade date."""
+    return _fetch_by_date(pro.stk_limit, trade_date)
+
+
+def fetch_daily_basic(trade_date: str) -> pd.DataFrame:
+    """Fetch all stocks' daily basic indicators (turnover, pe, pb, mv, etc.)."""
+    return _fetch_by_date(pro.daily_basic, trade_date)
+
+
 # ---------------------------------------------------------------------------
 # Transform & merge helpers
 # ---------------------------------------------------------------------------
@@ -86,6 +96,51 @@ def merge_st_status(daily_df: pd.DataFrame, st_df: pd.DataFrame) -> pd.DataFrame
     return daily_df
 
 
+def merge_limit_prices(daily_df: pd.DataFrame, limit_df: pd.DataFrame) -> pd.DataFrame:
+    """Left-merge limit_up / limit_down into daily DataFrame on (date, symbol)."""
+    if daily_df.empty:
+        return daily_df
+
+    if limit_df.empty:
+        daily_df["limit_up"] = None
+        daily_df["limit_down"] = None
+        return daily_df
+
+    limit = limit_df.rename(columns={"trade_date": "date", "ts_code": "symbol"})
+    limit["date"] = pd.to_datetime(limit["date"], format="%Y%m%d").dt.date
+    limit = limit[["date", "symbol", "up_limit", "down_limit"]]
+
+    return daily_df.merge(limit, on=["date", "symbol"], how="left")
+
+
+_DAILY_BASIC_COLS = [
+    "turnover_rate", "turnover_rate_f", "volume_ratio",
+    "pe", "pe_ttm", "pb", "ps", "ps_ttm",
+    "dv_ratio", "dv_ttm",
+    "total_share", "float_share", "free_share",
+    "total_mv", "circ_mv",
+]
+
+
+def merge_daily_basic(daily_df: pd.DataFrame, basic_df: pd.DataFrame) -> pd.DataFrame:
+    """Left-merge daily_basic indicators into daily DataFrame on (date, symbol)."""
+    if daily_df.empty:
+        return daily_df
+
+    if basic_df.empty:
+        for col in _DAILY_BASIC_COLS:
+            daily_df[col] = None
+        return daily_df
+
+    basic = basic_df.rename(columns={"trade_date": "date", "ts_code": "symbol"})
+    basic["date"] = pd.to_datetime(basic["date"], format="%Y%m%d").dt.date
+    # Exclude 'close' because it duplicates pro.daily close
+    cols = ["date", "symbol"] + [c for c in _DAILY_BASIC_COLS if c in basic.columns]
+    basic = basic[[c for c in cols if c in basic.columns]]
+
+    return daily_df.merge(basic, on=["date", "symbol"], how="left")
+
+
 # ---------------------------------------------------------------------------
 # Stock-list metadata helpers
 # ---------------------------------------------------------------------------
@@ -120,9 +175,13 @@ def process_trade_date(trade_date: str, list_date_map: dict) -> pd.DataFrame:
 
     adj_df = fetch_adj_factor(trade_date)
     st_df = fetch_st_status(trade_date)
+    limit_df = fetch_limit_prices(trade_date)
+    basic_df = fetch_daily_basic(trade_date)
 
     daily_df = transform_daily(daily_df)
     daily_df = merge_adj_factor(daily_df, adj_df)
     daily_df = merge_st_status(daily_df, st_df)
+    daily_df = merge_limit_prices(daily_df, limit_df)
+    daily_df = merge_daily_basic(daily_df, basic_df)
     daily_df = merge_stock_info(daily_df, list_date_map)
     return daily_df

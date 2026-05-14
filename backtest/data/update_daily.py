@@ -44,10 +44,19 @@ def main():
             print("No new trade dates to update.")
             return
 
+        failed_dates = []
         for trade_date in tqdm(trade_dates, desc="Updating"):
-            daily_df = process_trade_date(trade_date, list_date_map)
-            if not daily_df.empty:
-                storage.insert_daily(daily_df)
+            try:
+                daily_df = process_trade_date(trade_date, list_date_map)
+                if not daily_df.empty:
+                    storage.insert_daily(daily_df)
+            except Exception as exc:
+                failed_dates.append((trade_date, str(exc)))
+                print(f"\n  WARN: failed {trade_date}: {exc}")
+                continue
+
+        if failed_dates:
+            print(f"\n  Failed dates ({len(failed_dates)}): {[d for d, _ in failed_dates]}")
 
         stats = storage.get_stats()
 

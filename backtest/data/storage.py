@@ -12,22 +12,55 @@ PROJECT_ROOT = _find_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "duckdb"
 DB_PATH = DATA_DIR / "market.duckdb"
 
-DAILY_SCHEMA = """
+# ---------------------------------------------------------------------------
+# Schema: market_daily wide table
+# ---------------------------------------------------------------------------
+# All columns listed here; new columns are added via ALTER TABLE ADD COLUMN
+# in _init_table() for backward-compatible migrations.
+# insert_daily() is column-dynamic: it INSERTs/UPDATEs only the columns
+# present in the DataFrame, leaving other columns untouched.
+# ---------------------------------------------------------------------------
+
+DAILY_COLUMNS = [
+    "date",
+    "symbol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "pre_close",
+    "change",
+    "pct_chg",
+    "volume",
+    "amount",
+    "adj_factor",
+    "is_st",
+    "list_date",
+    "limit_up",
+    "limit_down",
+    "turnover_rate",
+    "turnover_rate_f",
+    "volume_ratio",
+    "pe",
+    "pe_ttm",
+    "pb",
+    "ps",
+    "ps_ttm",
+    "dv_ratio",
+    "dv_ttm",
+    "total_share",
+    "float_share",
+    "free_share",
+    "total_mv",
+    "circ_mv",
+]
+
+_COL_DEFS = ",\n    ".join(f"{c:12s} DOUBLE" for c in DAILY_COLUMNS[2:])
+DAILY_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS market_daily (
     date        DATE,
     symbol      VARCHAR,
-    open        DOUBLE,
-    high        DOUBLE,
-    low         DOUBLE,
-    close       DOUBLE,
-    pre_close   DOUBLE,
-    change      DOUBLE,
-    pct_chg     DOUBLE,
-    volume      BIGINT,
-    amount      DOUBLE,
-    adj_factor  DOUBLE,
-    is_st       BOOLEAN,
-    list_date   DATE,
+    {_COL_DEFS},
     PRIMARY KEY (date, symbol)
 )
 """
@@ -45,8 +78,15 @@ class MarketStorage:
     def _init_table(self):
         self.conn.execute(DAILY_SCHEMA)
         # Migration: add columns introduced after initial table creation
-        self.conn.execute("ALTER TABLE market_daily ADD COLUMN IF NOT EXISTS is_st BOOLEAN")
-        self.conn.execute("ALTER TABLE market_daily ADD COLUMN IF NOT EXISTS list_date DATE")
+        for col in DAILY_COLUMNS:
+            if col in ("date", "symbol"):
+                continue
+            # DuckDB does not have ADD COLUMN IF NOT EXISTS in older versions,
+            # so we wrap each attempt in a try/except.
+            try:
+                self.conn.execute(f'ALTER TABLE market_daily ADD COLUMN "{col}" DOUBLE')
+            except Exception:
+                pass
 
     # -- context manager --------------------------------------------------
 
@@ -80,31 +120,31 @@ class MarketStorage:
     # -- writes -----------------------------------------------------------
 
     def insert_daily(self, df: pd.DataFrame):
-        """Insert daily data using UPSERT. Existing (date, symbol) rows are overwritten."""
+        """
+        Insert/UPSERT daily data.
+        Only the columns present in *df* are written; other table columns are
+        left untouched. This allows backfill scripts to update a subset of
+        columns without re-fetching unrelated data.
+        """
         if df.empty:
             return
 
+        # Use only columns that exist in both DataFrame and table schema
+        cols = [c for c in df.columns if c in DAILY_COLUMNS]
+        if not cols:
+            return
+
+        cols_sql = ", ".join(f'"{c}"' for c in cols)
+        updates = [f'"{c}" = excluded."{c}"' for c in cols if c not in ("date", "symbol")]
+        update_sql = ", ".join(updates) if updates else "open = excluded.open"  # no-op fallback
+
         self.conn.register("daily_df", df)
         try:
-            self.conn.execute("""
-                INSERT INTO market_daily
-                SELECT date, symbol, open, high, low, close,
-                       pre_close, change, pct_chg, volume, amount, adj_factor,
-                       is_st, list_date
-                FROM daily_df
+            self.conn.execute(f"""
+                INSERT INTO market_daily ({cols_sql})
+                SELECT {cols_sql} FROM daily_df
                 ON CONFLICT (date, symbol) DO UPDATE SET
-                    open = excluded.open,
-                    high = excluded.high,
-                    low = excluded.low,
-                    close = excluded.close,
-                    pre_close = excluded.pre_close,
-                    change = excluded.change,
-                    pct_chg = excluded.pct_chg,
-                    volume = excluded.volume,
-                    amount = excluded.amount,
-                    adj_factor = excluded.adj_factor,
-                    is_st = excluded.is_st,
-                    list_date = excluded.list_date
+                    {update_sql}
             """)
         finally:
             self.conn.unregister("daily_df")
