@@ -78,6 +78,72 @@ pro.daily_basic → DataFrame → merge
 - 计算结果连同 `ann_date` 一起写入**独立的财务因子表**
 - 回测引擎按 `ann_date <= 回测日期` 过滤使用
 
+### `dividends`（分红送股事件表）
+
+- **数据源**：Tushare `pro.dividend`（14 列）
+- **Schema**：`(symbol VARCHAR, end_date VARCHAR, ann_date VARCHAR, ex_date VARCHAR, record_date VARCHAR, pay_date VARCHAR, cash_div DOUBLE, cash_div_tax DOUBLE, stk_div DOUBLE, stk_bo_rate DOUBLE, div_proc VARCHAR)`
+- **主键**：`(symbol, end_date)`
+- **入库过滤**：只保留 `div_proc = '实施'`
+- `ex_date`（除权除息日）是回测最关键日期：价格跳空、送转股生效
+- 预估总量 < 20 万行，事件型查询 `WHERE ex_date = ?`
+
+## Fetch/Merge 模式
+
+日频数据（`market_daily`）的流水线：
+
+```
+pro.daily → DataFrame
+pro.adj_factor → DataFrame → pandas merge (LEFT JOIN on date+symbol)
+pro.stock_st → DataFrame → merge
+pro.stk_limit → DataFrame → merge (列名 up_limit/down_limit → rename 为 limit_up/limit_down)
+pro.daily_basic → DataFrame → merge
+→ 统一宽 DataFrame → UPSERT INTO market_daily
+```
+
+- 每个数据源**单独 fetch**，然后**pandas left-merge**
+- 空响应自动填充 None/False，不中断流水线
+- **注意列名映射**：`pro.stk_limit` 返回 `up_limit`/`down_limit`，merge 后需 rename 为 `limit_up`/`limit_down` 以匹配 `DAILY_COLUMNS`
+
+## 增量更新
+
+| 表 | 增量方式 | 对齐依据 |
+|---|---|---|
+| `market_daily` | 按交易日历，从 `MAX(date)+1` 开始 | 交易日历 |
+| `fina_indicator_quarterly` | 按 `start_ann_date`，只拉新公告的报表 | 公告日期 |
+| `dividends` | 每日查 `ex_date=today` 和 `ann_date=today` | 除权日/公告日 |
+
+## 回填约定
+
+- **不走 pandas 全量重跑**。只 fetch 目标数据源，写入 DuckDB 临时表，通过 SQL `INSERT ... ON CONFLICT DO UPDATE SET target_col = EXCLUDED.target_col` 只更新目标列
+- `insert_daily()` 为**动态列模式**：DataFrame 有什么列就 INSERT/UPDATE 什么列，其他列不动
+- 适用于：新增列的历史回填、部分列的修复重跑
+
+## 去重与修正
+
+### `fina_indicator` 重复行
+
+- Tushare 对同一 `(ts_code, end_date)` 可能返回 **2 行**
+- 大部分是 100% 相同重复，少数是部分 NaN 的不完整记录
+- **入库前必须去重**：
+  ```python
+  df = df.drop_duplicates(subset=["ts_code", "end_date"])
+  df["_nan_count"] = df.isna().sum(axis=1)
+  df = df.sort_values("_nan_count").drop_duplicates(subset=["ts_code", "end_date"], keep="first")
+  df = df.drop(columns=["_nan_count"])
+  ```
+
+### 修正问题
+
+- Tushare 对同一报告期**只保留最终修正版**，不存在旧版记录
+- `income`/`balancesheet` 虽有 `f_ann_date`，但实测 `ann_date == f_ann_date`
+- 回测引擎在日期 D 只能查 `ann_date <= D` 的报表
+
+## 未来信息隔离
+
+- 离线因子计算时只使用 `ann_date <= 当前日期` 的财务数据
+- 计算结果连同 `ann_date` 一起写入**独立的财务因子表**
+- 回测引擎按 `ann_date <= 回测日期` 过滤使用
+
 ## 对外接口
 
 ```python

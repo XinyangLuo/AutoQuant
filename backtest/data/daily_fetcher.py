@@ -110,7 +110,9 @@ def merge_limit_prices(daily_df: pd.DataFrame, limit_df: pd.DataFrame) -> pd.Dat
     limit["date"] = pd.to_datetime(limit["date"], format="%Y%m%d").dt.date
     limit = limit[["date", "symbol", "up_limit", "down_limit"]]
 
-    return daily_df.merge(limit, on=["date", "symbol"], how="left")
+    merged = daily_df.merge(limit, on=["date", "symbol"], how="left")
+    merged = merged.rename(columns={"up_limit": "limit_up", "down_limit": "limit_down"})
+    return merged
 
 
 _DAILY_BASIC_COLS = [

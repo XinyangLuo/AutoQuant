@@ -7,10 +7,10 @@ import tushare as ts
 
 
 def _find_project_root() -> Path:
-    """Walk up from this file until we find the project root (contains .env or CLAUDE.md)."""
+    """Walk up from this file until we find the project root (contains .env)."""
     p = Path(__file__).resolve()
     while p != p.parent:
-        if (p / ".env").exists() or (p / "CLAUDE.md").exists():
+        if (p / ".env").exists():
             return p
         p = p.parent
     raise RuntimeError("Project root not found")

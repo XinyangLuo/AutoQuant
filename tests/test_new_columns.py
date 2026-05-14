@@ -49,8 +49,10 @@ def check_limit_prices(db_row: pd.Series, limit_df: pd.DataFrame) -> list[str]:
     api = match.iloc[0]
     errors = []
 
+    db_to_api = {"limit_up": "up_limit", "limit_down": "down_limit"}
     for field in ("limit_up", "limit_down"):
-        ok, msg = compare_float(db_row[field], api[field], field)
+        api_field = db_to_api[field]
+        ok, msg = compare_float(db_row[field], api[api_field], field)
         if not ok:
             errors.append(msg)
 
@@ -110,7 +112,7 @@ def main():
                total_share, float_share, free_share,
                total_mv, circ_mv
         FROM market_daily
-        WHERE turnover_rate IS NOT NULL
+        WHERE limit_up IS NOT NULL AND turnover_rate IS NOT NULL
         ORDER BY random()
         LIMIT ?
     """, [args.n]).fetchdf()
