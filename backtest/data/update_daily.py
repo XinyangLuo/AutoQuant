@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 """
-Incremental update: fetch daily data from the last date in DB to today.
-Fetches by trade date (all stocks per day).
+Incremental update for market_daily, fina_indicator_quarterly, dividends.
+
+Phases run sequentially under one DB connection:
+  1. market_daily   — from MAX(date)+1 to today, per trade date
+  2. fina_indicator — from MAX(ann_date) to today, per trade date by ann_date
+  3. dividends      — from MAX(ann_date) to today, per trade date by ann_date
+
+Each phase resumes from its own DB cursor and skips empty days.
 
 Usage:
     python -m backtest.data.update_daily
@@ -9,62 +15,99 @@ Usage:
 
 from datetime import datetime, timedelta
 
+import pandas as pd
 from tqdm import tqdm
 
+from backtest.data._pipeline import update_by_ann_date
 from backtest.data.daily_fetcher import build_list_date_map, process_trade_date
+from backtest.data.dividends_fetcher import fetch_dividend_by_ann_date
+from backtest.data.fina_fetcher import fetch_fina_by_ann_date
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
 
 
-def main():
-    stock_list = fetch_stock_list()
-    list_date_map = build_list_date_map(stock_list)
-    print(f"Stock list: {len(stock_list)} stocks in market")
+def _next_day(yyyymmdd: str) -> str:
+    return (datetime.strptime(yyyymmdd, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
 
+
+def update_market_daily(storage: MarketStorage, *, stock_list: pd.DataFrame) -> bool:
+    """Update market_daily up to today. Returns True if updates ran."""
+    list_date_map = build_list_date_map(stock_list)
     today = datetime.now().strftime("%Y%m%d")
 
+    max_date = storage.get_max_date()
+    if max_date is None:
+        print("market_daily: DB is empty. Run cold_start first.")
+        return False
+
+    start = _next_day(max_date)
+    if start > today:
+        print(f"market_daily: already up to date (last date {max_date}).")
+        return False
+
+    trade_dates = get_trade_dates(start, today)
+    print(f"market_daily: {len(trade_dates)} trade dates to update "
+          f"({start} ~ {today})")
+
+    if not trade_dates:
+        print("market_daily: no new trade dates.")
+        return False
+
+    failed = []
+    for trade_date in tqdm(trade_dates, desc="market_daily"):
+        try:
+            daily_df = process_trade_date(trade_date, list_date_map)
+            if not daily_df.empty:
+                storage.insert_daily(daily_df)
+        except Exception as exc:
+            failed.append((trade_date, str(exc)))
+            print(f"\n  WARN: failed {trade_date}: {exc}")
+            continue
+
+    if failed:
+        print(f"\n  Failed dates ({len(failed)}): {[d for d, _ in failed]}")
+
+    stats = storage.get_stats()
+    print(f"market_daily: {stats['total_rows']:,} rows, "
+          f"{stats['min_date']} ~ {stats['max_date']}")
+    return True
+
+
+def update_fina(storage: MarketStorage) -> None:
+    update_by_ann_date(
+        label="fina_indicator",
+        get_max_ann_date=storage.get_max_fina_ann_date,
+        fetch_by_ann_date=fetch_fina_by_ann_date,
+        insert=storage.insert_fina,
+    )
+
+
+def update_dividends(storage: MarketStorage) -> None:
+    update_by_ann_date(
+        label="dividends",
+        get_max_ann_date=storage.get_max_dividend_ann_date,
+        fetch_by_ann_date=fetch_dividend_by_ann_date,
+        insert=storage.insert_dividends,
+    )
+
+
+def main():
+    stock_list = fetch_stock_list()
+    print(f"Stock list: {len(stock_list)} stocks")
+
     with MarketStorage() as storage:
-        max_date = storage.get_max_date()
+        print("\n=== Phase 1: market_daily ===")
+        update_market_daily(storage, stock_list=stock_list)
 
-        if max_date is None:
-            print("DB is empty. Please run cold_start.py first.")
-            return
+        print("\n=== Phase 2: fina_indicator_quarterly ===")
+        update_fina(storage)
 
-        start = (datetime.strptime(max_date, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
-
-        if start > today:
-            print(f"Already up to date. Last date in DB: {max_date}")
-            return
-
-        trade_dates = get_trade_dates(start, today)
-        print(f"Trade dates to update: {len(trade_dates)} ({start} ~ {today})")
-
-        if not trade_dates:
-            print("No new trade dates to update.")
-            return
-
-        failed_dates = []
-        for trade_date in tqdm(trade_dates, desc="Updating"):
-            try:
-                daily_df = process_trade_date(trade_date, list_date_map)
-                if not daily_df.empty:
-                    storage.insert_daily(daily_df)
-            except Exception as exc:
-                failed_dates.append((trade_date, str(exc)))
-                print(f"\n  WARN: failed {trade_date}: {exc}")
-                continue
-
-        if failed_dates:
-            print(f"\n  Failed dates ({len(failed_dates)}): {[d for d, _ in failed_dates]}")
-
-        stats = storage.get_stats()
+        print("\n=== Phase 3: dividends ===")
+        update_dividends(storage)
 
     print("\n" + "=" * 50)
     print("Update complete.")
-    print(f"  Total rows    : {stats['total_rows']:,}")
-    print(f"  Total symbols : {stats['total_symbols']:,}")
-    print(f"  Date range    : {stats['min_date']} ~ {stats['max_date']}")
     print("=" * 50)
 
 

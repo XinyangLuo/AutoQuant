@@ -3,6 +3,7 @@
 import time
 from pathlib import Path
 
+import pandas as pd
 import tushare as ts
 
 
@@ -49,3 +50,11 @@ def api_call(func, *args, sleep: float = 0.15, max_retries: int = 3, **kwargs):
             print(f"  API error (attempt {attempt}/{max_retries}): {exc}. Retry in {wait:.1f}s...")
             time.sleep(wait)
     return None
+
+
+def fetch_and_transform(api_func, transform=None, **kwargs) -> pd.DataFrame:
+    """Call api_func through api_call, return empty DF on None/empty, else apply transform."""
+    df = api_call(api_func, **kwargs)
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return transform(df) if transform else df
