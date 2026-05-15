@@ -342,6 +342,72 @@ class MarketStorage:
             schema_cols=DAILY_COLUMNS,
         )
 
+    def get_panel(self, date: str, columns: list[str] | None = None) -> pd.DataFrame:
+        """Return a cross-section of market_daily for a single trade date.
+
+        *date* is a YYYYMMDD string.  If *columns* is None all columns are
+        returned except the PK pair (date, symbol).
+        """
+        if columns:
+            cols_sql = ", ".join(f'"{c}"' for c in columns if c in DAILY_COLUMNS)
+        else:
+            cols_sql = ", ".join(f'"{c}"' for c in DAILY_COLUMNS if c not in ("date", "symbol"))
+        sql = f"""
+            SELECT date, symbol, {cols_sql}
+            FROM market_daily
+            WHERE date = strptime(?, '%Y%m%d')::DATE
+            ORDER BY symbol
+        """
+        return self.conn.execute(sql, [date]).fetchdf()
+
+    def get_bars(
+        self,
+        symbols: list[str] | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Return time-series bars from market_daily.
+
+        Parameters
+        ----------
+        symbols : list[str] | None
+            Filter to these symbols.  If None, all symbols.
+        start, end : str | None
+            YYYYMMDD inclusive bounds.  If None, no bound on that side.
+        columns : list[str] | None
+            Subset of columns to return.  If None, all non-PK columns.
+        """
+        if columns:
+            cols_sql = ", ".join(f'"{c}"' for c in columns if c in DAILY_COLUMNS)
+        else:
+            cols_sql = ", ".join(f'"{c}"' for c in DAILY_COLUMNS if c not in ("date", "symbol"))
+
+        conditions = []
+        params: list = []
+        if start:
+            conditions.append("date >= strptime(?, '%Y%m%d')::DATE")
+            params.append(start)
+        if end:
+            conditions.append("date <= strptime(?, '%Y%m%d')::DATE")
+            params.append(end)
+        if symbols:
+            placeholders = ", ".join("?" for _ in symbols)
+            conditions.append(f"symbol IN ({placeholders})")
+            params.extend(symbols)
+
+        where_clause = ""
+        if conditions:
+            where_clause = "WHERE " + " AND ".join(conditions)
+
+        sql = f"""
+            SELECT date, symbol, {cols_sql}
+            FROM market_daily
+            {where_clause}
+            ORDER BY date, symbol
+        """
+        return self.conn.execute(sql, params).fetchdf()
+
     # -- fundamentals (three independent tables) ------------------------------
 
     # Thin wrappers around generic helpers; table name is the only variable.
