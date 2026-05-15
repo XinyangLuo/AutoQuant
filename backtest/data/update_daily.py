@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Incremental update for market_daily, fina_indicator_quarterly, dividends.
+Incremental update for market_daily, income/balancesheet/cashflow, and dividends.
 
 Phases run sequentially under one DB connection:
   1. market_daily   — from MAX(date)+1 to today, per trade date
-  2. fina_indicator — from MAX(ann_date) to today, per trade date by ann_date
+  2. fundamentals   — from MAX(f_ann_date) to today, per table (income / balancesheet / cashflow)
   3. dividends      — from MAX(ann_date) to today, per trade date by ann_date
 
 Each phase resumes from its own DB cursor and skips empty days.

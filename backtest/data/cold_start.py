@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-One-button cold start: backfill market_daily, fina_indicator_quarterly,
+One-button cold start: backfill market_daily, income/balancesheet/cashflow,
 and dividends from scratch.
 
 Phases run sequentially under one DB connection:
