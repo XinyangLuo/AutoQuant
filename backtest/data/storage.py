@@ -153,6 +153,15 @@ FUNDAMENTAL_META = [
     "report_type", "comp_type", "end_type", "update_flag",
 ]
 
+FUNDAMENTAL_KEY_COLS = ["symbol", "end_date", "ann_date", "f_ann_date",
+                        "report_type", "comp_type", "end_type", "update_flag"]
+
+_FUNDAMENTAL_COLS_MAP = {
+    "income_q": FUNDAMENTAL_META + INCOME_NUMERIC,
+    "balancesheet_q": FUNDAMENTAL_META + BALANCESHEET_NUMERIC,
+    "cashflow_q": FUNDAMENTAL_META + CASHFLOW_NUMERIC,
+}
+
 
 def _build_fundamental_schema(name: str, numeric_cols: list[str]) -> str:
     numeric_defs = ",\n    ".join(f"{c:30s} DOUBLE" for c in numeric_cols)
@@ -341,12 +350,7 @@ class MarketStorage:
         return ("symbol", "end_date", "f_ann_date", "update_flag")
 
     def _fundamental_cols(self, table: str) -> list[str]:
-        mapping = {
-            "income_q": INCOME_NUMERIC,
-            "balancesheet_q": BALANCESHEET_NUMERIC,
-            "cashflow_q": CASHFLOW_NUMERIC,
-        }
-        return FUNDAMENTAL_META + mapping[table]
+        return _FUNDAMENTAL_COLS_MAP[table]
 
     def insert_income(self, df: pd.DataFrame):
         self._upsert(df, table="income_q", pk_cols=self._fundamental_pk(), schema_cols=self._fundamental_cols("income_q"))
@@ -387,11 +391,11 @@ class MarketStorage:
         }
 
         symbol_filter = ""
-        params: list = [as_of_date]
+        params = [as_of_date]
         if symbols:
             placeholders = ", ".join("?" for _ in symbols)
             symbol_filter = f"AND symbol IN ({placeholders})"
-            params = [as_of_date, *symbols]
+            params.extend(symbols)
 
         dfs: dict[str, pd.DataFrame] = {}
         for prefix, table in tables.items():
@@ -409,7 +413,7 @@ class MarketStorage:
                 dfs[prefix] = df
                 continue
             # Rename non-key columns with prefix
-            key_cols = {"symbol", "end_date", "ann_date", "f_ann_date", "report_type", "comp_type", "end_type", "update_flag"}
+            key_cols = set(FUNDAMENTAL_KEY_COLS)
             rename_map = {c: f"{prefix}_{c}" for c in df.columns if c not in key_cols}
             df = df.rename(columns=rename_map)
             dfs[prefix] = df
@@ -423,12 +427,9 @@ class MarketStorage:
             else:
                 merged = merged.merge(
                     dfs[prefix],
-                    on=["symbol", "end_date", "ann_date", "f_ann_date", "report_type", "comp_type", "end_type", "update_flag"],
+                    on=FUNDAMENTAL_KEY_COLS,
                     how="outer",
                 )
-
-        # Drop duplicates from outer-join (shouldn't happen, but belt-and-suspenders)
-        merged = merged.drop_duplicates(subset=["symbol", "end_date", "f_ann_date", "update_flag"])
 
         if columns:
             keep = ["symbol", "end_date", "ann_date", "f_ann_date", "update_flag"]

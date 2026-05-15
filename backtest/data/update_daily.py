@@ -78,31 +78,20 @@ def update_market_daily(storage: MarketStorage, *, stock_list: pd.DataFrame) -> 
     return True
 
 
-def update_income(storage: MarketStorage) -> None:
-    update_by_ann_date(
-        label="income",
-        get_max_ann_date=lambda: storage.get_max_f_ann_date("income_q"),
-        fetch_by_ann_date=fetch_income_by_f_ann_date,
-        insert=storage.insert_income,
-    )
-
-
-def update_balancesheet(storage: MarketStorage) -> None:
-    update_by_ann_date(
-        label="balancesheet",
-        get_max_ann_date=lambda: storage.get_max_f_ann_date("balancesheet_q"),
-        fetch_by_ann_date=fetch_balancesheet_by_f_ann_date,
-        insert=storage.insert_balancesheet,
-    )
-
-
-def update_cashflow(storage: MarketStorage) -> None:
-    update_by_ann_date(
-        label="cashflow",
-        get_max_ann_date=lambda: storage.get_max_f_ann_date("cashflow_q"),
-        fetch_by_ann_date=fetch_cashflow_by_f_ann_date,
-        insert=storage.insert_cashflow,
-    )
+def update_fundamentals(storage: MarketStorage) -> None:
+    """Run incremental update for income, balancesheet, and cashflow."""
+    configs = [
+        ("income", "income_q", fetch_income_by_f_ann_date, storage.insert_income),
+        ("balancesheet", "balancesheet_q", fetch_balancesheet_by_f_ann_date, storage.insert_balancesheet),
+        ("cashflow", "cashflow_q", fetch_cashflow_by_f_ann_date, storage.insert_cashflow),
+    ]
+    for label, table, fetch_fn, insert_fn in configs:
+        update_by_ann_date(
+            label=label,
+            get_max_ann_date=lambda t=table: storage.get_max_f_ann_date(t),
+            fetch_by_ann_date=fetch_fn,
+            insert=insert_fn,
+        )
 
 
 def update_dividends(storage: MarketStorage) -> None:
@@ -123,9 +112,7 @@ def main():
         update_market_daily(storage, stock_list=stock_list)
 
         print("\n=== Phase 2: income + balancesheet + cashflow ===")
-        update_income(storage)
-        update_balancesheet(storage)
-        update_cashflow(storage)
+        update_fundamentals(storage)
 
         print("\n=== Phase 3: dividends ===")
         update_dividends(storage)

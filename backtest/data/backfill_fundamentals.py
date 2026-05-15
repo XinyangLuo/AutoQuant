@@ -22,6 +22,7 @@ from backtest.data.fundamentals_fetcher import (
     fetch_cashflow_by_symbol,
     fetch_income_by_symbol,
 )
+from backtest.data._pipeline import print_stats
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
 
@@ -90,12 +91,7 @@ def main():
         backfill_fundamentals(storage, force=args.force)
 
         for name in ("income_q", "balancesheet_q", "cashflow_q"):
-            stats = storage.get_fundamentals_stats(name)
-            print("-" * 50)
-            print(f"{name}: {stats['total_rows']:,} rows, "
-                  f"{stats['total_symbols']:,} symbols, "
-                  f"{stats['min_f_ann_date']} ~ {stats['max_f_ann_date']}")
-            print("-" * 50)
+            print_stats(name, storage.get_fundamentals_stats(name), date_col="f_ann_date", prefix="f_ann ")
 
     print("\n" + "=" * 50)
     print("Fundamentals backfill complete.")

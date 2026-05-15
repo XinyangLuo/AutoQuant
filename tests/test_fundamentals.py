@@ -72,11 +72,12 @@ def check_row(db_row: pd.Series, api_df: pd.DataFrame, numeric_cols: list[str]) 
     return errors
 
 
-def sample_table(conn, table: str, n: int) -> pd.DataFrame:
-    """Sample random rows from a fundamentals table."""
+def sample_table(conn, table: str, numeric_cols: list[str], n: int) -> pd.DataFrame:
+    """Sample random rows from a fundamentals table (only key meta + numeric cols)."""
+    cols = KEY_META + numeric_cols
     try:
         return conn.execute(f"""
-            SELECT *
+            SELECT {', '.join(cols)}
             FROM {table}
             ORDER BY random()
             LIMIT ?
@@ -87,7 +88,7 @@ def sample_table(conn, table: str, n: int) -> pd.DataFrame:
 
 def test_table(conn, table: str, label: str, api_func, numeric_cols: list[str], n: int) -> tuple[int, int, list]:
     """Sample *n* rows from *table* and verify against *api_func*."""
-    sample = sample_table(conn, table, n)
+    sample = sample_table(conn, table, numeric_cols, n)
     if sample.empty:
         print(f"{label}: no data in DB. Run backfill script first.")
         return 0, 0, []

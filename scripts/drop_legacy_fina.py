@@ -8,16 +8,13 @@ Usage:
     python scripts/drop_legacy_fina.py
 """
 
-import duckdb
-
-from backtest.data.storage import DB_PATH
+from backtest.data.storage import MarketStorage
 
 
 def main():
-    conn = duckdb.connect(str(DB_PATH))
-    conn.execute("DROP TABLE IF EXISTS fina_indicator_quarterly")
+    with MarketStorage() as storage:
+        storage.conn.execute("DROP TABLE IF EXISTS fina_indicator_quarterly")
     print("Dropped fina_indicator_quarterly (if it existed).")
-    conn.close()
 
 
 if __name__ == "__main__":
