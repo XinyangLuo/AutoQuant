@@ -7,7 +7,7 @@
 ## 数据流
 
 ```
-market_daily / financial_statements_q
+market_daily / income_q / balancesheet_q / cashflow_q
     ↓
 因子模块（因子定义、计算、登记、静态评估）
     ↓
@@ -39,4 +39,4 @@ market_daily / financial_statements_q
 
 - **回测引擎与策略解耦**：策略只产出目标持仓，引擎负责成交模拟（停牌、涨跌停、成本、复权）
 - **因子晋升机制**：`factors_daily` 中被验证稳定的因子，可晋升为 `market_daily` 的一列，加速常用路径
-- **财务数据未来信息隔离（PIT）**：`financial_statements_q` 物理保留所有版本（原始 + 修正）；查询时按 `f_ann_date <= D` 过滤 + `QUALIFY ROW_NUMBER()` 取每个 `(symbol, end_date)` 的最新可见版本，正确处理业绩修正（restatement）。详见 [`backtest/data/CLAUDE.md`](data/CLAUDE.md) 的 PIT 章节
+- **财务数据未来信息隔离（PIT）**：`income_q` / `balancesheet_q` / `cashflow_q` 三张物理表各自保留所有版本（原始 + 修正）；查询时 `get_fina_snapshot(D)` 对每张表分别按 `f_ann_date <= D` 过滤 + `QUALIFY ROW_NUMBER()` 取最新可见版本，再 outer-join 成 wide DataFrame，正确处理业绩修正（restatement）及约 1% 的三表独立修正 case。详见 [`backtest/data/CLAUDE.md`](data/CLAUDE.md) 的 PIT 章节
