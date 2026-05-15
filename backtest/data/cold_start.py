@@ -23,7 +23,7 @@ from tqdm import tqdm
 
 from backtest.data._pipeline import print_stats
 from backtest.data.backfill_dividends import backfill_dividends
-from backtest.data.backfill_fina_indicator import backfill_fina
+from backtest.data.backfill_fundamentals import backfill_fundamentals
 from backtest.data.daily_fetcher import build_list_date_map, process_trade_date
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
@@ -95,9 +95,10 @@ def main():
             print("\n(test mode: skipping fina + dividends)")
             return
 
-        print("\n=== Phase 2: fina_indicator_quarterly ===")
-        backfill_fina(storage, stock_list=stock_list)
-        print_stats("fina_indicator", storage.get_fina_stats(), prefix="ann ")
+        print("\n=== Phase 2: income + balancesheet + cashflow ===")
+        backfill_fundamentals(storage, stock_list=stock_list)
+        for name in ("income_q", "balancesheet_q", "cashflow_q"):
+            print_stats(name, storage.get_fundamentals_stats(name), date_col="f_ann_date", prefix="f_ann ")
 
         print("\n=== Phase 3: dividends ===")
         backfill_dividends(storage, stock_list=stock_list)

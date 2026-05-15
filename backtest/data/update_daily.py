@@ -21,7 +21,11 @@ from tqdm import tqdm
 from backtest.data._pipeline import update_by_ann_date
 from backtest.data.daily_fetcher import build_list_date_map, process_trade_date
 from backtest.data.dividends_fetcher import fetch_dividend_by_ann_date
-from backtest.data.fina_fetcher import fetch_fina_by_ann_date
+from backtest.data.fundamentals_fetcher import (
+    fetch_balancesheet_by_f_ann_date,
+    fetch_cashflow_by_f_ann_date,
+    fetch_income_by_f_ann_date,
+)
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
@@ -74,12 +78,30 @@ def update_market_daily(storage: MarketStorage, *, stock_list: pd.DataFrame) -> 
     return True
 
 
-def update_fina(storage: MarketStorage) -> None:
+def update_income(storage: MarketStorage) -> None:
     update_by_ann_date(
-        label="fina_indicator",
-        get_max_ann_date=storage.get_max_fina_ann_date,
-        fetch_by_ann_date=fetch_fina_by_ann_date,
-        insert=storage.insert_fina,
+        label="income",
+        get_max_ann_date=lambda: storage.get_max_f_ann_date("income_q"),
+        fetch_by_ann_date=fetch_income_by_f_ann_date,
+        insert=storage.insert_income,
+    )
+
+
+def update_balancesheet(storage: MarketStorage) -> None:
+    update_by_ann_date(
+        label="balancesheet",
+        get_max_ann_date=lambda: storage.get_max_f_ann_date("balancesheet_q"),
+        fetch_by_ann_date=fetch_balancesheet_by_f_ann_date,
+        insert=storage.insert_balancesheet,
+    )
+
+
+def update_cashflow(storage: MarketStorage) -> None:
+    update_by_ann_date(
+        label="cashflow",
+        get_max_ann_date=lambda: storage.get_max_f_ann_date("cashflow_q"),
+        fetch_by_ann_date=fetch_cashflow_by_f_ann_date,
+        insert=storage.insert_cashflow,
     )
 
 
@@ -100,8 +122,10 @@ def main():
         print("\n=== Phase 1: market_daily ===")
         update_market_daily(storage, stock_list=stock_list)
 
-        print("\n=== Phase 2: fina_indicator_quarterly ===")
-        update_fina(storage)
+        print("\n=== Phase 2: income + balancesheet + cashflow ===")
+        update_income(storage)
+        update_balancesheet(storage)
+        update_cashflow(storage)
 
         print("\n=== Phase 3: dividends ===")
         update_dividends(storage)
