@@ -38,27 +38,38 @@ def compare_float(a, b, field: str, rel_tol: float = 1e-5, abs_tol: float = 1e-6
 
 
 def check_fina(db_row: pd.Series, api_df: pd.DataFrame) -> list[str]:
-    """Compare fina_indicator fields. Returns list of mismatch messages."""
+    """Compare fina_indicator fields against API. Pass if DB row matches any
+    duplicate row API returns for the same (ts_code, end_date).
+
+    Tushare occasionally returns two 0-NaN rows for the same report period
+    with materially different values; our backfill dedup picks one of them.
+    The test should accept whichever copy DB holds.
+    """
     if api_df.empty:
         return ["API fina_indicator returned no data"]
 
-    # Deduplicate: keep the row with fewest NaNs
-    api_df = api_df.copy()
-    api_df["_nan_count"] = api_df.isna().sum(axis=1)
-    api_df = api_df.sort_values("_nan_count").drop_duplicates(subset=["ts_code", "end_date"], keep="first")
-    api = api_df.iloc[0]
+    same_key = api_df[
+        (api_df["ts_code"] == db_row["symbol"])
+        & (api_df["end_date"] == db_row["end_date"])
+    ]
+    if same_key.empty:
+        return [f"no API row for {db_row['symbol']} {db_row['end_date']}"]
 
-    errors = []
-    # Check key fields: eps, roe, netprofit_margin, grossprofit_margin
     key_fields = ["eps", "roe", "netprofit_margin", "grossprofit_margin", "bps", "ocfps"]
-    for field in key_fields:
-        if field not in api:
-            continue
-        ok, msg = compare_float(db_row[field], api[field], field, rel_tol=1e-9, abs_tol=1e-6)
-        if not ok:
-            errors.append(msg)
+    candidate_errors: list[list[str]] = []
+    for _, api in same_key.iterrows():
+        errors = []
+        for field in key_fields:
+            if field not in api:
+                continue
+            ok, msg = compare_float(db_row[field], api[field], field, rel_tol=1e-9, abs_tol=1e-6)
+            if not ok:
+                errors.append(msg)
+        if not errors:
+            return []
+        candidate_errors.append(errors)
 
-    return errors
+    return min(candidate_errors, key=len)
 
 
 def main():
