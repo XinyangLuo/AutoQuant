@@ -204,4 +204,4 @@ AutoQuant/
 - [ ] `environment.yml` 实际依赖清单（tushare、pandas、pyarrow、duckdb、anthropic、claude-agent-sdk、…）
 - [ ] 是否启用 `pyproject.toml`（建议是，便于 `pip install -e .`）
 
-**已敲定**：DuckDB 双表设计——主表 `market_daily`（主键 `(date, symbol)`、按 `date` 分区、日更只 append、回测主用）+ 因子表 `factors_daily`（长表 `(date, symbol, factor_name, value)`、研究主用、稳定因子可晋升回主表）；parquet（分钟级、回测产出）；Claude Agent SDK；交易模块第一阶段仅信号推送 + 仓位跟踪；静态因子评估 IC/RankIC/ICIR；绩效核心指标 Sharpe/年化/波动/最大回撤。
+**已敲定**：DuckDB 四表设计——`market_daily`（日行情，主键 `(date, symbol)`，回测主用）+ `factors_daily`（因子长表 `(date, symbol, factor_name, value)`，研究主用，稳定因子可晋升回 `market_daily`）+ `financial_statements_q`（`pro.income` + `pro.balancesheet` + `pro.cashflow` 合并表，主键 `(symbol, end_date, f_ann_date)`，物理保留所有版本，查询时按 `f_ann_date <= D` + `QUALIFY` 做 PIT 隔离）+ `dividends`（分红事件，主键 `(symbol, end_date)`，仅 `div_proc='实施'`）；parquet（分钟级、回测产出）；Claude Agent SDK；交易模块第一阶段仅信号推送 + 仓位跟踪；静态因子评估 IC/RankIC/ICIR；绩效核心指标 Sharpe/年化/波动/最大回撤。

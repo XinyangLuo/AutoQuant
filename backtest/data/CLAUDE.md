@@ -16,67 +16,25 @@
 - 加新因子**零 schema 变化**
 - 多因子组合时 pivot 成宽表给策略/引擎
 
-### `fina_indicator_quarterly`（财务指标季度表）
+### `financial_statements_q`（三大财报合并表，财务因子主用）
 
-- **数据源**：Tushare `pro.fina_indicator`（108 列衍生指标），不走原始三表
-- **Schema**：`(symbol VARCHAR, end_date VARCHAR, ann_date VARCHAR, eps DOUBLE, roe DOUBLE, ...)`
-- **主键**：`(symbol, end_date)`
-- `end_date` / `ann_date` 为 `YYYYMMDD` 字符串，避免日期解析
-
-## Fetch/Merge 模式
-
-日频数据（`market_daily`）的流水线：
-
-```
-pro.daily → DataFrame
-pro.adj_factor → DataFrame → pandas merge (LEFT JOIN on date+symbol)
-pro.stock_st → DataFrame → merge
-pro.stk_limit → DataFrame → merge
-pro.daily_basic → DataFrame → merge
-→ 统一宽 DataFrame → UPSERT INTO market_daily
-```
-
-- 每个数据源**单独 fetch**，然后**pandas left-merge**
-- 空响应自动填充 None/False，不中断流水线
-
-## 增量更新
-
-| 表 | 增量方式 | 对齐依据 |
-|---|---|---|
-| `market_daily` | 按交易日历，从 `MAX(date)+1` 开始 | 交易日历 |
-| `fina_indicator_quarterly` | 按 `start_ann_date`，只拉新公告的报表 | 公告日期 |
-
-## 回填约定
-
-- **不走 pandas 全量重跑**。只 fetch 目标数据源，写入 DuckDB 临时表，通过 SQL `INSERT ... ON CONFLICT DO UPDATE SET target_col = EXCLUDED.target_col` 只更新目标列
-- `insert_daily()` 为**动态列模式**：DataFrame 有什么列就 INSERT/UPDATE 什么列，其他列不动
-- 适用于：新增列的历史回填、部分列的修复重跑
-
-## 去重与修正
-
-### `fina_indicator` 重复行
-
-- Tushare 对同一 `(ts_code, end_date)` 可能返回 **2 行**
-- 大部分是 100% 相同重复，少数是部分 NaN 的不完整记录
-- **入库前必须去重**：
-  ```python
-  df = df.drop_duplicates(subset=["ts_code", "end_date"])
-  df["_nan_count"] = df.isna().sum(axis=1)
-  df = df.sort_values("_nan_count").drop_duplicates(subset=["ts_code", "end_date"], keep="first")
-  df = df.drop(columns=["_nan_count"])
+- **数据源**：Tushare `pro.income` + `pro.balancesheet` + `pro.cashflow` 三表 LEFT JOIN。**不**使用 `pro.fina_indicator`（该表丢失 `update_flag` / `f_ann_date`，无法做合法 PIT 隔离）
+- **入库过滤**：只保留 `report_type=1`（合并报表）。其它口径（母公司、调整版）当前不入库
+- **主键**：`(symbol, end_date, f_ann_date)`
+- **Schema（共享 key 在前，三表派生列加前缀避免冲突）**：
   ```
-
-### 修正问题
-
-- Tushare 对同一报告期**只保留最终修正版**，不存在旧版记录
-- `income`/`balancesheet` 虽有 `f_ann_date`，但实测 `ann_date == f_ann_date`
-- 回测引擎在日期 D 只能查 `ann_date <= D` 的报表
-
-## 未来信息隔离
-
-- 离线因子计算时只使用 `ann_date <= 当前日期` 的财务数据
-- 计算结果连同 `ann_date` 一起写入**独立的财务因子表**
-- 回测引擎按 `ann_date <= 回测日期` 过滤使用
+  symbol, end_date, ann_date, f_ann_date,
+  update_flag,        -- '0' 原始 / '1' 修正
+  comp_type, end_type,
+  inc_total_revenue, inc_n_income, inc_n_income_attr_p, inc_basic_eps, ... (~80 列)
+  bs_total_assets, bs_total_liab, bs_total_hldr_eqy_inc_min_int, ...     (~120 列)
+  cf_n_cashflow_act, cf_n_cashflow_inv_act, cf_free_cashflow, ...        (~70 列)
+  ```
+- **版本语义**：
+  - `update_flag='0'`：原始公告，`ann_date == f_ann_date`
+  - `update_flag='1'`：修正版，`ann_date` 仍为原始公告日，`f_ann_date` 为修正日（可能晚 1~5 年）
+  - 同一 `(symbol, end_date)` 可能有 1 行（无修正）或 2+ 行（每次修正多一行）
+- **物理表保留所有版本，不在存储层去重**——可溯源、可回放历史。"D 日只看一条"的语义放在查询视图层（见后文 PIT 章节）
 
 ### `dividends`（分红送股事件表）
 
@@ -89,67 +47,94 @@ pro.daily_basic → DataFrame → merge
 
 ## Fetch/Merge 模式
 
-日频数据（`market_daily`）的流水线：
+### 日频数据 (`market_daily`)
 
 ```
-pro.daily → DataFrame
-pro.adj_factor → DataFrame → pandas merge (LEFT JOIN on date+symbol)
-pro.stock_st → DataFrame → merge
-pro.stk_limit → DataFrame → merge (列名 up_limit/down_limit → rename 为 limit_up/limit_down)
-pro.daily_basic → DataFrame → merge
+pro.daily        → DataFrame
+pro.adj_factor   → DataFrame → pandas merge (LEFT JOIN on date+symbol)
+pro.stock_st     → DataFrame → merge
+pro.stk_limit    → DataFrame → merge（列名 up_limit/down_limit → rename 为 limit_up/limit_down）
+pro.daily_basic  → DataFrame → merge
 → 统一宽 DataFrame → UPSERT INTO market_daily
 ```
 
 - 每个数据源**单独 fetch**，然后**pandas left-merge**
 - 空响应自动填充 None/False，不中断流水线
-- **注意列名映射**：`pro.stk_limit` 返回 `up_limit`/`down_limit`，merge 后需 rename 为 `limit_up`/`limit_down` 以匹配 `DAILY_COLUMNS`
+- **列名映射**：`pro.stk_limit` 返回 `up_limit`/`down_limit`，需 rename 为 `limit_up`/`limit_down` 以匹配 `DAILY_COLUMNS`
+
+### 财务数据 (`financial_statements_q`)
+
+```
+pro.income(report_type=1)       → DataFrame  → 列加前缀 inc_*
+pro.balancesheet(report_type=1) → DataFrame  → 列加前缀 bs_*
+pro.cashflow(report_type=1)     → DataFrame  → 列加前缀 cf_*
+→ pandas merge ON (symbol, end_date, ann_date, f_ann_date, update_flag)
+  共享 key 列（symbol/end_date/ann_date/f_ann_date/update_flag/comp_type/end_type）不加前缀
+→ 单宽 DataFrame
+→ UPSERT INTO financial_statements_q ON CONFLICT (symbol, end_date, f_ann_date)
+```
+
+- **不去重**：三表的多版本（原始 + 修正）全部保留，由 PK `(symbol, end_date, f_ann_date)` 自然区分
+- **三表 ann_date / f_ann_date 通常一致**（同次公告同时披露），少数年份的 cashflow 修正可能单独发生 → merge 时按全部 key 严格对齐，缺一方的行用 NaN 填充
+- **修正版数据特征**：`f_ann_date > ann_date`，且 ann_date 一定等于已有原始版的 ann_date
 
 ## 增量更新
 
 | 表 | 增量方式 | 对齐依据 |
 |---|---|---|
 | `market_daily` | 按交易日历，从 `MAX(date)+1` 开始 | 交易日历 |
-| `fina_indicator_quarterly` | 按 `start_ann_date`，只拉新公告的报表 | 公告日期 |
+| `financial_statements_q` | 按 `f_ann_date` 游标，从 `MAX(f_ann_date)` 起扫到今天 | 实际见报日（含修正） |
 | `dividends` | 每日查 `ex_date=today` 和 `ann_date=today` | 除权日/公告日 |
+
+**注意**：财务表必须以 `f_ann_date` 而非 `ann_date` 为增量游标——只有 `f_ann_date` 能捕获多年后回头发布的修正版（修正版的 `ann_date` 是当年的旧日期，按 `ann_date` 排序会被认为"早已拉过"而漏掉）。
 
 ## 回填约定
 
 - **不走 pandas 全量重跑**。只 fetch 目标数据源，写入 DuckDB 临时表，通过 SQL `INSERT ... ON CONFLICT DO UPDATE SET target_col = EXCLUDED.target_col` 只更新目标列
-- `insert_daily()` 为**动态列模式**：DataFrame 有什么列就 INSERT/UPDATE 什么列，其他列不动
+- `insert_daily()` / `insert_fundamentals()` 为**动态列模式**：DataFrame 有什么列就 INSERT/UPDATE 什么列，其他列不动
 - 适用于：新增列的历史回填、部分列的修复重跑
 
-## 去重与修正
+## 业绩修正与 PIT（point-in-time）
 
-### `fina_indicator` 重复行
+A 股上市公司可在原始年报发布后多年回头修正报表。典型案例：**300237.SZ 在 2022-06-28 修正了 2018 年报，净利润从 3.79 亿下修到 4116 万**，跨度 3 年多。Tushare 在 `income`/`balancesheet`/`cashflow` 三个原始表里通过 `update_flag` 和 `f_ann_date` 暴露了这一事实，但在派生表 `fina_indicator` 里把这两个字段都丢了——这是我们放弃 `fina_indicator` 的根因。
 
-- Tushare 对同一 `(ts_code, end_date)` 可能返回 **2 行**
-- 大部分是 100% 相同重复，少数是部分 NaN 的不完整记录
-- **入库前必须去重**：
-  ```python
-  df = df.drop_duplicates(subset=["ts_code", "end_date"])
-  df["_nan_count"] = df.isna().sum(axis=1)
-  df = df.sort_values("_nan_count").drop_duplicates(subset=["ts_code", "end_date"], keep="first")
-  df = df.drop(columns=["_nan_count"])
-  ```
+**字段语义：**
 
-### 修正问题
+- `ann_date` = 原始公告日（任何版本都不变）
+- `f_ann_date` = 该版本的实际见报日：原始版 `== ann_date`，修正版 `>= ann_date`
+- `update_flag` = `'0'` 原始 / `'1'` 修正
 
-- Tushare 对同一报告期**只保留最终修正版**，不存在旧版记录
-- `income`/`balancesheet` 虽有 `f_ann_date`，但实测 `ann_date == f_ann_date`
-- 回测引擎在日期 D 只能查 `ann_date <= D` 的报表
+**正确的因子取数 / 回测取数要满足两条**：
 
-## 未来信息隔离
+1. 只看 `f_ann_date <= D` 的行（D 日真实可见的版本）
+2. 同一 `(symbol, end_date)` 多版本时，取 `f_ann_date` 最大的那条（D 日"最新已知"的事实）
 
-- 离线因子计算时只使用 `ann_date <= 当前日期` 的财务数据
-- 计算结果连同 `ann_date` 一起写入**独立的财务因子表**
-- 回测引擎按 `ann_date <= 回测日期` 过滤使用
+**实现为单条 SQL**（DuckDB 的 `QUALIFY`）：
+
+```sql
+SELECT *
+FROM financial_statements_q
+WHERE f_ann_date <= ?            -- ① 隔离未来信息
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY symbol, end_date
+    ORDER BY f_ann_date DESC      -- ② 取最新可见版本
+) = 1
+```
+
+- **查询时跑，不修改物理表**。存储层永远保留全部版本，可溯源、可回放任意历史 D
+- DuckDB 原生支持 `QUALIFY`，免 CTE / 子查询
+- 全市场 ~5500 股 × ~70 季度 ≈ 38 万行，单次查询 < 100ms 量级
+
+**对派生因子的影响**：离线计算财务因子时，先按上面 SQL 拿到 D 日快照，再算因子，结果连同 `ann_date` / `f_ann_date` 一并写入因子表（便于二次审计与回放）。
 
 ## 对外接口
 
 ```python
-get_panel(date, columns=[...])           # 主表某日横截面
-get_bars(symbols, start, end, columns=[...])  # 主表时序
-get_fina(symbol, end_date)               # 财务指标单条
-get_factor(factor_name, start, end)      # 因子表单因子时序
-get_factor_panel(factor_names, date)     # 因子表 pivot 宽表
+get_panel(date, columns=[...])                                # market_daily 横截面
+get_bars(symbols, start, end, columns=[...])                  # market_daily 时序
+get_fina_snapshot(as_of_date, symbols=None, columns=None)     # D 日财报快照（PIT 安全），
+                                                              # 自动应用 f_ann_date 过滤 + QUALIFY
+get_factor(factor_name, start, end)                           # 因子表单因子时序
+get_factor_panel(factor_names, date)                          # 因子表 pivot 宽表
+get_dividend(symbol, start, end)                              # 分红事件
 ```

@@ -7,7 +7,7 @@
 ## 数据流
 
 ```
-market_daily / fina_indicator_quarterly
+market_daily / financial_statements_q
     ↓
 因子模块（因子定义、计算、登记、静态评估）
     ↓
@@ -22,7 +22,7 @@ market_daily / fina_indicator_quarterly
 
 | 流向 | 提供方 | 消费方 | 形式 | 要点 |
 |---|---|---|---|---|
-| 原始数据 | 数据模块 | 因子/策略/引擎 | Python API (`get_panel` / `get_bars` / `get_fina`) | 数据模块不感知上层逻辑 |
+| 原始数据 | 数据模块 | 因子/策略/引擎 | Python API (`get_panel` / `get_bars` / `get_fina_snapshot`) | 数据模块不感知上层逻辑 |
 | 因子宽表 | 因子模块 | 策略模块 | DataFrame `(date, symbol, f1, f2, ...)` | 策略只读因子值，不做计算 |
 | 目标持仓 | 策略模块 | 回测引擎 | DataFrame `(date, symbol, target_weight)` | 策略不关心成交细节 |
 | 交易日志 | 回测引擎 | 分析模块 | `trades.parquet` / `positions.parquet` / `nav.parquet` | 分析纯消费，不修改 |
@@ -39,4 +39,4 @@ market_daily / fina_indicator_quarterly
 
 - **回测引擎与策略解耦**：策略只产出目标持仓，引擎负责成交模拟（停牌、涨跌停、成本、复权）
 - **因子晋升机制**：`factors_daily` 中被验证稳定的因子，可晋升为 `market_daily` 的一列，加速常用路径
-- **财务数据未来信息隔离**：财务因子计算和回测时都按 `ann_date` 过滤，避免泄露
+- **财务数据未来信息隔离（PIT）**：`financial_statements_q` 物理保留所有版本（原始 + 修正）；查询时按 `f_ann_date <= D` 过滤 + `QUALIFY ROW_NUMBER()` 取每个 `(symbol, end_date)` 的最新可见版本，正确处理业绩修正（restatement）。详见 [`backtest/data/CLAUDE.md`](data/CLAUDE.md) 的 PIT 章节
