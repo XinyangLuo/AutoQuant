@@ -30,10 +30,53 @@ market_daily / income_q / balancesheet_q / cashflow_q
 ## 各子模块一句话定位
 
 - **数据模块**：把外部数据拉到本地，建立可重放、可增量更新的数据池。详见 [`backtest/data/CLAUDE.md`](data/CLAUDE.md)。
-- **因子模块**：定义、计算、登记、静态评估因子。因子值写入 `factors_daily` 长表；稳定因子可"晋升"回 `market_daily`。
-- **策略模块**：把因子组合成可执行的策略，**只输出每日目标持仓**。
-- **回测引擎**：把策略目标持仓 + 成本模型 → 真实成交序列与净值曲线。日频先行，T+1，A 股规则。
+- **因子模块**：定义、计算、登记、静态评估因子。因子值写入 `factors_daily` 长表；稳定因子可"晋升"回 `market_daily`。详见 [`backtest/factor/CLAUDE.md`](factor/CLAUDE.md)。
+- **策略模块**：把因子组合成可执行的策略，**只输出每日目标持仓**。详见 [`backtest/strategy/CLAUDE.md`](strategy/CLAUDE.md)。
+- **回测引擎**：把策略目标持仓 + 成本模型 → 成交序列与净值曲线。日频先行，T+1，A 股规则。
 - **分析模块**：从回测产出反推策略质量。绩效指标 + 归因 + 可视化。
+
+## 策略模块与引擎的交互细节
+
+### 策略输出格式
+
+```python
+signals: pd.DataFrame = strategy.run(start_date, end_date)
+# columns: [date, symbol, target_weight]
+# - date: 目标持仓生效日（已含 delay=1，即 T日信号 → T+1日生效）
+# - symbol: 股票代码
+# - target_weight: 目标权重（可正可负，sum 不一定为 1）
+```
+
+### 引擎输入与处理
+
+```python
+engine.run_backtest(
+    signals=signals,
+    start_date="20200101",
+    end_date="20241231",
+    initial_cash=1e8,
+    commission_rate=0.0003,
+    slippage=0.001,
+)
+```
+
+引擎内部逐日处理：
+1. 按 `date` groupby，逐日读取目标持仓
+2. 对每只股票检查当日是否可交易：
+   - **停牌**：不可买也不可卖
+   - **涨停**（`close >= limit_up` 且前日非涨停）：不可买入
+   - **跌停**（`close <= limit_down` 且前日非跌停）：不可卖出
+3. 不可交易的标的从目标持仓中剔除
+4. 剩余可交易标的重新归一化权重
+5. 按当日收盘价（或 vwap）成交，记录交易日志
+6. T+1 日持仓生效（A股 T+1 规则）
+7. 输出 `trades.parquet` / `positions.parquet` / `nav.parquet`
+
+### 关键设计原则
+
+- **策略与引擎解耦**：策略只产出"理想持仓"，引擎负责"能不能成交"
+- **涨停跌停属于未来信息**：策略计算时**不知道**明天哪只涨停，因此策略层**不处理**涨跌停过滤；引擎在执行日根据当日行情判断是否可交易
+- **Delay = 1**：T日收盘后根据T日已知信息（因子值、行情）计算信号，产出 T+1 日目标持仓。这是 A 股 T+1 的最小可行延迟
 
 ## 关键设计决策
 
