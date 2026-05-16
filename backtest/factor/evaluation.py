@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.data.storage import MarketStorage
+from backtest.factor.registry import get_registry
 from backtest.factor.storage import FactorStorage
 
 
@@ -167,19 +168,29 @@ def _corr_with_existing(
     storage: FactorStorage,
     top_k: int = 5,
 ) -> pd.DataFrame:
-    """Average daily cross-sectional rank correlation with every other factor.
+    """Average daily cross-sectional rank correlation with *admitted* factors only.
 
-    Used to flag near-duplicate factors at evaluation time — if the maximum
-    absolute correlation is above ~0.9, the new factor probably duplicates an
-    existing one and shouldn't be admitted to the library. Pass ``top_k=0``
-    to skip the comparison entirely.
+    Only factors with ``status='admitted'`` in the registry participate in the
+    comparison. Rejected / pending factors are ignored — their data may have
+    been purged from ``factors_daily`` anyway.
+
+    Pass ``top_k=0`` to skip the comparison entirely.
     """
     if top_k <= 0 or factor_df.empty:
         return pd.DataFrame(columns=_CORR_COLUMNS)
 
+    admitted = {
+        fid for fid, meta in get_registry().items()
+        if meta.get("status") == "admitted" and fid != factor_id
+    }
+    if not admitted:
+        return pd.DataFrame(columns=_CORR_COLUMNS)
+
     start = factor_df["date"].min().strftime("%Y%m%d")
     end = factor_df["date"].max().strftime("%Y%m%d")
-    others = storage.get_factors_long(start=start, end=end, exclude=factor_id)
+    others = storage.get_factors_long(
+        factor_ids=list(admitted), start=start, end=end
+    )
     if others.empty:
         return pd.DataFrame(columns=_CORR_COLUMNS)
 
