@@ -19,6 +19,7 @@ from backtest.data.storage import MarketStorage
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.trade_calendar import get_trade_dates
 from backtest.factor.compute import compute_factor
+from backtest.factor.admission import get_admitted_factor_ids, get_pending_factor_ids
 from backtest.factor.registry import get_registry
 from backtest.factor.storage import FactorStorage
 
@@ -65,12 +66,14 @@ def _get_earliest_start_date(stock_list: pd.DataFrame) -> str:
 def main():
     parser = argparse.ArgumentParser(description="Backfill factor values")
     parser.add_argument("factor_id", nargs="?", help="Factor ID to backfill (e.g. f_001)")
-    parser.add_argument("--all", action="store_true", help="Backfill all registered factors")
+    parser.add_argument("--all", action="store_true", help="Backfill all admitted factors")
+    parser.add_argument("--all-statuses", action="store_true", help="Backfill all registered factors regardless of status")
+    parser.add_argument("--pending", action="store_true", help="Backfill only pending (unevaluated) factors")
     parser.add_argument("--test-days", type=int, default=None, help="Only backfill last N trade days")
     args = parser.parse_args()
 
-    if not args.all and not args.factor_id:
-        parser.error("Specify either --all or a factor_id")
+    if not args.all and not args.all_statuses and not args.pending and not args.factor_id:
+        parser.error("Specify --all, --all-statuses, --pending, or a factor_id")
 
     stock_list = fetch_stock_list()
     earliest_date = _get_earliest_start_date(stock_list)
@@ -94,11 +97,14 @@ def main():
 
         print(f"Backfill range: {start_date} ~ {end_date}")
 
-        if args.all:
-            registry = get_registry()
-            factor_ids = list(registry.keys())
-        else:
+        if args.factor_id:
             factor_ids = [args.factor_id]
+        elif args.all_statuses:
+            factor_ids = list(get_registry().keys())
+        elif args.pending:
+            factor_ids = get_pending_factor_ids()
+        else:  # --all (default)
+            factor_ids = get_admitted_factor_ids()
 
         if not factor_ids:
             print("No factors registered.")

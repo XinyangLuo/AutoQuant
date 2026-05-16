@@ -15,6 +15,7 @@ from tqdm import tqdm
 from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
 from backtest.factor.compute import compute_factor
+from backtest.factor.admission import get_admitted_factor_ids
 from backtest.factor.registry import get_registry
 from backtest.factor.storage import FactorStorage
 
@@ -26,13 +27,13 @@ def main():
             print("market_daily is empty. Run cold_start first.")
             return
 
-        registry = get_registry()
-        if not registry:
-            print("No factors registered.")
+        factor_ids = get_admitted_factor_ids()
+        if not factor_ids:
+            print("No admitted factors found. Run admission gate first.")
             return
 
         with FactorStorage() as factor_storage:
-            for factor_id in tqdm(list(registry.keys()), desc="update"):
+            for factor_id in tqdm(factor_ids, desc="update"):
                 max_date = factor_storage.get_max_date(factor_id)
 
                 if max_date and max_date >= latest_date:

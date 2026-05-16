@@ -23,7 +23,7 @@ def _load_factor_and_returns(
     horizons: list[int],
     ret_type: str = "close",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load factor values and compute forward returns."""
+    """Load factor values, compute forward returns, and load limit prices for filtering."""
     with FactorStorage() as fs:
         factor_df = fs.get_factor(factor_id, start, end)
 
@@ -47,7 +47,15 @@ def _load_factor_and_returns(
 
     # Compute forward returns for all horizons in one pass
     returns_df = _compute_forward_returns(market_df, horizons, ret_type)
-    return factor_df, returns_df
+
+    # Extract limit prices for limit-up filtering
+    limit_cols = ["date", "symbol", "close", "open", "limit_up"]
+    if all(c in market_df.columns for c in limit_cols):
+        limit_df = market_df[limit_cols].copy()
+    else:
+        limit_df = pd.DataFrame(columns=limit_cols)
+
+    return factor_df, returns_df, limit_df
 
 
 def _compute_forward_returns(
@@ -248,6 +256,46 @@ class EvaluationResult:
         return f"EvaluationResult({self.factor_id}, ret_type={self.ret_type}, horizons={self.horizons})"
 
 
+_LIMIT_EPS = 1e-6
+
+
+def _exclude_limit_up(
+    merged: pd.DataFrame,
+    limit_df: pd.DataFrame,
+    ret_type: str,
+) -> pd.DataFrame:
+    """Drop rows where execution is blocked by limit-up.
+
+    - close-to-close: exclude if close_t >= limit_up_t (can't buy at close)
+    - open-to-open  : exclude if open_{t+1} >= limit_up_{t+1} (can't buy at next open)
+    """
+    if limit_df.empty:
+        return merged
+
+    if ret_type == "close":
+        limit_sub = limit_df[["date", "symbol", "close", "limit_up"]]
+        merged = merged.merge(limit_sub, on=["date", "symbol"], how="left")
+        mask = merged["close"] < merged["limit_up"] - _LIMIT_EPS
+        n_dropped = int((~mask).sum())
+        merged = merged[mask].drop(columns=["close", "limit_up"], errors="ignore")
+    else:  # open
+        # Get T+1 open and limit_up via groupby shift (trading-day aligned)
+        sorted_limits = limit_df.sort_values(["symbol", "date"])
+        sorted_limits["next_open"] = sorted_limits.groupby("symbol")["open"].shift(-1)
+        sorted_limits["next_limit_up"] = sorted_limits.groupby("symbol")["limit_up"].shift(-1)
+        next_day = sorted_limits[["date", "symbol", "next_open", "next_limit_up"]]
+        merged = merged.merge(next_day, on=["date", "symbol"], how="left")
+        mask = merged["next_open"] < merged["next_limit_up"] - _LIMIT_EPS
+        n_dropped = int((~mask).sum())
+        merged = merged[mask].drop(
+            columns=["next_open", "next_limit_up"], errors="ignore"
+        )
+
+    if n_dropped > 0:
+        print(f"  Excluded {n_dropped:,} limit-up rows ({ret_type})")
+    return merged
+
+
 def evaluate(
     factor_id: str,
     start: str,
@@ -257,6 +305,7 @@ def evaluate(
     ret_type: str = "close",
     n_groups: int = 10,
     corr_top_k: int = 5,
+    exclude_limit_up: bool = True,
 ) -> EvaluationResult:
     """Evaluate a factor's predictive power.
 
@@ -266,17 +315,29 @@ def evaluate(
     ``corr_top_k`` rows. Pass ``corr_top_k=0`` to skip the correlation step.
     Use :meth:`EvaluationResult.max_corr` to gate factor admission against
     duplicates.
+
+    Parameters
+    ----------
+    exclude_limit_up : bool, default True
+        For ``ret_type='close'``, drop rows where the signal-day close hits
+        limit-up (unbuyable). For ``ret_type='open'``, drop rows where the
+        next-day open hits limit-up.
     """
     if horizons is None:
         horizons = DEFAULT_HORIZONS
 
-    factor_df, returns_df = _load_factor_and_returns(
+    factor_df, returns_df, limit_df = _load_factor_and_returns(
         factor_id, start, end, horizons, ret_type
     )
 
     merged = factor_df.merge(returns_df, on=["date", "symbol"], how="inner")
     if merged.empty:
         raise ValueError("No overlapping dates between factor and returns")
+
+    if exclude_limit_up:
+        merged = _exclude_limit_up(merged, limit_df, ret_type)
+        if merged.empty:
+            raise ValueError("All rows excluded by limit-up filter")
 
     ic_metrics = {}
     rank_ic_metrics = {}
@@ -385,6 +446,11 @@ def main():
         default=5,
         help="Number of most-correlated existing factors to report (0 to skip)",
     )
+    parser.add_argument(
+        "--no-exclude-limit-up",
+        action="store_true",
+        help="Do NOT exclude limit-up rows from the evaluation",
+    )
     args = parser.parse_args()
 
     horizons = [int(h.strip()) for h in args.horizons.split(",")]
@@ -396,6 +462,7 @@ def main():
         horizons=horizons,
         ret_type=args.ret_type,
         corr_top_k=args.corr_top_k,
+        exclude_limit_up=not args.no_exclude_limit_up,
     )
     print_evaluation(result)
 

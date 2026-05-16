@@ -19,6 +19,13 @@ rank, z_score
     Common operators for use inside factor compute functions.
 """
 
+from backtest.factor.admission import (
+    admit,
+    get_admitted_factor_ids,
+    get_pending_factor_ids,
+    get_rejected_factor_ids,
+    print_admission,
+)
 from backtest.factor.compute import compute_factor, compute_all
 from backtest.factor.evaluation import evaluate, print_evaluation
 from backtest.factor.registry import (
@@ -37,6 +44,11 @@ __all__ = [
     "get_factor_meta",
     "get_factor_function",
     "list_factors",
+    "admit",
+    "get_admitted_factor_ids",
+    "get_pending_factor_ids",
+    "get_rejected_factor_ids",
+    "print_admission",
     "compute_factor",
     "compute_all",
     "evaluate",
