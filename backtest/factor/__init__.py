@@ -9,10 +9,14 @@ compute_factor(factor_id, start_date, end_date, ...)
     Compute a single factor for a date range.
 
 evaluate(factor_id, start, end, *, horizons, ret_type)
-    Offline evaluation: IC / RankIC / ICIR / turnover / decay / group returns.
+    Offline evaluation: IC / RankIC / ICIR / turnover / decay / group returns,
+    plus cross-sectional rank correlation against existing factors.
 
 FactorStorage
     DuckDB wrapper for factors.duckdb (read / write / query).
+
+rank, z_score
+    Common operators for use inside factor compute functions.
 """
 
 from backtest.factor.compute import compute_factor, compute_all
@@ -25,6 +29,7 @@ from backtest.factor.registry import (
     register,
 )
 from backtest.factor.storage import FactorStorage
+from backtest.factor.transforms import rank, z_score
 
 __all__ = [
     "register",
@@ -37,4 +42,6 @@ __all__ = [
     "evaluate",
     "print_evaluation",
     "FactorStorage",
+    "rank",
+    "z_score",
 ]

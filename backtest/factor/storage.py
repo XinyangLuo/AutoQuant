@@ -149,6 +149,47 @@ class FactorStorage:
             return df
         return df.pivot(index=["date", "symbol"], columns="factor_id", values="value").reset_index()
 
+    def get_factors_long(
+        self,
+        factor_ids: list[str] | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        exclude: str | None = None,
+    ) -> pd.DataFrame:
+        """Return long-form factor values across multiple factors and dates.
+
+        One DuckDB round-trip instead of one per factor. Used by evaluation's
+        correlation check to avoid an N+1 query as the library grows.
+
+        Returns DataFrame with columns [date, symbol, factor_id, value].
+        """
+        conditions: list[str] = []
+        params: list = []
+
+        if factor_ids:
+            placeholders = ", ".join("?" for _ in factor_ids)
+            conditions.append(f"factor_id IN ({placeholders})")
+            params.extend(factor_ids)
+        if exclude:
+            conditions.append("factor_id != ?")
+            params.append(exclude)
+        if start:
+            conditions.append("date >= strptime(?, '%Y%m%d')::DATE")
+            params.append(start)
+        if end:
+            conditions.append("date <= strptime(?, '%Y%m%d')::DATE")
+            params.append(end)
+
+        where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        sql = f"""
+            SELECT date, symbol, factor_id, value
+            FROM factors_daily
+            {where_clause}
+            ORDER BY factor_id, date, symbol
+        """
+        return self.conn.execute(sql, params).fetchdf()
+
     # -- stats ----------------------------------------------------------------
 
     def get_max_date(self, factor_id: str) -> str | None:

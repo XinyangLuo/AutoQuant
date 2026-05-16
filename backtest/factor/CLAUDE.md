@@ -12,9 +12,10 @@ backtest/factor/
 ├── registry.py              # 因子注册/查询/元数据管理
 ├── compute.py               # 因子计算引擎（批量窗口 + PIT隔离）
 ├── storage.py               # FactorStorage: DuckDB factors.duckdb 读写
+├── transforms.py            # 通用算子: rank() 截面归一化、z_score() 时序标准化
 ├── backfill.py              # 统一回补 CLI
 ├── update.py                # 统一增量更新 CLI
-├── evaluation.py            # 离线评测: IC/RankIC/ICIR/turnover/decay/group_return
+├── evaluation.py            # 离线评测: IC/RankIC/ICIR/turnover/decay/group_return + 与现有因子相关性
 └── builtin/
     ├── __init__.py
     └── momentum.py          # 示例因子: 20日动量 (f_001)
@@ -54,6 +55,34 @@ def momentum_20d(panel: pd.DataFrame) -> pd.Series:
 - **行情因子**：`get_bars(end_date=date)` 天然只返回 `<= date` 的数据
 - **财务因子**：必须通过 `get_fina_snapshot(as_of_date=date)`，已封装 `f_ann_date <= date` + `QUALIFY ROW_NUMBER()`
 - **核心原则**：因子计算函数**不直接访问数据库**，统一由 `compute.py` 注入 panel 数据
+
+### 通用算子（transforms.py）
+
+为减少重复代码、统一规范，常用变换在 `backtest.factor.transforms` 中提供：
+
+```python
+from backtest.factor import rank, z_score
+
+# 截面归一化到 [0, 1]，参考 WorldQuant BRAIN 的 rank()
+# 公式: (rank - 1) / (N - 1)，ties 取平均秩
+ranked = rank(raw_series)             # 升序，最大值 → 1
+ranked_desc = rank(raw_series, ascending=False)
+
+# 时序 z-score，每个 symbol 按 window 滚动
+z = z_score(raw_series, window=60)
+z_lenient = z_score(raw_series, window=60, min_periods=20)
+```
+
+输入与输出均为 MultiIndex `(date, symbol)` 的 `pd.Series`——即因子函数的标准返回类型。在因子函数末尾调用即可，例如：
+
+```python
+@register("f_010", name="momentum_rank_20d", ...)
+def momentum_rank_20d(panel, window=20):
+    df = panel[["date", "symbol", "close"]].copy()
+    df = df.sort_values(["symbol", "date"])
+    df["raw"] = df.groupby("symbol")["close"].pct_change(window)
+    return rank(df.set_index(["date", "symbol"])["raw"])
+```
 
 ### 存储
 
@@ -124,6 +153,9 @@ print(result.summary())
 | **Turnover** | 相邻两期因子排名的换手率 |
 | **Decay** | 不同 horizon 的 IC 衰减曲线 |
 | **分组收益** | 按因子值分10组，检验单调性 |
+| **与现有因子相关性** | 逐日截面 RankIC（与 `factors_daily` 中每个其他因子配对），按日均值排序输出 top-K；用 `result.max_corr()` 取最大值，避免相似因子重复入库 |
+
+`evaluate(...)` 默认计算所有现有因子的相关性，可用 `include_corr=False` 关闭；CLI 同步提供 `--no-corr` / `--corr-top-k N`。
 
 ## 与数据模块的交互
 

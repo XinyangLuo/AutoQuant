@@ -13,6 +13,7 @@ from backtest.factor.storage import FactorStorage
 
 
 DEFAULT_HORIZONS = [1, 5, 10, 20, 60]
+_CORR_COLUMNS = ["factor_id", "corr", "n_dates"]
 
 
 def _load_factor_and_returns(
@@ -152,6 +153,52 @@ def _group_returns(
     return grouped
 
 
+def _corr_with_existing(
+    factor_df: pd.DataFrame,
+    factor_id: str,
+    storage: FactorStorage,
+    top_k: int = 5,
+) -> pd.DataFrame:
+    """Average daily cross-sectional rank correlation with every other factor.
+
+    Used to flag near-duplicate factors at evaluation time — if the maximum
+    absolute correlation is above ~0.9, the new factor probably duplicates an
+    existing one and shouldn't be admitted to the library. Pass ``top_k=0``
+    to skip the comparison entirely.
+    """
+    if top_k <= 0 or factor_df.empty:
+        return pd.DataFrame(columns=_CORR_COLUMNS)
+
+    start = factor_df["date"].min().strftime("%Y%m%d")
+    end = factor_df["date"].max().strftime("%Y%m%d")
+    others = storage.get_factors_long(start=start, end=end, exclude=factor_id)
+    if others.empty:
+        return pd.DataFrame(columns=_CORR_COLUMNS)
+
+    merged = others.merge(
+        factor_df[["date", "symbol", "value"]].rename(columns={"value": "value_self"}),
+        on=["date", "symbol"],
+        how="inner",
+    )
+    if merged.empty:
+        return pd.DataFrame(columns=_CORR_COLUMNS)
+
+    daily = merged.groupby(["factor_id", "date"]).apply(
+        lambda g: _rank_ic_series(g["value_self"], g["value"]),
+        include_groups=False,
+    ).dropna()
+    if daily.empty:
+        return pd.DataFrame(columns=_CORR_COLUMNS)
+
+    stats = daily.groupby(level=0).agg(["mean", "count"])
+    stats.columns = ["corr", "n_dates"]
+    stats = stats.reset_index()
+    stats["n_dates"] = stats["n_dates"].astype(int)
+
+    order = stats["corr"].abs().sort_values(ascending=False).index
+    return stats.loc[order, _CORR_COLUMNS].head(top_k).reset_index(drop=True)
+
+
 @dataclass
 class EvaluationResult:
     factor_id: str
@@ -164,6 +211,7 @@ class EvaluationResult:
     decay: dict[int, float]
     turnover: float
     group_returns: dict[int, pd.DataFrame]
+    corr_with_existing: pd.DataFrame
 
     def summary(self) -> pd.DataFrame:
         """Return a summary table of all metrics by horizon."""
@@ -186,6 +234,16 @@ class EvaluationResult:
             })
         return pd.DataFrame(rows)
 
+    def max_corr(self) -> tuple[str, float] | None:
+        """Return ``(factor_id, corr)`` of the most similar existing factor.
+
+        Returns ``None`` if no other factors are stored.
+        """
+        if self.corr_with_existing.empty:
+            return None
+        row = self.corr_with_existing.iloc[0]
+        return str(row["factor_id"]), float(row["corr"])
+
     def __repr__(self) -> str:
         return f"EvaluationResult({self.factor_id}, ret_type={self.ret_type}, horizons={self.horizons})"
 
@@ -198,8 +256,17 @@ def evaluate(
     horizons: list[int] | None = None,
     ret_type: str = "close",
     n_groups: int = 10,
+    corr_top_k: int = 5,
 ) -> EvaluationResult:
-    """Evaluate a factor's predictive power."""
+    """Evaluate a factor's predictive power.
+
+    Computes IC/RankIC across the requested horizons, turnover, grouped returns,
+    and the cross-sectional rank correlation against every other factor in
+    ``FactorStorage`` — sorted by ``|corr|`` descending and truncated to
+    ``corr_top_k`` rows. Pass ``corr_top_k=0`` to skip the correlation step.
+    Use :meth:`EvaluationResult.max_corr` to gate factor admission against
+    duplicates.
+    """
     if horizons is None:
         horizons = DEFAULT_HORIZONS
 
@@ -221,7 +288,6 @@ def evaluate(
         if ret_col not in merged.columns:
             continue
 
-        # Daily IC and RankIC — vectorized per-day
         daily = merged.groupby("date").apply(
             lambda g: pd.Series({
                 "ic": _ic_series(g["value"], g[ret_col]),
@@ -237,6 +303,12 @@ def evaluate(
 
     turnover = _turnover(factor_df)
 
+    if corr_top_k > 0:
+        with FactorStorage() as fs:
+            corr_df = _corr_with_existing(factor_df, factor_id, fs, top_k=corr_top_k)
+    else:
+        corr_df = pd.DataFrame(columns=_CORR_COLUMNS)
+
     return EvaluationResult(
         factor_id=factor_id,
         ret_type=ret_type,
@@ -248,6 +320,7 @@ def evaluate(
         decay=decay,
         turnover=turnover,
         group_returns=group_rets,
+        corr_with_existing=corr_df,
     )
 
 
@@ -279,6 +352,14 @@ def print_evaluation(result: EvaluationResult) -> None:
         spread = top[0] - bot[0] if len(top) > 0 and len(bot) > 0 else np.nan
         print(f"  {h:3d}d: top={top[0]:+.4f}, bot={bot[0]:+.4f}, spread={spread:+.4f}")
 
+    print("\n--- Correlation with existing factors (RankIC, daily mean) ---")
+    top = result.max_corr()
+    if top is None:
+        print("  (no other factors in storage)")
+    else:
+        print(f"  max |corr|: {top[0]} -> {top[1]:+.4f}")
+        print(result.corr_with_existing.to_string(index=False))
+
     print(f"{'=' * 60}\n")
 
 
@@ -298,6 +379,12 @@ def main():
         default="close",
         help="Return calculation type",
     )
+    parser.add_argument(
+        "--corr-top-k",
+        type=int,
+        default=5,
+        help="Number of most-correlated existing factors to report (0 to skip)",
+    )
     args = parser.parse_args()
 
     horizons = [int(h.strip()) for h in args.horizons.split(",")]
@@ -308,6 +395,7 @@ def main():
         args.end,
         horizons=horizons,
         ret_type=args.ret_type,
+        corr_top_k=args.corr_top_k,
     )
     print_evaluation(result)
 
