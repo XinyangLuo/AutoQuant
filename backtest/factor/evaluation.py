@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -257,6 +257,8 @@ class EvaluationResult:
     turnover: float
     group_returns: dict[int, pd.DataFrame]
     corr_with_existing: pd.DataFrame
+    ic_series: dict[int, pd.Series] = field(default_factory=dict)
+    rank_ic_series: dict[int, pd.Series] = field(default_factory=dict)
 
     def summary(self) -> pd.DataFrame:
         """Return a summary table of all metrics by horizon."""
@@ -382,10 +384,12 @@ def evaluate(
         if merged.empty:
             raise ValueError("All rows excluded by limit-up filter")
 
-    ic_metrics = {}
-    rank_ic_metrics = {}
-    decay = {}
-    group_rets = {}
+    ic_metrics: dict[int, dict] = {}
+    rank_ic_metrics: dict[int, dict] = {}
+    decay: dict[int, float] = {}
+    group_rets: dict[int, pd.DataFrame] = {}
+    ic_series: dict[int, pd.Series] = {}
+    rank_ic_series: dict[int, pd.Series] = {}
 
     for h in horizons:
         ret_col = f"ret_{h}"
@@ -402,6 +406,8 @@ def evaluate(
 
         ic_metrics[h] = _compute_ic_stats(daily["ic"])
         rank_ic_metrics[h] = _compute_ic_stats(daily["rank_ic"])
+        ic_series[h] = daily["ic"]
+        rank_ic_series[h] = daily["rank_ic"]
         decay[h] = ic_metrics[h].get("ic_mean", np.nan)
         group_rets[h] = _group_returns(merged, ret_col, n_groups)
 
@@ -425,6 +431,8 @@ def evaluate(
         turnover=turnover,
         group_returns=group_rets,
         corr_with_existing=corr_df,
+        ic_series=ic_series,
+        rank_ic_series=rank_ic_series,
     )
 
 
@@ -508,6 +516,96 @@ def print_evaluation(result: EvaluationResult) -> None:
     print(f"{'=' * 60}\n")
 
 
+def plot_evaluation(
+    result: EvaluationResult,
+    horizon: int = 20,
+    output_path: str | None = None,
+) -> str:
+    """Plot daily IC / RankIC series and cumulative curves for a given horizon.
+
+    Parameters
+    ----------
+    horizon : int
+        Which forward-return horizon to plot (default 20).
+    output_path : str, optional
+        File path to save the figure.  If None, writes to
+        ``results/evaluation/{factor_id}_{horizon}d.png``.
+
+    Returns
+    -------
+    str
+        Path to the saved figure.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ic = result.ic_series.get(horizon)
+    ric = result.rank_ic_series.get(horizon)
+    if ic is None or ric is None:
+        raise ValueError(f"No daily series for horizon={horizon}")
+
+    fig, axes = plt.subplots(4, 1, figsize=(14, 16), sharex=True)
+    fig.suptitle(
+        f"{result.factor_id}  |  horizon={horizon}d  |  {result.start}~{result.end}",
+        fontsize=14,
+        fontweight="bold",
+    )
+
+    dates = pd.to_datetime(ic.index)
+    cum_ic = ic.fillna(0).cumsum()
+    cum_ric = ric.fillna(0).cumsum()
+
+    # --- daily IC ---
+    ax = axes[0]
+    colors = ["green" if v >= 0 else "red" for v in ic.values]
+    ax.bar(dates, ic.values, color=colors, width=1.5, alpha=0.7)
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.axhline(ic.mean(), color="blue", linestyle="--", linewidth=1, label=f"mean={ic.mean():+.4f}")
+    ax.set_ylabel("Daily IC")
+    ax.legend(loc="upper left")
+    ax.set_title("Daily IC")
+
+    # --- daily RankIC ---
+    ax = axes[1]
+    colors = ["green" if v >= 0 else "red" for v in ric.values]
+    ax.bar(dates, ric.values, color=colors, width=1.5, alpha=0.7)
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.axhline(ric.mean(), color="blue", linestyle="--", linewidth=1, label=f"mean={ric.mean():+.4f}")
+    ax.set_ylabel("Daily RankIC")
+    ax.legend(loc="upper left")
+    ax.set_title("Daily RankIC")
+
+    # --- cumulative IC ---
+    ax = axes[2]
+    ax.plot(dates, cum_ic.values, color="steelblue", linewidth=1.2)
+    ax.fill_between(dates, cum_ic.values, 0, alpha=0.15, color="steelblue")
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.set_ylabel("Cumulative IC")
+    ax.set_title(f"Cumulative IC  (end={cum_ic.iloc[-1]:+.2f})")
+
+    # --- cumulative RankIC ---
+    ax = axes[3]
+    ax.plot(dates, cum_ric.values, color="darkorange", linewidth=1.2)
+    ax.fill_between(dates, cum_ric.values, 0, alpha=0.15, color="darkorange")
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.set_ylabel("Cumulative RankIC")
+    ax.set_title(f"Cumulative RankIC  (end={cum_ric.iloc[-1]:+.2f})")
+    ax.set_xlabel("Date")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.97])
+
+    if output_path is None:
+        from pathlib import Path
+        out_dir = Path("results/evaluation")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(out_dir / f"{result.factor_id}_{horizon}d.png")
+
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate factor predictive power")
     parser.add_argument("factor_id", nargs="?", help="Factor ID to evaluate (e.g. f_001)")
@@ -535,6 +633,17 @@ def main():
         "--no-exclude-limit-up",
         action="store_true",
         help="Do NOT exclude limit-up rows from the evaluation",
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Save IC/RankIC time-series plots (single-factor mode only)",
+    )
+    parser.add_argument(
+        "--plot-horizon",
+        type=int,
+        default=20,
+        help="Horizon to plot (default: 20)",
     )
     args = parser.parse_args()
 
@@ -594,6 +703,12 @@ def main():
 
     if len(results) == 1:
         print_evaluation(results[0])
+        if args.plot:
+            try:
+                path = plot_evaluation(results[0], horizon=args.plot_horizon)
+                print(f"Plot saved: {path}")
+            except Exception as exc:
+                print(f"Plot error: {exc}")
     elif len(results) > 1:
         _print_comparison_table(results)
 
