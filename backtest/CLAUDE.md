@@ -15,7 +15,7 @@ market_daily / income_q / balancesheet_q / cashflow_q
     ↓
 回测引擎（目标持仓 + 成本模型 → 成交序列 + 净值曲线）
     ↓
-分析模块（绩效指标、归因、可视化）
+评测模块（绩效指标、可视化；归因为 roadmap）
 ```
 
 ## 模块交互契约
@@ -25,15 +25,15 @@ market_daily / income_q / balancesheet_q / cashflow_q
 | 原始数据 | 数据模块 | 因子/策略/引擎 | Python API (`get_panel` / `get_bars` / `get_fina_snapshot`) | 数据模块不感知上层逻辑 |
 | 因子宽表 | 因子模块 | 策略模块 | DataFrame `(date, symbol, f1, f2, ...)` | 策略只读因子值，不做计算 |
 | 目标持仓 | 策略模块 | 回测引擎 | DataFrame `(date, symbol, target_weight)` | 策略不关心成交细节 |
-| 交易日志 | 回测引擎 | 分析模块 | `trades.parquet` / `positions.parquet` / `nav.parquet` | 分析纯消费，不修改 |
+| 交易日志 | 回测引擎 | 评测模块 | `trades.parquet` / `positions.parquet` / `nav.parquet` / `metrics.parquet` | 评测纯消费，不修改 |
 
 ## 各子模块一句话定位
 
-- **数据模块**：把外部数据拉到本地，建立可重放、可增量更新的数据池。详见 [`backtest/data/CLAUDE.md`](data/CLAUDE.md)。
-- **因子模块**：定义、计算、登记、静态评估因子。因子值写入 `factors_daily` 长表；稳定因子可"晋升"回 `market_daily`。详见 [`backtest/factor/CLAUDE.md`](factor/CLAUDE.md)。
-- **策略模块**：把因子组合成可执行的策略，**只输出每日目标持仓**。详见 [`backtest/strategy/CLAUDE.md`](strategy/CLAUDE.md)。
-- **回测引擎**：双轨回测（简单/详细）。把策略目标持仓 → 净值曲线。日频，A 股规则。详见 [`backtest/simulation/CLAUDE.md`](simulation/CLAUDE.md)。
-- **分析模块**：从回测产出反推策略质量。绩效指标 + 归因 + 可视化。
+- **数据模块**：把外部数据拉到本地，建立可重放、可增量更新的数据池。详见 [`backtest/data/DESIGN.md`](data/DESIGN.md)。
+- **因子模块**：定义、计算、登记、静态评估因子。因子值写入 `factors_daily` 长表；稳定因子可"晋升"回 `market_daily`。详见 [`backtest/factor/DESIGN.md`](factor/DESIGN.md)。
+- **策略模块**：把因子组合成可执行的策略，**只输出每日目标持仓**。详见 [`backtest/strategy/DESIGN.md`](strategy/DESIGN.md)。
+- **回测引擎**：双轨回测（简单/详细）。把策略目标持仓 → 净值曲线。日频，A 股规则。详见 [`backtest/simulation/DESIGN.md`](simulation/DESIGN.md)。
+- **评测模块**：从 simulation 落盘的 parquet 反推策略质量。收益/风险/胜率/交易/持仓指标 + 净值/回撤/月度热力图 + 可选基准对比。全项目指标计算单一真理源（`BacktestResult.summary()` 已退化为薄封装）。详见 [`backtest/evaluation/DESIGN.md`](evaluation/DESIGN.md)。
 
 ## 策略模块与引擎的交互细节
 
@@ -96,4 +96,5 @@ result = sim.run(signals, market_data, dividends_data)
 
 - **回测引擎与策略解耦**：策略只产出目标持仓，引擎负责成交模拟（停牌、涨跌停、成本、复权）
 - **因子晋升机制**：`factors_daily` 中被验证稳定的因子，可晋升为 `market_daily` 的一列，加速常用路径
-- **财务数据未来信息隔离（PIT）**：`income_q` / `balancesheet_q` / `cashflow_q` 三张物理表各自保留所有版本（原始 + 修正）；查询时 `get_fina_snapshot(D)` 对每张表分别按 `f_ann_date <= D` 过滤 + `QUALIFY ROW_NUMBER()` 取最新可见版本，再 outer-join 成 wide DataFrame，正确处理业绩修正（restatement）及约 1% 的三表独立修正 case。详见 [`backtest/data/CLAUDE.md`](data/CLAUDE.md) 的 PIT 章节
+- **财务数据未来信息隔离（PIT）**：`income_q` / `balancesheet_q` / `cashflow_q` 三张物理表各自保留所有版本（原始 + 修正）；查询时 `get_fina_snapshot(D)` 对每张表分别按 `f_ann_date <= D` 过滤 + `QUALIFY ROW_NUMBER()` 取最新可见版本，再 outer-join 成 wide DataFrame，正确处理业绩修正（restatement）及约 1% 的三表独立修正 case。详见 [`backtest/data/DESIGN.md`](data/DESIGN.md) 的 PIT 章节
+- **评测指标单一来源**：所有 Sharpe / 回撤 / 换手 / 胜率等指标只在 `backtest/evaluation/metrics.py` 实现。`BacktestResult.summary()` 与 `scripts/` 中的 `compute_metrics` 都委托到此，杜绝公式漂移

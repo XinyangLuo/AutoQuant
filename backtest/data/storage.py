@@ -211,6 +211,34 @@ CREATE TABLE IF NOT EXISTS dividends (
 )
 """
 
+# ---------------------------------------------------------------------------
+# Schema: index_daily (benchmark indices: 000300.SH, 000905.SH, ...)
+# ---------------------------------------------------------------------------
+
+INDEX_DAILY_COLUMNS = [
+    "date", "symbol",
+    "open", "high", "low", "close",
+    "pre_close", "change", "pct_chg",
+    "volume", "amount",
+]
+
+INDEX_DAILY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS index_daily (
+    date       DATE,
+    symbol     VARCHAR,
+    open       DOUBLE,
+    high       DOUBLE,
+    low        DOUBLE,
+    close      DOUBLE,
+    pre_close  DOUBLE,
+    change     DOUBLE,
+    pct_chg    DOUBLE,
+    volume     DOUBLE,
+    amount     DOUBLE,
+    PRIMARY KEY (date, symbol)
+)
+"""
+
 
 class MarketStorage:
     """DuckDB storage for market_daily, fundamental tables, and dividends."""
@@ -227,6 +255,7 @@ class MarketStorage:
         self.conn.execute(BALANCESHEET_SCHEMA)
         self.conn.execute(CASHFLOW_SCHEMA)
         self.conn.execute(DIVIDEND_SCHEMA)
+        self.conn.execute(INDEX_DAILY_SCHEMA)
         self._add_double_columns("market_daily", DAILY_COLUMNS[2:])
         self._add_double_columns("income_q", INCOME_NUMERIC)
         self._add_double_columns("balancesheet_q", BALANCESHEET_NUMERIC)
@@ -522,3 +551,65 @@ class MarketStorage:
             pk_cols=("symbol", "end_date"),
             schema_cols=DIVIDEND_COLUMNS,
         )
+
+    # -- index_daily ----------------------------------------------------------
+
+    def insert_index_daily(self, df: pd.DataFrame):
+        self._upsert(
+            df,
+            table="index_daily",
+            pk_cols=("date", "symbol"),
+            schema_cols=INDEX_DAILY_COLUMNS,
+        )
+
+    def get_max_index_date(self, symbol: str) -> str | None:
+        """Max trade date for a single index ts_code, as YYYYMMDD, or None if empty."""
+        row = self.conn.execute(
+            "SELECT MAX(date) FROM index_daily WHERE symbol = ?", [symbol]
+        ).fetchone()
+        if row and row[0]:
+            return row[0].strftime("%Y%m%d")
+        return None
+
+    def get_index_bars(
+        self,
+        symbols: list[str] | str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Time-series bars from index_daily.
+
+        Mirrors get_bars() (market_daily) but reads the index table.
+        """
+        if isinstance(symbols, str):
+            symbols = [symbols]
+
+        if columns:
+            cols_sql = ", ".join(f'"{c}"' for c in columns if c in INDEX_DAILY_COLUMNS)
+        else:
+            cols_sql = ", ".join(
+                f'"{c}"' for c in INDEX_DAILY_COLUMNS if c not in ("date", "symbol")
+            )
+
+        conditions = []
+        params: list = []
+        if start:
+            conditions.append("date >= strptime(?, '%Y%m%d')::DATE")
+            params.append(start)
+        if end:
+            conditions.append("date <= strptime(?, '%Y%m%d')::DATE")
+            params.append(end)
+        if symbols:
+            placeholders = ", ".join("?" for _ in symbols)
+            conditions.append(f"symbol IN ({placeholders})")
+            params.extend(symbols)
+
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+        sql = f"""
+            SELECT date, symbol, {cols_sql}
+            FROM index_daily
+            {where_clause}
+            ORDER BY date, symbol
+        """
+        return self.conn.execute(sql, params).fetchdf()

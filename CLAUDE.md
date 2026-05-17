@@ -66,7 +66,7 @@ AutoQuant/
 │   │   ├── factors/          # 因子定义与计算
 │   │   ├── strategy/         # 策略组合与选股逻辑
 │   │   ├── engine/           # 回测引擎
-│   │   └── analysis/         # 绩效与归因
+│   │   └── evaluation/       # 评测：指标 + 净值/回撤/月度图（前称 analysis）
 │   ├── agents/               # Claude Agent SDK 投研子 agent
 │   │   ├── readers/          # 研报/论文/博客抓取与摘要
 │   │   ├── researchers/      # 因子/组合发现
@@ -92,11 +92,11 @@ AutoQuant/
 
 详见 [`backtest/CLAUDE.md`](backtest/CLAUDE.md)。简要概览：
 
-- **数据模块**：行情/基本面数据下载、缓存、增量更新。详见 [`backtest/data/CLAUDE.md`](backtest/data/CLAUDE.md)。
-- **因子模块**：定义、计算、登记、静态评估（IC/RankIC/ICIR）。因子值写入 `factors_daily` 长表；稳定因子可晋升回 `market_daily`。
-- **策略模块**：因子组合 + 选股/择时 + 风控 → **每日目标持仓**（与引擎解耦）。
-- **回测引擎**：目标持仓 + 成本模型 → 成交序列 + 净值曲线。日频、T+1、A 股规则。
-- **分析模块**：绩效指标（Sharpe/年化/波动/回撤）+ 归因 + 可视化。
+- **数据模块**：行情/基本面数据下载、缓存、增量更新。详见 [`backtest/data/DESIGN.md`](backtest/data/DESIGN.md)。
+- **因子模块**：定义、计算、登记、静态评估（IC/RankIC/ICIR）。因子值写入 `factors_daily` 长表；稳定因子可晋升回 `market_daily`。详见 [`backtest/factor/DESIGN.md`](backtest/factor/DESIGN.md)。
+- **策略模块**：因子组合 + 选股/择时 + 风控 → **每日目标持仓**（与引擎解耦）。详见 [`backtest/strategy/DESIGN.md`](backtest/strategy/DESIGN.md)。
+- **回测引擎**：目标持仓 + 成本模型 → 成交序列 + 净值曲线。日频、T+1、A 股规则。详见 [`backtest/simulation/DESIGN.md`](backtest/simulation/DESIGN.md)。
+- **评测模块**：从 simulation 落盘的 parquet 反推策略质量。收益 / 风险 / 胜率 / 交易 / 持仓指标 + 8 子图大图 + JSON/CSV。详见 [`backtest/evaluation/DESIGN.md`](backtest/evaluation/DESIGN.md)。
 
 ## 5. Agent 投研系统
 
@@ -169,7 +169,7 @@ AutoQuant/
 | 因子注册 / 回测调用 / 晋升 | 回测系统 | Agent 投研系统 | Python tool 接口（§5.3） |
 | 标准化信号 | 回测系统 + 策略 | 交易模块（推送） | JSON/parquet（§6.2） |
 | 持仓回写 | 交易模块 | 回测系统（实盘对比） | YAML/CSV（§6.4） |
-| 数据访问 | 数据模块 | 因子/策略/Agent | Python API（详见 backtest/data/CLAUDE.md） |
+| 数据访问 | 数据模块 | 因子/策略/Agent | Python API（详见 backtest/data/DESIGN.md） |
 
 上表里的边界要尽量稳定；内部实现允许重构。
 
@@ -193,6 +193,7 @@ AutoQuant/
 - **改动**：动手前先读对应模块小节，确认接口契约（§7）
 - **Agent 实现**：写 Claude Agent SDK 相关代码时使用 `claude-api` skill 的最佳实践（含 prompt caching）
 - **新模块骨架**：每个 `autoquant/<module>/<sub>/` 至少有 `__init__.py` + `README.md`
+- **设计文档**：plan 完成后写对应模块的 `DESIGN.md`（如 `backtest/data/DESIGN.md`）；`CLAUDE.md` 仅保留项目根 + 大子项目根两级，更深目录一律用 `DESIGN.md`，避免自动加载文件过多拖慢启动
 
 ## 10. 待决事项（TBD 清单）
 

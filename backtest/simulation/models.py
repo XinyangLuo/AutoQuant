@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
-import numpy as np
 
 
 @dataclass(frozen=True)
@@ -124,56 +123,28 @@ class BacktestResult:
                 json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)
 
     def summary(self) -> dict:
-        """简要统计：总收益率、年化收益、Sharpe、最大回撤、费用、换手等。"""
-        if self.nav_df is None or self.nav_df.empty:
+        """Flat dict of performance metrics.
+
+        Thin shim around ``backtest.evaluation.metrics.compute_all_metrics`` —
+        the evaluation module is the single source of truth for metric formulas.
+        See ``backtest/evaluation/DESIGN.md`` for the full list of indicators.
+        """
+        if self.nav_df is None or self.nav_df.empty or len(self.nav_df) < 2:
             return {}
-        nav = self.nav_df["nav"].values
-        if len(nav) < 2:
-            return {}
+        # Local import keeps simulation -> evaluation a one-way edge.
+        from backtest.evaluation.loader import BacktestArtifacts
+        from backtest.evaluation.metrics import compute_all_metrics
 
-        total_return = nav[-1] / nav[0] - 1
-        daily_returns = self.nav_df["daily_return"].dropna().values
-        if len(daily_returns) == 0:
-            return {"total_return": total_return}
-
-        annual_return = (1 + daily_returns.mean()) ** 252 - 1
-        annual_vol = daily_returns.std() * np.sqrt(252)
-        sharpe = annual_return / annual_vol if annual_vol > 0 else 0
-
-        # 最大回撤及起止日期
-        cummax = np.maximum.accumulate(nav)
-        drawdown = (nav - cummax) / cummax
-        max_drawdown = drawdown.min()
-        mdd_end_idx = int(np.argmin(drawdown))
-        mdd_start_idx = int(np.argmax(nav[:mdd_end_idx + 1])) if mdd_end_idx > 0 else 0
-        dates = self.nav_df["date"].values
-        max_dd_start = dates[mdd_start_idx]
-        max_dd_end = dates[mdd_end_idx]
-
-        result = {
-            "total_return": total_return,
-            "annual_return": annual_return,
-            "annual_volatility": annual_vol,
-            "sharpe": sharpe,
-            "max_drawdown": max_drawdown,
-            "max_drawdown_start": str(max_dd_start),
-            "max_drawdown_end": str(max_dd_end),
-        }
-
-        # 从 trades 统计费用
-        if self.trades:
-            total_commission = sum(t.commission for t in self.trades)
-            total_stamp_duty = sum(
-                t.amount * 0.001 for t in self.trades if t.direction in ("sell", "short")
-            )
-            result["total_commission"] = total_commission
-            result["total_stamp_duty"] = total_stamp_duty
-            result["total_trades"] = len(self.trades)
-
-        # 从 metrics 统计换手率
-        if self.metrics_df is not None and not self.metrics_df.empty:
-            turnover = self.metrics_df["turnover"].dropna()
-            if not turnover.empty:
-                result["avg_daily_turnover"] = float(turnover.mean())
-
-        return result
+        dates = pd.to_datetime(self.nav_df["date"])
+        arts = BacktestArtifacts(
+            result_dir=Path("."),
+            nav=self.nav_df,
+            positions=self.positions_df,
+            trades=self.trades_df,
+            metrics=self.metrics_df,
+            metadata={},
+            initial_cash=self.initial_cash,
+            start=dates.min(),
+            end=dates.max(),
+        )
+        return compute_all_metrics(arts, bench_nav=None)
