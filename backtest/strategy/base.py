@@ -281,13 +281,15 @@ class StrategyBase(ABC):
 
         # Build linear decay weights: [n, n-1, ..., 1]
         weights = np.arange(n, 0, -1, dtype=float)
-        denom = weights.sum()  # n * (n + 1) / 2
 
         def _decay_series(s: pd.Series) -> pd.Series:
-            return s.rolling(window=n, min_periods=1).apply(
-                lambda x: np.dot(x, weights[-len(x):]) / denom,
-                raw=True,
-            )
+            def _apply(x: np.ndarray) -> float:
+                w = weights[-len(x):]
+                # Rolling window order is [oldest, ..., newest];
+                # weights are [newest_weight=n, ..., oldest_weight=1].
+                return float(np.dot(x[::-1], w) / w.sum())
+
+            return s.rolling(window=n, min_periods=1).apply(_apply, raw=True)
 
         for col in factor_cols:
             df[col] = df.groupby("symbol", group_keys=False)[col].apply(_decay_series)

@@ -383,6 +383,28 @@ class TestNeutralizer:
         corr = np.corrcoef(result.values, log_cap.values)[0, 1]
         assert abs(corr) < 0.01
 
+    def test_industry_group_demean(self):
+        """Test industry neutralization by group demean (each group mean = 0)."""
+        from backtest.strategy.neutralize import Neutralizer
+
+        factor = pd.Series({"A": 1.0, "B": 3.0, "C": 10.0, "D": 14.0})
+        industry = pd.Series({"A": "Tech", "B": "Tech", "C": "Finance", "D": "Finance"})
+
+        n = Neutralizer()
+        result = n.industry_neutralize(factor, industry, method="group_demean")
+
+        # Tech: mean=2 -> A=-1, B=1
+        assert result["A"] == pytest.approx(-1.0)
+        assert result["B"] == pytest.approx(1.0)
+        # Finance: mean=12 -> C=-2, D=2
+        assert result["C"] == pytest.approx(-2.0)
+        assert result["D"] == pytest.approx(2.0)
+        # Each group mean should be 0
+        tech_mean = result[["A", "B"]].mean()
+        finance_mean = result[["C", "D"]].mean()
+        assert tech_mean == pytest.approx(0.0, abs=1e-10)
+        assert finance_mean == pytest.approx(0.0, abs=1e-10)
+
     def test_market_cap_neutralize_too_few_points(self):
         """Test market-cap neutralization with insufficient data."""
         from backtest.strategy.neutralize import Neutralizer
@@ -393,6 +415,77 @@ class TestNeutralizer:
         n = Neutralizer()
         result = n.market_cap_neutralize(factor, cap)
         assert result.empty
+
+
+class TestDecay:
+    """Test linear decay smoothing on factor panels."""
+
+    def test_decay_basic(self):
+        """Test decay smoothing with a simple series."""
+        from backtest.strategy.base import StrategyBase
+
+        # Single stock, 5 days, factor values [1, 2, 3, 4, 5]
+        df = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=5),
+            "symbol": ["A"] * 5,
+            "f_001": [1.0, 2.0, 3.0, 4.0, 5.0],
+        })
+
+        result = StrategyBase._apply_decay(df, n=3)
+
+        # Day 1 (min_periods=1): (1*1)/1 = 1
+        # Day 2 (min_periods=2): (2*2 + 1*1)/(2+1) = 5/3
+        # Day 3: (3*3 + 2*2 + 1*1)/(3+2+1) = 14/6 = 7/3
+        # Day 4: (4*3 + 3*2 + 2*1)/6 = 20/6 = 10/3
+        # Day 5: (5*3 + 4*2 + 3*1)/6 = 26/6 = 13/3
+        vals = result.set_index("date")["f_001"].values
+        assert vals[0] == pytest.approx(1.0)
+        assert vals[1] == pytest.approx(5.0 / 3.0)
+        assert vals[2] == pytest.approx(14.0 / 6.0)
+        assert vals[3] == pytest.approx(20.0 / 6.0)
+        assert vals[4] == pytest.approx(26.0 / 6.0)
+
+    def test_decay_multiple_stocks(self):
+        """Test decay is applied per stock, not globally."""
+        from backtest.strategy.base import StrategyBase
+
+        df = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=3).tolist() * 2,
+            "symbol": ["A"] * 3 + ["B"] * 3,
+            "f_001": [1.0, 2.0, 3.0, 10.0, 20.0, 30.0],
+        })
+        df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+
+        result = StrategyBase._apply_decay(df, n=2)
+        result = result.sort_values(["symbol", "date"]).reset_index(drop=True)
+
+        # Stock A: day1=1, day2=(2*2+1)/3=5/3, day3=(3*2+2)/3=8/3
+        a_vals = result[result["symbol"] == "A"]["f_001"].values
+        assert a_vals[0] == pytest.approx(1.0)
+        assert a_vals[1] == pytest.approx(5.0 / 3.0)
+        assert a_vals[2] == pytest.approx(8.0 / 3.0)
+
+        # Stock B: day1=10, day2=(20*2+10)/3=50/3, day3=(30*2+20)/3=80/3
+        b_vals = result[result["symbol"] == "B"]["f_001"].values
+        assert b_vals[0] == pytest.approx(10.0)
+        assert b_vals[1] == pytest.approx(50.0 / 3.0)
+        assert b_vals[2] == pytest.approx(80.0 / 3.0)
+
+    def test_decay_preserves_shape(self):
+        """Test decay output has same rows and columns as input."""
+        from backtest.strategy.base import StrategyBase
+
+        df = pd.DataFrame({
+            "date": pd.date_range("2024-01-01", periods=5),
+            "symbol": ["A"] * 5,
+            "f_001": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "f_002": [5.0, 4.0, 3.0, 2.0, 1.0],
+        })
+
+        result = StrategyBase._apply_decay(df, n=3)
+
+        assert len(result) == len(df)
+        assert set(result.columns) == {"date", "symbol", "f_001", "f_002"}
 
 
 class TestSignals:
@@ -841,6 +934,44 @@ class TestSingleFactorStrategy:
 
         with pytest.raises(ValueError, match="No factor data"):
             strategy.run("20240102", "20240102", factor_storage=factor_storage, market_storage=market_storage)
+
+    def test_nan_factor_values_dropped(self, monkeypatch):
+        """Test that stocks with NaN factor values are excluded from selection."""
+        from backtest.strategy import SingleFactorStrategy, StrategyConfig, FactorConfig
+        from backtest.strategy import SelectionConfig, WeightingConfig
+        from backtest.strategy import base as base_module
+
+        monkeypatch.setattr(base_module, "get_trade_dates", lambda s, e: ["20240102"])
+
+        config = StrategyConfig(
+            strategy_type="single_factor_topk",
+            rebalance_freq="1D",
+            delay=0,
+            factors=[FactorConfig(id="f_001", direction="desc")],
+            selection=SelectionConfig(method="topk", top_k=3),
+            weighting=WeightingConfig(method="equal"),
+        )
+        strategy = SingleFactorStrategy(config)
+
+        # A=0.5, B=NaN, C=0.3, D=0.2, E=NaN
+        data = pd.DataFrame({
+            "date": [pd.Timestamp("2024-01-02")] * 5,
+            "symbol": ["A", "B", "C", "D", "E"],
+            "f_001": [0.5, np.nan, 0.3, 0.2, np.nan],
+        })
+        factor_storage = MockFactorStorage(data)
+        market_storage = MockMarketStorage()
+
+        signals = strategy.run("20240102", "20240102",
+                               factor_storage=factor_storage, market_storage=market_storage)
+
+        # Should select top 3 from non-NaN: A(0.5), C(0.3), D(0.2)
+        # B and E have NaN factor values, should be excluded
+        symbols = set(signals["symbol"])
+        assert symbols == {"A", "C", "D"}
+        assert "B" not in symbols
+        assert "E" not in symbols
+        assert len(signals) == 3
 
 
 class TestMultiFactorStrategy:
