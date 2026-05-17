@@ -46,6 +46,7 @@ class SingleFactorStrategy(StrategyBase):
             date = pd.Timestamp(date_str)
 
             day_factors = factor_panel[factor_panel["date"] == date].copy()
+            day_factors = day_factors.dropna(subset=[factor_id])
             if day_factors.empty:
                 continue
 
