@@ -545,7 +545,7 @@ def plot_evaluation(
     if ic is None or ric is None:
         raise ValueError(f"No daily series for horizon={horizon}")
 
-    fig, axes = plt.subplots(4, 1, figsize=(14, 16), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(16, 18))
     fig.suptitle(
         f"{result.factor_id}  |  horizon={horizon}d  |  {result.start}~{result.end}",
         fontsize=14,
@@ -556,6 +556,9 @@ def plot_evaluation(
     cum_ic = ic.fillna(0).cumsum()
     cum_ric = ric.fillna(0).cumsum()
 
+    for ax in axes:
+        ax.tick_params(axis="x", rotation=30)
+
     # --- daily IC ---
     ax = axes[0]
     colors = ["green" if v >= 0 else "red" for v in ic.values]
@@ -563,6 +566,7 @@ def plot_evaluation(
     ax.axhline(0, color="black", linewidth=0.5)
     ax.axhline(ic.mean(), color="blue", linestyle="--", linewidth=1, label=f"mean={ic.mean():+.4f}")
     ax.set_ylabel("Daily IC")
+    ax.set_xlabel("Date")
     ax.legend(loc="upper left")
     ax.set_title("Daily IC")
 
@@ -573,6 +577,7 @@ def plot_evaluation(
     ax.axhline(0, color="black", linewidth=0.5)
     ax.axhline(ric.mean(), color="blue", linestyle="--", linewidth=1, label=f"mean={ric.mean():+.4f}")
     ax.set_ylabel("Daily RankIC")
+    ax.set_xlabel("Date")
     ax.legend(loc="upper left")
     ax.set_title("Daily RankIC")
 
@@ -582,6 +587,7 @@ def plot_evaluation(
     ax.fill_between(dates, cum_ic.values, 0, alpha=0.15, color="steelblue")
     ax.axhline(0, color="black", linewidth=0.5)
     ax.set_ylabel("Cumulative IC")
+    ax.set_xlabel("Date")
     ax.set_title(f"Cumulative IC  (end={cum_ic.iloc[-1]:+.2f})")
 
     # --- cumulative RankIC ---
@@ -590,8 +596,8 @@ def plot_evaluation(
     ax.fill_between(dates, cum_ric.values, 0, alpha=0.15, color="darkorange")
     ax.axhline(0, color="black", linewidth=0.5)
     ax.set_ylabel("Cumulative RankIC")
-    ax.set_title(f"Cumulative RankIC  (end={cum_ric.iloc[-1]:+.2f})")
     ax.set_xlabel("Date")
+    ax.set_title(f"Cumulative RankIC  (end={cum_ric.iloc[-1]:+.2f})")
 
     plt.tight_layout(rect=[0, 0, 1, 0.97])
 

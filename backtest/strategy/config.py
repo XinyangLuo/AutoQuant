@@ -52,7 +52,10 @@ class NeutralizeConfig:
     """Neutralization parameters."""
 
     industry: bool = False
-    industry_method: str = "group_rank"  # "group_rank" / "group_topk"
+    # group_rank   : rank within each group, scale to [0, 1]
+    # group_demean : subtract group mean so each group's mean is 0
+    # group_zscore : z-score within each group
+    industry_method: str = "group_rank"
     market_cap: bool = False
 
 
@@ -92,6 +95,11 @@ class StrategyConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
 
+    # Decay: linear decay smoothing applied to factor values before signal
+    # generation.  decay(x, n) weights recent values more heavily.
+    # None = no decay (use raw factor values).
+    decay: int | None = None
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StrategyConfig:
         """Build StrategyConfig from a nested dict (YAML/JSON parsed)."""
@@ -116,6 +124,7 @@ class StrategyConfig:
             neutralize=neutralize,
             risk=risk,
             backtest=backtest,
+            decay=d.get("decay"),
         )
 
     @classmethod
@@ -173,8 +182,20 @@ class StrategyConfig:
                 f"got {self.weighting.method}"
             )
 
+        if self.neutralize.industry_method not in (
+            "group_rank", "group_demean", "group_zscore"
+        ):
+            raise ValueError(
+                f"Industry neutralization method must be 'group_rank', "
+                f"'group_demean', or 'group_zscore', "
+                f"got {self.neutralize.industry_method}"
+            )
+
         if self.combine_method not in ("zscore_equal", "ic_weighted", "icir_weighted", "risk_parity"):
             raise ValueError(
                 f"Combine method must be 'zscore_equal', 'ic_weighted', 'icir_weighted', "
                 f"or 'risk_parity', got {self.combine_method}"
             )
+
+        if self.decay is not None and self.decay < 1:
+            raise ValueError(f"Decay must be >= 1 or None, got {self.decay}")

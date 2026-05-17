@@ -5,6 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from backtest.data.storage import MarketStorage
@@ -188,11 +189,19 @@ class StrategyBase(ABC):
                 start_date, end_date, self.config.rebalance_freq
             )
 
+            # Apply decay smoothing to factor values (reduces turnover)
+            if self.config.decay is not None:
+                factor_panel = self._apply_decay(factor_panel, self.config.decay)
+
             signals = self.generate_signals(factor_panel, market_panel, rebalance_dates)
 
             # Apply delay: signal computed on rebalance_date → effective on rebalance_date + delay
             if self.config.delay > 0 and not signals.empty:
                 signals = self._apply_delay(signals, rebalance_dates, self.config.delay)
+
+            # Expand to daily signals: forward-fill weights between rebalance effective dates
+            if not signals.empty:
+                signals = self._to_daily_signals(signals, start_date, end_date)
 
             return signals
 
@@ -201,6 +210,89 @@ class StrategyBase(ABC):
                 factor_storage.close()
             if own_market and market_storage is not None:
                 market_storage.close()
+
+    @staticmethod
+    def _to_daily_signals(
+        signals: pd.DataFrame,
+        start_date: str,
+        end_date: str,
+    ) -> pd.DataFrame:
+        """将调仓日信号扩展为日频信号：调仓日之间前向填充权重。"""
+        if signals.empty:
+            return signals
+
+        trade_dates = get_trade_dates(start_date, end_date)
+        if not trade_dates:
+            return signals
+
+        # pivot → 扩展到所有交易日 → ffill → melt
+        wide = signals.pivot(index="date", columns="symbol", values="target_weight")
+        all_dates = pd.to_datetime(trade_dates)
+        wide = wide.reindex(all_dates)
+        wide.index.name = "date"
+
+        # 调仓生效日：被调出的股票显式置 0
+        rebalance_dates = set(signals["date"])
+        mask = wide.index.isin(rebalance_dates)
+        if mask.any():
+            wide.loc[mask] = wide.loc[mask].fillna(0)
+
+        wide = wide.ffill().fillna(0)
+        long_df = wide.reset_index().melt(
+            id_vars=["date"], var_name="symbol", value_name="target_weight"
+        )
+        return long_df[long_df["target_weight"] != 0].reset_index(drop=True)
+
+    @staticmethod
+    def _apply_decay(
+        factor_panel: pd.DataFrame,
+        n: int,
+    ) -> pd.DataFrame:
+        """Apply linear decay smoothing to factor values.
+
+        decay(x, n) = (x[date] * n + x[date-1] * (n-1) + ... + x[date-n+1] * 1)
+                      / (n + (n-1) + ... + 1)
+
+        Weights recent values more heavily, producing smoother factor series
+        and lower portfolio turnover.
+
+        Parameters
+        ----------
+        factor_panel : pd.DataFrame
+            Wide DataFrame with columns ``[date, symbol, f_001, f_002, ...]``.
+        n : int
+            Decay window length (must be >= 1).
+
+        Returns
+        -------
+        pd.DataFrame
+            Decay-smoothed factor panel with same shape.
+        """
+        if n < 1:
+            return factor_panel
+
+        df = factor_panel.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values(["symbol", "date"])
+
+        factor_cols = [c for c in df.columns if c not in ("date", "symbol")]
+        if not factor_cols:
+            return factor_panel
+
+        # Build linear decay weights: [n, n-1, ..., 1]
+        weights = np.arange(n, 0, -1, dtype=float)
+        denom = weights.sum()  # n * (n + 1) / 2
+
+        def _decay_series(s: pd.Series) -> pd.Series:
+            return s.rolling(window=n, min_periods=1).apply(
+                lambda x: np.dot(x, weights[-len(x):]) / denom,
+                raw=True,
+            )
+
+        for col in factor_cols:
+            df[col] = df.groupby("symbol", group_keys=False)[col].apply(_decay_series)
+
+        return df
 
     @staticmethod
     def _load_factor_panel(

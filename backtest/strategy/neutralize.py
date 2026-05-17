@@ -46,6 +46,15 @@ class Neutralizer:
             df["rank"] = df["rank"].fillna(0.5)
             return df["rank"]
 
+        if method == "group_demean":
+            # Within each industry group, subtract the group mean so that
+            # the mean of each group is zero.  This is the standard
+            # WorldQuant-style subindustry neutralization.
+            df["demeaned"] = df.groupby("industry")["factor"].transform(
+                lambda x: x - x.mean()
+            )
+            return df["demeaned"]
+
         if method == "group_zscore":
             def _zscore(x: pd.Series) -> pd.Series:
                 mean = x.mean()

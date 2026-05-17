@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from typing import Literal
+
+
+def detect_board(symbol: str) -> Literal["default", "kcb", "bj"]:
+    """根据股票代码识别板块。
+
+    - 688xxx.SH → kcb (科创板：200股起，1股递增)
+    - 8xxxxx.BJ / 4xxxxx.BJ → bj (北交所：100股起，1股递增)
+    - 其他 → default (主板/创业板：100股整数倍)
+    """
+    if symbol.startswith("688"):
+        return "kcb"
+    if symbol.startswith(("8", "4")) and symbol.endswith(".BJ"):
+        return "bj"
+    return "default"
+
+
+def round_lot(shares: float, board: Literal["default", "kcb", "bj"] = "default") -> int:
+    """按板块规则取整到合法交易单位。
+
+    - default: 100股整数倍，向下取整。shares < 100 → 0（不够一手不买）
+    - kcb: 200股起，超过200股按1股取整。shares < 200 → 0
+    - bj: 100股起，超过100股按1股取整。shares < 100 → 0
+    """
+    if board == "kcb":
+        if shares < 200:
+            return 0
+        return int(shares)
+    if board == "bj":
+        if shares < 100:
+            return 0
+        return int(shares)
+    # default
+    if shares < 100:
+        return 0
+    return int(shares // 100) * 100
+
+
+def round_lot_for_symbol(shares: float, symbol: str) -> int:
+    """根据股票代码自动判断板块并取整。"""
+    return round_lot(shares, detect_board(symbol))
