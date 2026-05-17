@@ -147,7 +147,7 @@ print(result.summary())
 |---|---|
 | **IC** | Pearson 相关系数 `corr(factor_t, ret_{t+h})` |
 | **RankIC** | Spearman 秩相关系数 |
-| **ICIR** | `mean(IC) / std(IC) * sqrt(252)` |
+| **ICIR** | `mean(IC) / std(IC)` |
 | **IC>0 占比** | 正 IC 日占比 |
 | **t-stat** | IC 序列的 t 统计量 |
 | **Turnover** | 相邻两期因子排名的换手率 |

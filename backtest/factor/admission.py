@@ -28,14 +28,15 @@ from backtest.factor.registry import (
     _save_registry,
     sync_registry,
 )
+from backtest.factor.storage import FactorStorage
 
 DEFAULT_CONFIG: dict[str, object] = {
-    "min_rankicir": 2.0,
+    "min_rankicir": 0.25,
     "min_ic_positive_ratio": 0.52,
     "max_turnover": 0.5,
     "max_corr": 0.85,
     "primary_horizon": 20,
-    "ret_type": "close",
+    "ret_type": "open",
     "exclude_limit_up": True,
 }
 
@@ -70,6 +71,7 @@ def admit(
     horizons: list[int] | None = None,
     corr_top_k: int = 5,
     registry: dict | None = None,
+    keep_data: bool = False,
 ) -> AdmissionResult:
     """Run evaluation and decide admission.
 
@@ -88,6 +90,9 @@ def admit(
     registry : dict, optional
         If provided, mutate this in-memory dict instead of reading/writing
         ``registry.json`` on disk. The caller must persist the dict.
+    keep_data : bool, default False
+        If ``False`` (default), rejected factors have their data automatically
+        deleted from ``factors_daily`` to keep storage clean.
 
     Returns
     -------
@@ -159,6 +164,13 @@ def admit(
     meta.setdefault("admission_history", []).append(entry)
     # cap history to last 20 entries to prevent unbounded growth
     meta["admission_history"] = meta["admission_history"][-20:]
+
+    # Clean up rejected factor data from DuckDB unless explicitly kept
+    if not passed and not keep_data:
+        with FactorStorage() as fs:
+            n_deleted = fs.delete_factor(factor_id)
+            if n_deleted > 0:
+                print(f"  [cleanup] Deleted {n_deleted:,} rows for rejected factor {factor_id}")
 
     if registry is None:
         _save_registry(target)
@@ -257,6 +269,11 @@ def main():
         action="store_true",
         help="Do NOT exclude limit-up rows from evaluation",
     )
+    parser.add_argument(
+        "--keep-data",
+        action="store_true",
+        help="Keep factor data in DuckDB even if rejected (default: delete)",
+    )
     args = parser.parse_args()
 
     if not args.all and not args.pending and not args.factor_id:
@@ -293,6 +310,7 @@ def main():
                 config=config,
                 corr_top_k=corr_top_k,
                 registry=registry,
+                keep_data=args.keep_data,
             )
             print_admission(result)
             if result.passed:

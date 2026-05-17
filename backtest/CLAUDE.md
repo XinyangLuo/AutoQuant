@@ -32,7 +32,7 @@ market_daily / income_q / balancesheet_q / cashflow_q
 - **数据模块**：把外部数据拉到本地，建立可重放、可增量更新的数据池。详见 [`backtest/data/CLAUDE.md`](data/CLAUDE.md)。
 - **因子模块**：定义、计算、登记、静态评估因子。因子值写入 `factors_daily` 长表；稳定因子可"晋升"回 `market_daily`。详见 [`backtest/factor/CLAUDE.md`](factor/CLAUDE.md)。
 - **策略模块**：把因子组合成可执行的策略，**只输出每日目标持仓**。详见 [`backtest/strategy/CLAUDE.md`](strategy/CLAUDE.md)。
-- **回测引擎**：把策略目标持仓 + 成本模型 → 成交序列与净值曲线。日频先行，T+1，A 股规则。
+- **回测引擎**：双轨回测（简单/详细）。把策略目标持仓 → 净值曲线。日频，A 股规则。详见 [`backtest/simulation/CLAUDE.md`](simulation/CLAUDE.md)。
 - **分析模块**：从回测产出反推策略质量。绩效指标 + 归因 + 可视化。
 
 ## 策略模块与引擎的交互细节
@@ -47,30 +47,44 @@ signals: pd.DataFrame = strategy.run(start_date, end_date)
 # - target_weight: 目标权重（可正可负，sum 不一定为 1）
 ```
 
-### 引擎输入与处理
+### 双轨回测接口
+
+#### 简单回测（SimpleSimulator）
+
+- **用途**：因子研究、参数扫描、大批量快速验证
+- **价格**：复权价格（`adj_close = close * adj_factor`）
+- **假设**：不模拟金额，无滑点、无手续费、无涨跌停、无停牌、无分红
+- **输出**：仅 `nav` 曲线
 
 ```python
-engine.run_backtest(
-    signals=signals,
-    start_date="20200101",
-    end_date="20241231",
-    initial_cash=1e8,
-    commission_rate=0.0003,
-    slippage=0.001,
-)
+from backtest.simulation import SimpleSimulator, SimulationConfig
+
+sim = SimpleSimulator(SimulationConfig(initial_cash=1e8))
+result = sim.run(signals, market_data)
+# result.nav_df: columns [date, nav, daily_return]
 ```
 
-引擎内部逐日处理：
-1. 按 `date` groupby，逐日读取目标持仓
-2. 对每只股票检查当日是否可交易：
-   - **停牌**：不可买也不可卖
-   - **涨停**（`close >= limit_up` 且前日非涨停）：不可买入
-   - **跌停**（`close <= limit_down` 且前日非跌停）：不可卖出
-3. 不可交易的标的从目标持仓中剔除
-4. 剩余可交易标的重新归一化权重
-5. 按当日收盘价（或 vwap）成交，记录交易日志
-6. T+1 日持仓生效（A股 T+1 规则）
-7. 输出 `trades.parquet` / `positions.parquet` / `nav.parquet`
+#### 详细回测（DetailedSimulator）
+
+- **用途**：策略实盘前验证，精细化模拟
+- **价格**：实际价格（非复权），分红送转改变股数/现金
+- **假设**：手续费、涨跌停、停牌、分红送转、板块差异化交易单位
+- **模式**：`o2o`（默认，开盘价成交）/ `c2c`（收盘价成交）
+- **输出**：`nav` + `positions` + `trades`
+
+```python
+from backtest.simulation import DetailedSimulator, SimulationConfig
+
+sim = DetailedSimulator(SimulationConfig(
+    initial_cash=1e8,
+    commission_rate=0.0003,
+    price_type="o2o",
+))
+result = sim.run(signals, market_data, dividends_data)
+# result.nav_df      : columns [date, nav, daily_return, total_value, cash, position_value]
+# result.positions_df: long format [date, symbol, shares, market_value, weight, avg_cost]
+# result.trades_df   : columns [trade_date, symbol, direction, shares, price, amount, commission, reason]
+```
 
 ### 关键设计原则
 

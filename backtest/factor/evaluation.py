@@ -17,45 +17,71 @@ DEFAULT_HORIZONS = [1, 5, 10, 20, 60]
 _CORR_COLUMNS = ["factor_id", "corr", "n_dates"]
 
 
-def _load_factor_and_returns(
-    factor_id: str,
+def _load_market_data(
+    symbols: list[str],
     start: str,
     end: str,
     horizons: list[int],
     ret_type: str = "close",
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load factor values, compute forward returns, and load limit prices for filtering."""
-    with FactorStorage() as fs:
-        factor_df = fs.get_factor(factor_id, start, end)
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Pre-load market data and compute forward returns once.
 
-    if factor_df.empty:
-        raise ValueError(f"No factor data for {factor_id} in range {start}~{end}")
-
-    max_h = max(horizons)
-    factor_end = factor_df["date"].max()
-    returns_end = (factor_end + pd.Timedelta(days=max_h + 5)).strftime("%Y%m%d")
-
+    Returns (market_df, returns_df, limit_df) for reuse across multiple factors.
+    """
     with MarketStorage() as ms:
-        symbols = factor_df["symbol"].unique().tolist()
         market_df = ms.get_bars(
             symbols=symbols,
             start=start,
-            end=returns_end,
+            end=end,
         )
 
     if market_df.empty:
         raise ValueError("No market data available for return calculation")
 
-    # Compute forward returns for all horizons in one pass
     returns_df = _compute_forward_returns(market_df, horizons, ret_type)
 
-    # Extract limit prices for limit-up filtering
     limit_cols = ["date", "symbol", "close", "open", "limit_up"]
     if all(c in market_df.columns for c in limit_cols):
         limit_df = market_df[limit_cols].copy()
     else:
         limit_df = pd.DataFrame(columns=limit_cols)
 
+    return market_df, returns_df, limit_df
+
+
+def _load_factor_and_returns(
+    factor_id: str,
+    start: str,
+    end: str,
+    horizons: list[int],
+    ret_type: str = "close",
+    returns_df: pd.DataFrame | None = None,
+    limit_df: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Load factor values, compute forward returns, and load limit prices for filtering.
+
+    If ``returns_df`` and ``limit_df`` are provided (from a prior
+    :func:`_load_market_data` call), they are reused instead of re-querying
+    the database.
+    """
+    with FactorStorage() as fs:
+        factor_df = fs.get_factor(factor_id, start, end)
+
+    if factor_df.empty:
+        raise ValueError(f"No factor data for {factor_id} in range {start}~{end}")
+
+    if returns_df is not None and limit_df is not None:
+        return factor_df, returns_df, limit_df
+
+    max_h = max(horizons)
+    factor_end = factor_df["date"].max()
+    returns_end = (factor_end + pd.Timedelta(days=max_h + 5)).strftime("%Y%m%d")
+
+    symbols = factor_df["symbol"].unique().tolist()
+    _, returns_df, limit_df = _load_market_data(
+        symbols=symbols, start=start, end=returns_end,
+        horizons=horizons, ret_type=ret_type,
+    )
     return factor_df, returns_df, limit_df
 
 
@@ -119,7 +145,7 @@ def _compute_ic_stats(ic_series: pd.Series) -> dict:
     mean = valid.mean()
     std = valid.std()
     n = len(valid)
-    icir = mean / std * np.sqrt(252) if std != 0 else np.nan
+    icir = mean / std if std != 0 else np.nan
     tstat = mean / (std / np.sqrt(n)) if std != 0 else np.nan
     pos_ratio = (valid > 0).sum() / n
 
@@ -317,6 +343,8 @@ def evaluate(
     n_groups: int = 10,
     corr_top_k: int = 5,
     exclude_limit_up: bool = True,
+    _returns_df: pd.DataFrame | None = None,
+    _limit_df: pd.DataFrame | None = None,
 ) -> EvaluationResult:
     """Evaluate a factor's predictive power.
 
@@ -333,12 +361,16 @@ def evaluate(
         For ``ret_type='close'``, drop rows where the signal-day close hits
         limit-up (unbuyable). For ``ret_type='open'``, drop rows where the
         next-day open hits limit-up.
+    _returns_df, _limit_df : pd.DataFrame, optional
+        Pre-computed forward returns and limit prices (internal optimisation
+        for batch evaluation — reuse market data across factors).
     """
     if horizons is None:
         horizons = DEFAULT_HORIZONS
 
     factor_df, returns_df, limit_df = _load_factor_and_returns(
-        factor_id, start, end, horizons, ret_type
+        factor_id, start, end, horizons, ret_type,
+        returns_df=_returns_df, limit_df=_limit_df,
     )
 
     merged = factor_df.merge(returns_df, on=["date", "symbol"], how="inner")
@@ -396,6 +428,47 @@ def evaluate(
     )
 
 
+def _print_comparison_table(results: list[EvaluationResult]) -> None:
+    """Print a side-by-side comparison of multiple factors (primary horizon only)."""
+    if not results:
+        return
+
+    # Pick the primary horizon (first one in the result's horizons list)
+    primary_h = results[0].horizons[0] if results[0].horizons else 1
+
+    rows = []
+    for r in results:
+        ic = r.ic_metrics.get(primary_h, {})
+        ric = r.rank_ic_metrics.get(primary_h, {})
+        max_corr = r.max_corr()
+        rows.append({
+            "factor_id": r.factor_id,
+            "IC_mean": ic.get("ic_mean"),
+            "IC_std": ic.get("ic_std"),
+            "ICIR": ic.get("icir"),
+            "IC_tstat": ic.get("ic_tstat"),
+            "IC+_ratio": ic.get("ic_positive_ratio"),
+            "RankIC_mean": ric.get("ic_mean"),
+            "RankIC_std": ric.get("ic_std"),
+            "RankICIR": ric.get("icir"),
+            "RankIC_tstat": ric.get("ic_tstat"),
+            "RankIC+_ratio": ric.get("ic_positive_ratio"),
+            "turnover": r.turnover,
+            "max_corr": max_corr[1] if max_corr else None,
+        })
+
+    df = pd.DataFrame(rows)
+    print(f"\n{'=' * 100}")
+    print(f"Factor Comparison  |  ret_type={results[0].ret_type}  |  horizon={primary_h}d")
+    print(f"{'=' * 100}")
+    # Round floats for readability
+    float_cols = [c for c in df.columns if c != "factor_id"]
+    for c in float_cols:
+        df[c] = df[c].apply(lambda x: f"{x:+.4f}" if pd.notna(x) else "N/A")
+    print(df.to_string(index=False))
+    print(f"{'=' * 100}\n")
+
+
 def print_evaluation(result: EvaluationResult) -> None:
     """Pretty-print evaluation results."""
     print(f"\n{'=' * 60}")
@@ -437,7 +510,8 @@ def print_evaluation(result: EvaluationResult) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate factor predictive power")
-    parser.add_argument("factor_id", help="Factor ID to evaluate (e.g. f_001)")
+    parser.add_argument("factor_id", nargs="?", help="Factor ID to evaluate (e.g. f_001)")
+    parser.add_argument("--all", action="store_true", help="Evaluate all registered factors")
     parser.add_argument("--start", required=True, help="Start date YYYYMMDD")
     parser.add_argument("--end", required=True, help="End date YYYYMMDD")
     parser.add_argument(
@@ -448,8 +522,8 @@ def main():
     parser.add_argument(
         "--ret-type",
         choices=["close", "open"],
-        default="close",
-        help="Return calculation type",
+        default="open",
+        help="Return calculation type (default: open)",
     )
     parser.add_argument(
         "--corr-top-k",
@@ -464,18 +538,64 @@ def main():
     )
     args = parser.parse_args()
 
-    horizons = [int(h.strip()) for h in args.horizons.split(",")]
+    if not args.factor_id and not args.all:
+        parser.error("Specify a factor_id or --all")
 
-    result = evaluate(
-        args.factor_id,
-        args.start,
-        args.end,
-        horizons=horizons,
-        ret_type=args.ret_type,
-        corr_top_k=args.corr_top_k,
-        exclude_limit_up=not args.no_exclude_limit_up,
-    )
-    print_evaluation(result)
+    from backtest.factor.registry import get_registry, list_factors
+
+    if args.all:
+        factor_ids = [f["factor_id"] for f in list_factors()]
+    else:
+        factor_ids = [args.factor_id]
+
+    if not factor_ids:
+        print("No factors registered.")
+        return
+
+    horizons = [int(h.strip()) for h in args.horizons.split(",")]
+    results: list[EvaluationResult] = []
+
+    # Batch mode: preload market data once to avoid N database round-trips
+    preloaded_returns: pd.DataFrame | None = None
+    preloaded_limit: pd.DataFrame | None = None
+    if len(factor_ids) > 1:
+        max_h = max(horizons)
+        end_dt = pd.to_datetime(args.end, format="%Y%m%d")
+        returns_end = (end_dt + pd.Timedelta(days=max_h + 5)).strftime("%Y%m%d")
+        try:
+            _, preloaded_returns, preloaded_limit = _load_market_data(
+                symbols=None,  # all symbols
+                start=args.start,
+                end=returns_end,
+                horizons=horizons,
+                ret_type=args.ret_type,
+            )
+            print(f"  Pre-loaded market data: {len(preloaded_returns):,} return rows")
+        except Exception as exc:
+            print(f"  Warning: could not pre-load market data ({exc}), falling back to per-factor load")
+
+    for fid in factor_ids:
+        try:
+            result = evaluate(
+                fid,
+                args.start,
+                args.end,
+                horizons=horizons,
+                ret_type=args.ret_type,
+                corr_top_k=args.corr_top_k,
+                exclude_limit_up=not args.no_exclude_limit_up,
+                _returns_df=preloaded_returns,
+                _limit_df=preloaded_limit,
+            )
+            results.append(result)
+        except Exception as exc:
+            print(f"\nERROR evaluating {fid}: {exc}\n")
+            continue
+
+    if len(results) == 1:
+        print_evaluation(results[0])
+    elif len(results) > 1:
+        _print_comparison_table(results)
 
 
 if __name__ == "__main__":

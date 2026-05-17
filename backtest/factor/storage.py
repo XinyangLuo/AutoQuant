@@ -209,6 +209,14 @@ class FactorStorage:
         ).fetchall()
         return {r[0] for r in rows}
 
+    def delete_factor(self, factor_id: str) -> int:
+        """Delete all rows for a factor_id. Returns number of rows deleted."""
+        result = self.conn.execute(
+            "DELETE FROM factors_daily WHERE factor_id = ?",
+            [factor_id],
+        ).fetchone()
+        return result[0] if result else 0
+
     def get_factor_stats(self, factor_id: str) -> dict:
         """Return basic stats for a factor."""
         row = self.conn.execute(
