@@ -1,4 +1,13 @@
-"""Factor module: definition, computation, storage, and offline evaluation.
+"""Factor module: definition, computation, storage, offline evaluation, admission.
+
+Two physical DuckDBs:
+
+* ``factors.duckdb`` — work area used by ``backfill`` / ``compute`` /
+  ``evaluation`` while researching new factors. Temporary.
+* ``factor_library.duckdb`` — stable library, only written to by ``admit()``.
+  This is the **only** source consulted by evaluation's cross-factor
+  correlation check, so admission compares against stabilised peers — not
+  whatever happens to be sitting in the work area.
 
 Public API
 ----------
@@ -10,21 +19,34 @@ compute_factor(factor_id, start_date, end_date, ...)
 
 evaluate(factor_id, start, end, *, horizons, ret_type)
     Offline evaluation: IC / RankIC / ICIR / turnover / decay / group returns,
-    plus cross-sectional rank correlation against existing factors.
+    plus cross-sectional rank correlation against admitted factors.
 
 FactorStorage
-    DuckDB wrapper for factors.duckdb (read / write / query).
+    DuckDB wrapper for the work DB (factors.duckdb).
+FactorLibrary
+    DuckDB wrapper for the stable library (factor_library.duckdb).
+
+admit / reject
+    Promote a factor from work → library, or discard it. Both clear the
+    work DB and update ``registry.json``.
 
 rank, z_score
     Common operators for use inside factor compute functions.
 """
 
 from backtest.factor.admission import (
+    AdmissionAction,
+    RECOMMENDED_THRESHOLDS,
+    STATUS_ADMITTED,
+    STATUS_REJECTED,
     admit,
+    check_recommended_thresholds,
     get_admitted_factor_ids,
     get_pending_factor_ids,
     get_rejected_factor_ids,
-    print_admission,
+    print_action,
+    print_status,
+    reject,
 )
 from backtest.factor.compute import compute_factor, compute_all
 from backtest.factor.evaluation import evaluate, print_evaluation
@@ -35,8 +57,17 @@ from backtest.factor.registry import (
     list_factors,
     register,
 )
-from backtest.factor.storage import FactorStorage
+from backtest.factor.storage import (
+    FACTOR_LIBRARY_DB_PATH,
+    FACTORS_WORK_DB_PATH,
+    FactorLibrary,
+    FactorStorage,
+)
 from backtest.factor.transforms import rank, z_score
+
+# Import user-defined factors so their @register decorators run on package
+# load — keeps the registry populated for backfill / evaluate / pipeline.
+from backtest.factor import user  # noqa: F401, E402
 
 __all__ = [
     "register",
@@ -45,15 +76,25 @@ __all__ = [
     "get_factor_function",
     "list_factors",
     "admit",
+    "reject",
+    "AdmissionAction",
+    "STATUS_ADMITTED",
+    "STATUS_REJECTED",
+    "RECOMMENDED_THRESHOLDS",
+    "check_recommended_thresholds",
     "get_admitted_factor_ids",
     "get_pending_factor_ids",
     "get_rejected_factor_ids",
-    "print_admission",
+    "print_action",
+    "print_status",
     "compute_factor",
     "compute_all",
     "evaluate",
     "print_evaluation",
     "FactorStorage",
+    "FactorLibrary",
+    "FACTORS_WORK_DB_PATH",
+    "FACTOR_LIBRARY_DB_PATH",
     "rank",
     "z_score",
 ]

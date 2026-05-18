@@ -80,7 +80,9 @@ class UniverseFilter:
 
         # 5. Liquidity filter
         if self.config.min_market_cap and "circ_mv" in df.columns:
-            df = df[df["circ_mv"] >= self.config.min_market_cap]
+            # circ_mv is stored in 万元 (Tushare convention) — convert to 元
+            # so the threshold is unit-aligned with min_avg_amount.
+            df = df[df["circ_mv"] * 10_000 >= self.config.min_market_cap]
 
         if self.config.min_avg_amount:
             df = self._filter_by_avg_amount(df, date, market_storage)

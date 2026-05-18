@@ -53,11 +53,22 @@ def register(
     def decorator(func: Callable):
         registry = _load_registry()
 
-        if factor_id in registry and registry[factor_id].get("func_name") != func.__name__:
+        existing = registry.get(factor_id, {})
+        if existing.get("func_name") and existing["func_name"] != func.__name__:
             raise ValueError(
                 f"factor_id '{factor_id}' already registered to "
-                f"{registry[factor_id].get('func_name')}"
+                f"{existing.get('func_name')}"
             )
+
+        # Preserve admission state across re-registration. @register runs every
+        # time the module is imported; without this merge, a single import would
+        # silently downgrade an admitted/rejected factor back to pending in the
+        # in-memory cache.
+        preserved = {
+            k: existing[k]
+            for k in ("status", "admission", "admission_history")
+            if k in existing
+        }
 
         registry[factor_id] = {
             "name": name,
@@ -67,6 +78,7 @@ def register(
             "parameters": parameters or {},
             "func_name": func.__name__,
             "func_module": func.__module__,
+            **preserved,
         }
         # In-memory only; disk sync is deferred to avoid race conditions
         _REGISTRY_CACHE = registry

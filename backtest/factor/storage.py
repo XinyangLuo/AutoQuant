@@ -1,4 +1,16 @@
-"""DuckDB storage for factors_daily."""
+"""DuckDB storage for factor values.
+
+Two physical DBs:
+
+- ``factors.duckdb`` (work area) — backing store for ``FactorStorage``.
+  Used by ``backfill`` / ``compute`` / ``evaluation``. New factors land here
+  during research. Data here is temporary and cleared after admission.
+
+- ``factor_library.duckdb`` (stable library) — backing store for
+  ``FactorLibrary``. Only ``admit()`` writes here. The correlation-with-
+  existing check in evaluation reads from here so that admission compares
+  against *stabilised* factors, never the temporary research churn.
+"""
 
 from contextlib import contextmanager
 from pathlib import Path
@@ -11,7 +23,12 @@ from backtest.data.tushare_client import _find_project_root
 
 PROJECT_ROOT = _find_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "duckdb"
-FACTORS_DB_PATH = DATA_DIR / "factors.duckdb"
+FACTORS_WORK_DB_PATH = DATA_DIR / "factors.duckdb"
+FACTOR_LIBRARY_DB_PATH = DATA_DIR / "factor_library.duckdb"
+
+# Backwards-compatible alias for callers and tests that still reference the
+# old single-DB name. Always points to the work area.
+FACTORS_DB_PATH = FACTORS_WORK_DB_PATH
 
 FACTORS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS factors_daily (
@@ -31,15 +48,19 @@ FACTOR_COLUMNS = ["date", "symbol", "factor_id", "value", "ann_date", "f_ann_dat
 class FactorStorage:
     """DuckDB storage for factor values in a long-table layout.
 
-    Schema: (date, symbol, factor_id, value, ann_date, f_ann_date)
-    - ann_date / f_ann_date are optional provenance for financial factors
-    - Non-financial factors leave them NULL
+    Defaults to the work-area DB (``factors.duckdb``). Callers can pass a
+    custom ``db_path`` to point at a different file — :class:`FactorLibrary`
+    uses this to back the stable library DB.
+
+    Schema: ``(date, symbol, factor_id, value, ann_date, f_ann_date)``.
+    ``ann_date`` / ``f_ann_date`` are optional provenance for financial
+    factors; non-financial factors leave them NULL.
     """
 
-    def __init__(self):
+    def __init__(self, db_path: Path | str | None = None):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.db_path = FACTORS_DB_PATH
-        self.conn = duckdb.connect(str(FACTORS_DB_PATH))
+        self.db_path = Path(db_path) if db_path is not None else FACTORS_WORK_DB_PATH
+        self.conn = duckdb.connect(str(self.db_path))
         self._init_tables()
 
     def _init_tables(self):
@@ -101,11 +122,20 @@ class FactorStorage:
         factor_id: str,
         start: str | None = None,
         end: str | None = None,
+        *,
+        columns: list[str] | None = None,
     ) -> pd.DataFrame:
         """Return time-series for a single factor.
 
-        Returns DataFrame with columns [date, symbol, value].
+        Default columns are ``[date, symbol, value]``. Pass ``columns`` to
+        request a different subset — e.g. ``FACTOR_COLUMNS`` to also pull
+        ``factor_id``, ``ann_date``, ``f_ann_date`` (used by
+        ``FactorLibrary.promote_from_work`` to preserve financial-factor
+        provenance).
         """
+        cols = columns or ["date", "symbol", "value"]
+        cols_sql = ", ".join(cols)
+
         conditions = ["factor_id = ?"]
         params = [factor_id]
 
@@ -116,12 +146,10 @@ class FactorStorage:
             conditions.append("date <= strptime(?, '%Y%m%d')::DATE")
             params.append(end)
 
-        where_clause = " AND ".join(conditions)
-
         sql = f"""
-            SELECT date, symbol, value
+            SELECT {cols_sql}
             FROM factors_daily
-            WHERE {where_clause}
+            WHERE {" AND ".join(conditions)}
             ORDER BY date, symbol
         """
         return self.conn.execute(sql, params).fetchdf()
@@ -217,6 +245,28 @@ class FactorStorage:
         ).fetchone()
         return result[0] if result else 0
 
+    def delete_factors(self, factor_ids: list[str]) -> dict[str, int]:
+        """Delete multiple factors in one round-trip; return ``{fid: rows}``.
+
+        DuckDB's ``DELETE`` doesn't return a per-key breakdown, so we run one
+        ``GROUP BY`` to count first, then a single bulk ``DELETE``.
+        """
+        if not factor_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in factor_ids)
+        params = list(factor_ids)
+        rows = self.conn.execute(
+            f"SELECT factor_id, COUNT(*) FROM factors_daily "
+            f"WHERE factor_id IN ({placeholders}) GROUP BY factor_id",
+            params,
+        ).fetchall()
+        counts = {fid: cnt for fid, cnt in rows}
+        self.conn.execute(
+            f"DELETE FROM factors_daily WHERE factor_id IN ({placeholders})",
+            params,
+        )
+        return {fid: counts.get(fid, 0) for fid in factor_ids}
+
     def get_factor_stats(self, factor_id: str) -> dict:
         """Return basic stats for a factor."""
         row = self.conn.execute(
@@ -230,3 +280,67 @@ class FactorStorage:
             "min_date": row[2].strftime("%Y%m%d") if row[2] else None,
             "max_date": row[3].strftime("%Y%m%d") if row[3] else None,
         }
+
+
+class FactorLibrary(FactorStorage):
+    """Stable factor library — read-mostly, writes only via ``admit()``.
+
+    Same schema as :class:`FactorStorage` but pointed at
+    ``factor_library.duckdb``. Disables :meth:`delete_factor` because the
+    library is append-only: rejected factors never enter, and rejected-after-
+    admission would itself be a deliberate action requiring a dedicated path
+    (not yet implemented).
+    """
+
+    def __init__(self, db_path: Path | str | None = None):
+        super().__init__(db_path=Path(db_path) if db_path is not None
+                                 else FACTOR_LIBRARY_DB_PATH)
+
+    def delete_factor(self, factor_id: str) -> int:  # noqa: D401 — override
+        """Disabled on the library DB.
+
+        Admitted factors are intended to be stable. Deleting one is a
+        deliberate de-admission and currently has no API surface — do it
+        manually via DuckDB if absolutely necessary.
+        """
+        raise NotImplementedError(
+            "FactorLibrary is append-only. Use the DuckDB CLI directly if "
+            "you really need to remove an admitted factor."
+        )
+
+    def delete_factors(self, factor_ids: list[str]) -> dict[str, int]:
+        raise NotImplementedError(
+            "FactorLibrary is append-only. Use the DuckDB CLI directly if "
+            "you really need to remove admitted factors."
+        )
+
+    def promote_from_work(
+        self,
+        factor_id: str,
+        work_storage: FactorStorage,
+    ) -> int:
+        """Copy a factor's data from the work DB into the library.
+
+        Reads the full long rows (including ``ann_date`` / ``f_ann_date``)
+        from ``work_storage`` and upserts them into this library. Caller
+        is responsible for clearing the work DB afterwards (typically in
+        the ``admit`` orchestrator).
+
+        Returns the number of rows written.
+        """
+        df = work_storage.get_factor(factor_id, columns=FACTOR_COLUMNS)
+        if df.empty:
+            return 0
+        self.insert_factors(df)
+        return len(df)
+
+
+__all__ = [
+    "FactorStorage",
+    "FactorLibrary",
+    "FACTORS_WORK_DB_PATH",
+    "FACTOR_LIBRARY_DB_PATH",
+    "FACTORS_DB_PATH",
+    "FACTORS_SCHEMA",
+    "FACTOR_COLUMNS",
+]

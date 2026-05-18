@@ -552,6 +552,41 @@ class MarketStorage:
             schema_cols=DIVIDEND_COLUMNS,
         )
 
+    def get_dividends(
+        self,
+        symbols: list[str] | None = None,
+        start: str | None = None,
+        end: str | None = None,
+    ) -> pd.DataFrame:
+        """Return dividend events with ex_date inside ``[start, end]``.
+
+        Filters on ``ex_date`` because that's the trading-relevant date —
+        ``DividendHandler`` keys off it for share/cash adjustments.
+        """
+        cols_sql = ", ".join(f'"{c}"' for c in DIVIDEND_COLUMNS)
+
+        conditions: list[str] = []
+        params: list = []
+        if start:
+            conditions.append("ex_date >= ?")
+            params.append(start)
+        if end:
+            conditions.append("ex_date <= ?")
+            params.append(end)
+        if symbols:
+            placeholders = ", ".join("?" for _ in symbols)
+            conditions.append(f"symbol IN ({placeholders})")
+            params.extend(symbols)
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"""
+            SELECT {cols_sql}
+            FROM dividends
+            {where_clause}
+            ORDER BY ex_date, symbol
+        """
+        return self.conn.execute(sql, params).fetchdf()
+
     # -- index_daily ----------------------------------------------------------
 
     def insert_index_daily(self, df: pd.DataFrame):

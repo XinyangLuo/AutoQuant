@@ -1,11 +1,11 @@
-"""Tests for FactorStorage."""
+"""Tests for FactorStorage and FactorLibrary."""
 
 from __future__ import annotations
 
 import pandas as pd
 import pytest
 
-from backtest.factor.storage import FactorStorage
+from backtest.factor.storage import FactorLibrary, FactorStorage
 
 
 @pytest.fixture
@@ -19,12 +19,17 @@ def sample_factors():
 
 
 @pytest.fixture
-def tmp_storage(tmp_path, monkeypatch):
-    """Yield a FactorStorage backed by a temporary DuckDB file."""
-    test_db = tmp_path / "test_factors.duckdb"
-    monkeypatch.setattr("backtest.factor.storage.FACTORS_DB_PATH", test_db)
-    with FactorStorage() as fs:
+def tmp_storage(tmp_path):
+    """A FactorStorage backed by a temporary DuckDB file."""
+    with FactorStorage(db_path=tmp_path / "test_factors.duckdb") as fs:
         yield fs
+
+
+@pytest.fixture
+def tmp_library(tmp_path):
+    """A FactorLibrary backed by a temporary DuckDB file."""
+    with FactorLibrary(db_path=tmp_path / "test_library.duckdb") as lib:
+        yield lib
 
 
 class TestInsertAndRead:
@@ -88,3 +93,37 @@ class TestEmptyInsert:
         bad_df = pd.DataFrame({"date": ["2024-01-01"], "symbol": ["A"]})
         with pytest.raises(ValueError, match="Missing required"):
             tmp_storage.insert_factors(bad_df)
+
+
+class TestFactorLibrary:
+    def test_delete_factor_disabled(self, tmp_library, sample_factors):
+        tmp_library.insert_factors(sample_factors)
+        with pytest.raises(NotImplementedError, match="append-only"):
+            tmp_library.delete_factor("f_001")
+
+    def test_promote_from_work_copies_rows(self, tmp_storage, tmp_library,
+                                            sample_factors):
+        tmp_storage.insert_factors(sample_factors)
+        n = tmp_library.promote_from_work("f_001", tmp_storage)
+        assert n == 4
+        # Library now has the data.
+        lib_rows = tmp_library.get_factor("f_001", "20240101", "20240102")
+        assert len(lib_rows) == 4
+        # Work still has the data — promote_from_work does NOT clear work.
+        # That's a separate step taken by admit().
+        work_rows = tmp_storage.get_factor("f_001", "20240101", "20240102")
+        assert len(work_rows) == 4
+
+    def test_promote_empty_returns_zero(self, tmp_storage, tmp_library):
+        n = tmp_library.promote_from_work("f_missing", tmp_storage)
+        assert n == 0
+
+    def test_promote_then_clear_work_round_trip(self, tmp_storage, tmp_library,
+                                                 sample_factors):
+        """Mirror what admit() does end-to-end."""
+        tmp_storage.insert_factors(sample_factors)
+        tmp_library.promote_from_work("f_001", tmp_storage)
+        cleared = tmp_storage.delete_factor("f_001")
+        assert cleared == 4
+        assert tmp_storage.get_factor("f_001").empty
+        assert len(tmp_library.get_factor("f_001")) == 4

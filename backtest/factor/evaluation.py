@@ -9,8 +9,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.data.storage import MarketStorage
-from backtest.factor.registry import get_registry
-from backtest.factor.storage import FactorStorage
+from backtest.factor.storage import FactorLibrary, FactorStorage
 
 
 DEFAULT_HORIZONS = [1, 5, 10, 20, 60]
@@ -194,28 +193,26 @@ def _corr_with_existing(
     storage: FactorStorage,
     top_k: int = 5,
 ) -> pd.DataFrame:
-    """Average daily cross-sectional rank correlation with *admitted* factors only.
+    """Average daily cross-sectional rank correlation with library factors.
 
-    Only factors with ``status='admitted'`` in the registry participate in the
-    comparison. Rejected / pending factors are ignored — their data may have
-    been purged from ``factors_daily`` anyway.
+    ``storage`` is normally a :class:`~backtest.factor.storage.FactorLibrary`
+    instance (passed in from :func:`evaluate`), so the comparison runs
+    against the **stable, admitted** factors only — never the temporary
+    work-DB churn that would otherwise pollute the duplicate check.
+
+    The function itself doesn't care which DB ``storage`` is backed by
+    (handy for tests), only that it answers ``get_factors_long`` with the
+    right schema.
 
     Pass ``top_k=0`` to skip the comparison entirely.
     """
     if top_k <= 0 or factor_df.empty:
         return pd.DataFrame(columns=_CORR_COLUMNS)
 
-    admitted = {
-        fid for fid, meta in get_registry().items()
-        if meta.get("status") == "admitted" and fid != factor_id
-    }
-    if not admitted:
-        return pd.DataFrame(columns=_CORR_COLUMNS)
-
     start = factor_df["date"].min().strftime("%Y%m%d")
     end = factor_df["date"].max().strftime("%Y%m%d")
     others = storage.get_factors_long(
-        factor_ids=list(admitted), start=start, end=end
+        start=start, end=end, exclude=factor_id,
     )
     if others.empty:
         return pd.DataFrame(columns=_CORR_COLUMNS)
@@ -290,6 +287,25 @@ class EvaluationResult:
             return None
         row = self.corr_with_existing.iloc[0]
         return str(row["factor_id"]), float(row["corr"])
+
+    def threshold_metrics(self, primary_horizon: int = 20) -> dict:
+        """Pack the four reference-threshold metrics into a flat dict.
+
+        Convenience for feeding into
+        :func:`backtest.factor.admission.check_recommended_thresholds`.
+        Returns NaN/inf sentinels where the underlying metric is missing
+        (so that comparisons fail closed rather than silently pass).
+        """
+        ric = self.rank_ic_metrics.get(primary_horizon, {})
+        ic = self.ic_metrics.get(primary_horizon, {})
+        top = self.max_corr()
+        return {
+            "rankicir": ric.get("icir", float("-inf")),
+            "ic_positive_ratio": ic.get("ic_positive_ratio", 0.0),
+            "turnover": self.turnover,
+            "max_corr": abs(top[1]) if top else 0.0,
+            "primary_horizon": primary_horizon,
+        }
 
     def __repr__(self) -> str:
         return f"EvaluationResult({self.factor_id}, ret_type={self.ret_type}, horizons={self.horizons})"
@@ -414,8 +430,8 @@ def evaluate(
     turnover = _turnover(factor_df)
 
     if corr_top_k > 0:
-        with FactorStorage() as fs:
-            corr_df = _corr_with_existing(factor_df, factor_id, fs, top_k=corr_top_k)
+        with FactorLibrary() as lib:
+            corr_df = _corr_with_existing(factor_df, factor_id, lib, top_k=corr_top_k)
     else:
         corr_df = pd.DataFrame(columns=_CORR_COLUMNS)
 
@@ -508,10 +524,47 @@ def print_evaluation(result: EvaluationResult) -> None:
     print("\n--- Correlation with existing factors (RankIC, daily mean) ---")
     top = result.max_corr()
     if top is None:
-        print("  (no other factors in storage)")
+        print("  (no other factors in library)")
     else:
         print(f"  max |corr|: {top[0]} -> {top[1]:+.4f}")
         print(result.corr_with_existing.to_string(index=False))
+
+    # Local import to break a circular dependency with admission.py.
+    from backtest.factor.admission import (
+        RECOMMENDED_THRESHOLDS,
+        check_recommended_thresholds,
+    )
+
+    primary_h = int(RECOMMENDED_THRESHOLDS["primary_horizon"])
+    metrics = result.threshold_metrics(primary_horizon=primary_h)
+    checks = check_recommended_thresholds(metrics)
+
+    def _mark(ok: bool) -> str:
+        return "OK " if ok else "<<<"
+
+    print(f"\n--- Reference thresholds (primary_horizon={primary_h}, informational only) ---")
+    print(
+        f"  RankICIR      = {metrics['rankicir']:>+8.4f}  "
+        f"(>= {RECOMMENDED_THRESHOLDS['min_rankicir']})  {_mark(checks['rankicir'])}"
+    )
+    print(
+        f"  IC+ ratio     = {metrics['ic_positive_ratio']:>8.2%}  "
+        f"(>= {RECOMMENDED_THRESHOLDS['min_ic_positive_ratio']:.0%})  "
+        f"{_mark(checks['ic_positive_ratio'])}"
+    )
+    print(
+        f"  Turnover      = {metrics['turnover']:>8.4f}  "
+        f"(<  {RECOMMENDED_THRESHOLDS['max_turnover']})  {_mark(checks['turnover'])}"
+    )
+    print(
+        f"  Max |corr|    = {metrics['max_corr']:>8.4f}  "
+        f"(<  {RECOMMENDED_THRESHOLDS['max_corr']})  {_mark(checks['max_corr'])}"
+    )
+    n_pass = sum(checks.values())
+    if n_pass == 4:
+        print("  → All reference thresholds met. Run a backtest and decide on `admit`.")
+    else:
+        print(f"  → {4 - n_pass} threshold(s) not met. Consider tuning or rejecting.")
 
     print(f"{'=' * 60}\n")
 
@@ -529,7 +582,7 @@ def plot_evaluation(
         Which forward-return horizon to plot (default 20).
     output_path : str, optional
         File path to save the figure.  If None, writes to
-        ``results/evaluation/{factor_id}_{horizon}d.png``.
+        ``results/<factor_id>/factor_eval/<factor_id>_<horizon>d.png``.
 
     Returns
     -------
@@ -603,7 +656,7 @@ def plot_evaluation(
 
     if output_path is None:
         from pathlib import Path
-        out_dir = Path("results/evaluation")
+        out_dir = Path("results") / result.factor_id / "factor_eval"
         out_dir.mkdir(parents=True, exist_ok=True)
         output_path = str(out_dir / f"{result.factor_id}_{horizon}d.png")
 

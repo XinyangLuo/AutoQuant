@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""
-Unified backfill entry for all registered factors.
+"""Backfill factor values into the **work** DB.
+
+Use this while researching a new factor: it lands in ``factors.duckdb``
+(work area). Once you decide to admit it, ``admit()`` moves the data to
+``factor_library.duckdb`` and clears it from here. Until then it remains a
+temporary research artefact.
+
+Daily incremental refresh of *already-admitted* factors lives in
+``update.py`` and writes to the library DB.
 
 Usage:
-    python -m backtest.factor.backfill --all
-    python -m backtest.factor.backfill f_001
-    python -m backtest.factor.backfill --all --test-days 10
+    python -m backtest.factor.backfill f_001                   # single factor
+    python -m backtest.factor.backfill --pending               # all pending factors
+    python -m backtest.factor.backfill f_001 --test-days 60    # last 60 trade days only
 """
 
 from __future__ import annotations
@@ -15,12 +22,11 @@ import argparse
 import pandas as pd
 from tqdm import tqdm
 
-from backtest.data.storage import MarketStorage
 from backtest.data.stock_list import fetch_stock_list
+from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
+from backtest.factor.admission import get_pending_factor_ids
 from backtest.factor.compute import compute_factor
-from backtest.factor.admission import get_admitted_factor_ids, get_pending_factor_ids
-from backtest.factor.registry import get_registry
 from backtest.factor.storage import FactorStorage
 
 
@@ -32,10 +38,7 @@ def backfill_factor(
     market_storage: MarketStorage | None = None,
     factor_storage: FactorStorage | None = None,
 ) -> int:
-    """Backfill a single factor from start_date to end_date.
-
-    Returns the number of rows written.
-    """
+    """Backfill a single factor into the work DB. Returns rows written."""
     df = compute_factor(
         factor_id,
         start_date,
@@ -58,22 +61,20 @@ def backfill_factor(
 
 
 def _get_earliest_start_date(stock_list: pd.DataFrame) -> str:
-    """Return the earliest list_date among all stocks."""
-    earliest = stock_list["list_date"].min()
-    return str(earliest)
+    return str(stock_list["list_date"].min())
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill factor values")
+    parser = argparse.ArgumentParser(description="Backfill factor values into the work DB")
     parser.add_argument("factor_id", nargs="?", help="Factor ID to backfill (e.g. f_001)")
-    parser.add_argument("--all", action="store_true", help="Backfill all admitted factors")
-    parser.add_argument("--all-statuses", action="store_true", help="Backfill all registered factors regardless of status")
-    parser.add_argument("--pending", action="store_true", help="Backfill only pending (unevaluated) factors")
-    parser.add_argument("--test-days", type=int, default=None, help="Only backfill last N trade days")
+    parser.add_argument("--pending", action="store_true",
+                        help="Backfill all pending (unadmitted, unrejected) factors")
+    parser.add_argument("--test-days", type=int, default=None,
+                        help="Only backfill the last N trade days (debugging)")
     args = parser.parse_args()
 
-    if not args.all and not args.all_statuses and not args.pending and not args.factor_id:
-        parser.error("Specify --all, --all-statuses, --pending, or a factor_id")
+    if not args.pending and not args.factor_id:
+        parser.error("Specify a factor_id or --pending")
 
     stock_list = fetch_stock_list()
     earliest_date = _get_earliest_start_date(stock_list)
@@ -86,31 +87,25 @@ def main():
 
         if args.test_days:
             all_dates = get_trade_dates(earliest_date, latest_date)
-            if len(all_dates) >= args.test_days:
-                start_date = all_dates[-args.test_days]
-            else:
-                start_date = earliest_date
+            start_date = (all_dates[-args.test_days]
+                          if len(all_dates) >= args.test_days else earliest_date)
             end_date = latest_date
         else:
             start_date = earliest_date
             end_date = latest_date
 
-        print(f"Backfill range: {start_date} ~ {end_date}")
+        print(f"Backfill range: {start_date} ~ {end_date} (work DB)")
 
         if args.factor_id:
             factor_ids = [args.factor_id]
-        elif args.all_statuses:
-            factor_ids = list(get_registry().keys())
-        elif args.pending:
+        else:
             factor_ids = get_pending_factor_ids()
-        else:  # --all (default)
-            factor_ids = get_admitted_factor_ids()
 
         if not factor_ids:
-            print("No factors registered.")
+            print("No factors to backfill.")
             return
 
-        print(f"Factors to backfill: {factor_ids}")
+        print(f"Factors: {factor_ids}")
 
         with FactorStorage() as factor_storage:
             for factor_id in tqdm(factor_ids, desc="backfill"):
@@ -121,7 +116,6 @@ def main():
                         continue
 
                     if existing_max:
-                        # Get the next trade date after existing_max
                         resume_dates = get_trade_dates(existing_max, end_date)
                         factor_start = resume_dates[1] if len(resume_dates) > 1 else end_date
                         print(f"  {factor_id}: resuming from {factor_start}")
