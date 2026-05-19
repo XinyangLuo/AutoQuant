@@ -104,7 +104,7 @@ class StrategyConfig:
 
     name: str = "default"
     strategy_type: str = "single_factor_topk"
-    rebalance_freq: str = "1W"  # "1D" / "1W" / "2W" / "1M" / "EOM"
+    rebalance_freq: str = "1D"  # "1D" / "5D" / "1W" / "2W" / "1M" / "EOM"
     delay: int = 1
 
     universe: UniverseConfig = field(default_factory=UniverseConfig)
@@ -135,7 +135,7 @@ class StrategyConfig:
         return cls(
             name=d.get("name", "default"),
             strategy_type=d.get("strategy", {}).get("type", "single_factor_topk"),
-            rebalance_freq=d.get("strategy", {}).get("rebalance_freq", "1W"),
+            rebalance_freq=d.get("strategy", {}).get("rebalance_freq", "1D"),
             delay=d.get("strategy", {}).get("delay", 1),
             universe=universe,
             factors=factors,

@@ -20,6 +20,10 @@ Usage:
     python scripts/run_factor_pipeline.py f_rev_05 \\
         --variant swl2_capq5 \\
         --start 20160101 --end 20251231 \\
+        --direction asc --benchmark 000300.SH
+
+    # 显式指定绝对数量 + 周度换仓 (旧默认)
+    python scripts/run_factor_pipeline.py f_rev_05 \\
         --top-n 50 --rebalance 1W --decay 5 \\
         --direction asc --benchmark 000300.SH
 
@@ -30,8 +34,8 @@ Usage:
     # Skip detailed backtest (factor research mode)
     python scripts/run_factor_pipeline.py f_rev_05 --skip-detailed
 
-    # Include decile-layered backtest in Stage 1
-    python scripts/run_factor_pipeline.py f_rev_05 --decile
+    # Skip decile-layered backtest
+    python scripts/run_factor_pipeline.py f_rev_05 --no-decile
 
 The CLI surface is intentionally narrow — for anything more elaborate
 build your own driver using the same building blocks (StrategyConfig +
@@ -136,8 +140,8 @@ def _build_tag(args) -> str:
 
 
 def _stage_label(stage: int, args) -> str:
-    """Stage label: [1/3] or [1/4] depending on --decile."""
-    total = 4 if args.decile else 3
+    """Stage label: [1/4] or [1/3] depending on --no-decile."""
+    total = 3 if args.no_decile else 4
     return f"[{stage}/{total}]"
 
 
@@ -162,7 +166,7 @@ def stage_factor_eval(args, out_dir: Path) -> dict:
         ret_type=args.ret_type,
         corr_top_k=5,
         exclude_limit_up=True,
-        run_decile_backtest=args.decile,
+        run_decile_backtest=not args.no_decile,
     )
     print_evaluation(result)
 
@@ -171,7 +175,7 @@ def stage_factor_eval(args, out_dir: Path) -> dict:
     print(f"  saved: {plot_path}")
 
     # Decile plot
-    if args.decile and result.decile_result is not None:
+    if not args.no_decile and result.decile_result is not None:
         from backtest.simulation.decile import plot_decile_backtest
         decile_dir = out_dir.parent / "decile_backtest"
         decile_dir.mkdir(parents=True, exist_ok=True)
@@ -194,7 +198,7 @@ def stage_factor_eval(args, out_dir: Path) -> dict:
         "threshold_checks": checks,
         "max_corr": result.max_corr(),
     }
-    if args.decile and result.decile_result is not None:
+    if not args.no_decile and result.decile_result is not None:
         dr = result.decile_result
         summary["decile"] = {
             "monotonicity_score": dr.monotonicity_score,
@@ -203,6 +207,14 @@ def stage_factor_eval(args, out_dir: Path) -> dict:
             "ls_max_drawdown": dr.ls_metrics.get("max_drawdown"),
             "d1_annual_return": dr.decile_metrics.get(0, {}).get("annual_return"),
             "d10_annual_return": dr.decile_metrics.get(9, {}).get("annual_return"),
+            "decile_metrics": {
+                str(d): {
+                    "annual_return": m.get("annual_return"),
+                    "sharpe": m.get("sharpe"),
+                    "max_drawdown": m.get("max_drawdown"),
+                }
+                for d, m in dr.decile_metrics.items()
+            },
         }
 
     with open(out_dir / "eval_summary.json", "w", encoding="utf-8") as f:
@@ -396,53 +408,53 @@ def write_pipeline_markdown(
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     lines: list[str] = []
-    lines.append(f"# Factor Pipeline Report: `{fid}`")
+    lines.append(f"# 因子流水线报告: `{fid}`")
     lines.append("")
-    lines.append(f"- **Generated**: {now}")
-    lines.append(f"- **Period**: {period}")
-    lines.append(f"- **Variant**: `{args.variant}`")
-    lines.append(f"- **Tag**: `{tag}`")
+    lines.append(f"- **生成时间**: {now}")
+    lines.append(f"- **回测区间**: {period}")
+    lines.append(f"- **中性化方案**: `{args.variant}`")
+    lines.append(f"- **标签**: `{tag}`")
     lines.append("")
 
-    # ── 1. Strategy Configuration ───────────────────────────────────────
+    # ── 1. 策略配置 ───────────────────────────────────────
     sel = f"top{args.top_n}" if args.top_n else f"top{int(args.top_pct * 100)}pct"
     cfg_rows = [
-        ["Universe selection", sel],
-        ["Rebalance", args.rebalance],
-        ["Direction", args.direction],
-        ["Decay", str(args.decay or 0)],
-        ["Market-cap neutral", "Yes" if args.market_cap_neutral else "No"],
-        ["Min market cap", f"{args.min_market_cap:,.0f}"],
-        ["Min avg amount", f"{args.min_avg_amount:,.0f}"],
-        ["Benchmark", args.benchmark],
+        ["选股范围", sel],
+        ["调仓频率", args.rebalance],
+        ["方向", "降序(大→小)" if args.direction == "desc" else "升序(小→大)"],
+        ["衰减窗口", str(args.decay or 0)],
+        ["市值中性化", "是" if args.market_cap_neutral else "否"],
+        ["最小市值", f"{args.min_market_cap:,.0f}"],
+        ["最小日均成交额", f"{args.min_avg_amount:,.0f}"],
+        ["基准指数", args.benchmark],
     ]
     if args.index_members:
-        cfg_rows.append(["Index members", args.index_members])
-    lines.append("## 1. Strategy Configuration")
+        cfg_rows.append(["指数成分股限制", args.index_members])
+    lines.append("## 1. 策略配置")
     lines.append("")
-    lines.extend(_md_table(["Parameter", "Value"], cfg_rows))
+    lines.extend(_md_table(["参数", "取值"], cfg_rows))
     lines.append("")
 
-    # ── 2. Factor Static Evaluation ─────────────────────────────────────
-    lines.append("## 2. Factor Static Evaluation")
+    # ── 2. 因子静态评估 ─────────────────────────────────────
+    lines.append("## 2. 因子静态评估")
     lines.append("")
 
     # IC / RankIC table
     metrics_by_h = eval_summary.get("metrics_by_horizon", [])
     if metrics_by_h:
-        ic_headers = ["Horizon", "IC_mean", "IC_std", "ICIR", "IC_tstat",
-                      "RankIC_mean", "RankIC_std", "RankICIR", "RankIC_tstat"]
+        ic_headers = ["预测期", "IC均值", "IC标准差", "ICIR", "IC_t值",
+                      "RankIC均值", "RankIC标准差", "RankICIR", "RankIC_t值"]
         ic_rows = []
         for row in metrics_by_h:
             h = row.get("horizon", "")
             ic_rows.append([
-                str(h),
+                f"{h}日",
                 _fmt(row.get("IC_mean"), "f4"), _fmt(row.get("IC_std"), "f4"),
                 _fmt(row.get("ICIR"), "f4"), _fmt(row.get("IC_tstat"), "f4"),
                 _fmt(row.get("RankIC_mean"), "f4"), _fmt(row.get("RankIC_std"), "f4"),
                 _fmt(row.get("RankICIR"), "f4"), _fmt(row.get("RankIC_tstat"), "f4"),
             ])
-        lines.append("### 2.1 IC / RankIC by Horizon")
+        lines.append("### 2.1 IC / RankIC 分预测期")
         lines.append("")
         lines.extend(_md_table(ic_headers, ic_rows))
         lines.append("")
@@ -453,60 +465,83 @@ def write_pipeline_markdown(
     n_pass = sum(checks.values())
     thr_rows = [
         ["RankICIR", _fmt(tm.get("rankicir"), "f4"),
-         f">= {RECOMMENDED_THRESHOLDS['min_rankicir']}", "PASS" if checks.get("rankicir") else "FAIL"],
-        ["IC+ ratio", _fmt(tm.get("ic_positive_ratio"), "pct"),
-         f">= {RECOMMENDED_THRESHOLDS['min_ic_positive_ratio']:.0%}", "PASS" if checks.get("ic_positive_ratio") else "FAIL"],
-        ["Turnover", _fmt(tm.get("turnover"), "f4"),
-         f"< {RECOMMENDED_THRESHOLDS['max_turnover']}", "PASS" if checks.get("turnover") else "FAIL"],
-        ["Max |corr|", _fmt(tm.get("max_corr"), "f4"),
-         f"< {RECOMMENDED_THRESHOLDS['max_corr']}", "PASS" if checks.get("max_corr") else "FAIL"],
+         f">= {RECOMMENDED_THRESHOLDS['min_rankicir']}", "通过" if checks.get("rankicir") else "未通过"],
+        ["IC正比例", _fmt(tm.get("ic_positive_ratio"), "pct"),
+         f">= {RECOMMENDED_THRESHOLDS['min_ic_positive_ratio']:.0%}", "通过" if checks.get("ic_positive_ratio") else "未通过"],
+        ["换手率", _fmt(tm.get("turnover"), "f4"),
+         f"< {RECOMMENDED_THRESHOLDS['max_turnover']}", "通过" if checks.get("turnover") else "未通过"],
+        ["最大|相关性|", _fmt(tm.get("max_corr"), "f4"),
+         f"< {RECOMMENDED_THRESHOLDS['max_corr']}", "通过" if checks.get("max_corr") else "未通过"],
     ]
-    lines.append("### 2.2 Admission Threshold Checks")
+    lines.append("### 2.2 准入门槛检查")
     lines.append("")
-    lines.extend(_md_table(["Check", "Value", "Threshold", "Pass"], thr_rows))
+    lines.extend(_md_table(["检查项", "实际值", "门槛", "结果"], thr_rows))
     lines.append("")
     if n_pass == 4:
-        lines.append("> All 4 reference thresholds **PASSED**. Proceed to backtest review.")
+        lines.append("> 4 项门槛**全部通过**。可进入回测评审阶段。")
     else:
-        lines.append(f"> **{4 - n_pass} threshold(s) FAILED**. Consider tuning or rejecting.")
+        lines.append(f"> **{4 - n_pass} 项未通过**。建议调参或放弃。")
     lines.append("")
 
     # Turnover & max corr
-    lines.append("### 2.3 Other Metrics")
+    lines.append("### 2.3 其他指标")
     lines.append("")
-    lines.append(f"- **Turnover**: {tm.get('turnover', 'N/A')}")
+    lines.append(f"- **换手率**: {tm.get('turnover', 'N/A')}")
     max_corr = eval_summary.get("max_corr")
     if max_corr:
-        lines.append(f"- **Max correlation with existing factors**: {max_corr[0]} → {_fmt(max_corr[1], 'f4')}")
+        lines.append(f"- **与现有因子最大相关性**: {max_corr[0]} → {_fmt(max_corr[1], 'f4')}")
     else:
-        lines.append("- **Max correlation with existing factors**: N/A (no existing factors)")
+        lines.append("- **与现有因子最大相关性**: 无 (因子库为空)")
     lines.append("")
 
     # Decile backtest
     decile = eval_summary.get("decile")
     if decile:
-        lines.append("### 2.4 Decile Backtest")
+        lines.append("### 2.4 十分位分层回测")
         lines.append("")
-        lines.append(f"- **Monotonicity score**: {decile.get('monotonicity_score', 'N/A')}")
-        lines.append(f"- **Long-Short annual return**: {_fmt(decile.get('ls_annual_return'), 'pct')}")
-        lines.append(f"- **Long-Short Sharpe**: {_fmt(decile.get('ls_sharpe'), 'f3')}")
-        lines.append(f"- **Long-Short max drawdown**: {_fmt(decile.get('ls_max_drawdown'), 'pct')}")
+        lines.append(f"- **单调性得分**: {decile.get('monotonicity_score', 'N/A')}")
+        lines.append(f"- **多空组合年化收益**: {_fmt(decile.get('ls_annual_return'), 'pct')}")
+        lines.append(f"- **多空组合夏普**: {_fmt(decile.get('ls_sharpe'), 'f3')}")
+        lines.append(f"- **多空组合最大回撤**: {_fmt(decile.get('ls_max_drawdown'), 'pct')}")
         d1 = decile.get("d1_annual_return")
         d10 = decile.get("d10_annual_return")
         if d1 is not None and d10 is not None:
-            lines.append(f"- **D1 annual return**: {_fmt(d1, 'pct')}")
-            lines.append(f"- **D10 annual return**: {_fmt(d10, 'pct')}")
-            lines.append(f"- **D10 - D1 spread**: {_fmt(d10 - d1, 'pct')}")
+            lines.append(f"- **D1 年化收益**: {_fmt(d1, 'pct')}")
+            lines.append(f"- **D10 年化收益**: {_fmt(d10, 'pct')}")
+            lines.append(f"- **D10 - D1  spread**: {_fmt(d10 - d1, 'pct')}")
+        lines.append("")
+
+        # Full 10-decile table
+        dm = decile.get("decile_metrics", {})
+        if dm:
+            lines.append("#### 十分位详细表现")
+            lines.append("")
+            dec_headers = ["分位", "年化收益", "夏普比率", "最大回撤"]
+            dec_rows = []
+            for d in range(10):
+                m = dm.get(str(d), {})
+                dec_rows.append([
+                    f"D{d + 1}",
+                    _fmt(m.get("annual_return"), "pct"),
+                    _fmt(m.get("sharpe"), "f3"),
+                    _fmt(m.get("max_drawdown"), "pct"),
+                ])
+            lines.extend(_md_table(dec_headers, dec_rows))
+            lines.append("")
+
+        # Reference decile plot
+        decile_plot_rel = f"../decile_backtest/{fid}_{args.variant}_decile.png"
+        lines.append(f"![十分位净值曲线]({decile_plot_rel})")
         lines.append("")
 
     # ── 3. Simple Backtest ──────────────────────────────────────────────
-    lines.append("## 3. Simple Backtest (Vectorised, No Costs)")
+    lines.append("## 3. 简单回测 (向量化, 无成本)")
     lines.append("")
     lines.extend(_md_metrics_section(simple_metrics))
 
     # ── 4. Detailed Backtest ────────────────────────────────────────────
     if detailed_metrics:
-        lines.append("## 4. Detailed Backtest (Event-Driven, With Costs)")
+        lines.append("## 4. 详细回测 (事件驱动, 含成本)")
         lines.append("")
         lines.extend(_md_metrics_section(detailed_metrics))
 
@@ -514,43 +549,43 @@ def write_pipeline_markdown(
         simple_ann = simple_metrics.get("annual_return", 0) or 0
         detailed_ann = detailed_metrics.get("annual_return", 0) or 0
         drag = simple_ann - detailed_ann
-        lines.append("### 4.1 Cost Drag")
+        lines.append("### 4.1 成本侵蚀")
         lines.append("")
-        lines.append(f"- **Simple annual return**: {_fmt(simple_ann, 'pct')}")
-        lines.append(f"- **Detailed annual return**: {_fmt(detailed_ann, 'pct')}")
-        lines.append(f"- **Cost drag (simple - detailed)**: {_fmt(drag, 'pct')}")
+        lines.append(f"- **简单回测年化收益**: {_fmt(simple_ann, 'pct')}")
+        lines.append(f"- **详细回测年化收益**: {_fmt(detailed_ann, 'pct')}")
+        lines.append(f"- **成本侵蚀 (简单 - 详细)**: {_fmt(drag, 'pct')}")
         lines.append("")
 
     # ── 5. Decision Summary ─────────────────────────────────────────────
     ds_rows = [
-        ["Factor eval", "Thresholds passed", f"{n_pass}/4"],
+        ["因子评估", "门槛通过数", f"{n_pass}/4"],
     ]
     if decile:
         ds_rows.append(
-            ["Decile", "Monotonicity", _fmt(decile.get("monotonicity_score"), "f3")]
+            ["十分位", "单调性", _fmt(decile.get("monotonicity_score"), "f3")]
         )
     ds_rows.append(
-        ["Simple BT", "Sharpe / MDD",
+        ["简单回测", "夏普 / 最大回撤",
          f"{_fmt(simple_metrics.get('sharpe'), 'f3')} / {_fmt(simple_metrics.get('max_drawdown'), 'pct')}"]
     )
     if detailed_metrics:
         ds_rows.append(
-            ["Detailed BT", "Sharpe / MDD",
+            ["详细回测", "夏普 / 最大回撤",
              f"{_fmt(detailed_metrics.get('sharpe'), 'f3')} / {_fmt(detailed_metrics.get('max_drawdown'), 'pct')}"]
         )
-    lines.append("## 5. Decision Summary")
+    lines.append("## 5. 决策汇总")
     lines.append("")
-    lines.extend(_md_table(["Stage", "Metric", "Value"], ds_rows))
+    lines.extend(_md_table(["阶段", "指标", "数值"], ds_rows))
     lines.append("")
 
     # Next steps
-    lines.append("## 6. Next Steps")
+    lines.append("## 6. 下一步")
     lines.append("")
     lines.append("```bash")
-    lines.append(f"# Admit this factor to the library")
+    lines.append(f"# 通过并入库")
     lines.append(f"python -m backtest.factor.admission admit {fid} --variant {args.variant} --tag {tag}")
     lines.append("")
-    lines.append(f"# Or reject it")
+    lines.append(f"# 或放弃")
     lines.append(f"python -m backtest.factor.admission reject {fid} --variant {args.variant} --tag {tag}")
     lines.append("```")
     lines.append("")
@@ -564,28 +599,28 @@ def write_pipeline_markdown(
 def _md_metrics_section(metrics: dict) -> list[str]:
     """Render a subset of key metrics as markdown lines."""
     if not metrics:
-        return ["*No metrics available.*", ""]
+        return ["*暂无数据。*", ""]
 
     lines: list[str] = []
-    lines.append("| Metric | Value |")
-    lines.append("|--------|-------|")
+    lines.append("| 指标 | 数值 |")
+    lines.append("|------|------|")
 
     _rows: list[tuple[str, str, str]] = [
-        ("Total Return", "total_return", "pct"),
-        ("Annualised Return", "annual_return", "pct"),
-        ("Annualised Volatility", "annual_volatility", "pct"),
-        ("Sharpe", "sharpe", "f3"),
-        ("Sortino", "sortino", "f3"),
-        ("Calmar", "calmar", "f3"),
-        ("Max Drawdown", "max_drawdown", "pct"),
-        ("Daily Win Rate", "daily_win_rate", "pct"),
-        ("Monthly Win Rate", "monthly_win_rate", "pct"),
-        ("Information Ratio", "information_ratio", "f3"),
-        ("Annual Excess Return", "annual_excess_return", "pct"),
-        ("Avg Daily Turnover", "avg_daily_turnover", "pct"),
-        ("Annual Turnover", "annual_turnover", "f2"),
-        ("Total Trades", "total_trades", "int"),
-        ("Fees % of Initial", "fees_pct_of_initial", "pct"),
+        ("累计收益", "total_return", "pct"),
+        ("年化收益", "annual_return", "pct"),
+        ("年化波动率", "annual_volatility", "pct"),
+        ("夏普比率", "sharpe", "f3"),
+        ("索提诺比率", "sortino", "f3"),
+        ("卡玛比率", "calmar", "f3"),
+        ("最大回撤", "max_drawdown", "pct"),
+        ("日胜率", "daily_win_rate", "pct"),
+        ("月胜率", "monthly_win_rate", "pct"),
+        ("信息比率", "information_ratio", "f3"),
+        ("年化超额收益", "annual_excess_return", "pct"),
+        ("日均换手率", "avg_daily_turnover", "pct"),
+        ("年化换手率", "annual_turnover", "f2"),
+        ("总交易笔数", "total_trades", "int"),
+        ("费用占本金比例", "fees_pct_of_initial", "pct"),
     ]
     for label, key, kind in _rows:
         v = metrics.get(key)
@@ -597,27 +632,27 @@ def _md_metrics_section(metrics: dict) -> list[str]:
 
 def print_decision_hint(args, eval_summary: dict, simple: dict, detailed: dict | None) -> None:
     print("=" * 70)
-    print("Decision summary")
+    print("决策汇总")
     print("=" * 70)
     checks = eval_summary["threshold_checks"]
     n_pass = sum(checks.values())
-    print(f"  Factor thresholds passed : {n_pass}/4  ({checks})")
+    print(f"  因子门槛通过     : {n_pass}/4  ({checks})")
     decile = eval_summary.get("decile")
     if decile:
-        print(f"  Decile monotonicity      : {decile.get('monotonicity_score', float('nan')):+.3f}")
-        print(f"  Decile LS ann_ret / sharpe: "
+        print(f"  十分位单调性     : {decile.get('monotonicity_score', float('nan')):+.3f}")
+        print(f"  多空年化收益/夏普: "
               f"{decile.get('ls_annual_return', 0) or 0:+.2%} / {decile.get('ls_sharpe', float('nan')):.2f}")
-    print(f"  Simple   Sharpe / MDD    : "
+    print(f"  简单回测 夏普/回撤: "
           f"{simple.get('sharpe'):.2f} / {simple.get('max_drawdown'):.2%}")
     if detailed:
-        print(f"  Detailed Sharpe / MDD    : "
+        print(f"  详细回测 夏普/回撤: "
               f"{detailed.get('sharpe'):.2f} / {detailed.get('max_drawdown'):.2%}")
         gap = (simple.get('annual_return', 0) or 0) - (detailed.get('annual_return', 0) or 0)
-        print(f"  Cost drag (simple - det) : {gap:+.2%}")
+        print(f"  成本侵蚀(简-详)  : {gap:+.2%}")
     print()
     tag = _build_tag(args)
     fid = eval_summary['factor_id']
-    print("Next step:")
+    print("下一步:")
     print(f"  python -m backtest.factor.admission admit  {fid} "
           f"--variant {args.variant} --tag {tag}")
     print(f"  python -m backtest.factor.admission reject {fid} "
@@ -644,10 +679,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sel = p.add_mutually_exclusive_group()
     sel.add_argument("--top-n", type=int, default=None,
-                     help="选股绝对数量;与 --top-pct 互斥;两者均未传则默认 50。")
+                     help="选股绝对数量;与 --top-pct 互斥;两者均未传则默认 top10%%。")
     sel.add_argument("--top-pct", type=float, default=None,
                      help="选股分位数 (0, 1],如 0.1 表示前 10%%。")
-    p.add_argument("--rebalance", default="1W",
+    p.add_argument("--rebalance", default="1D",
                    choices=["1D", "5D", "1W", "2W", "1M", "EOM"])
     p.add_argument("--direction", default="desc", choices=["desc", "asc"])
     p.add_argument("--decay", type=int, default=5,
@@ -667,8 +702,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--skip-detailed", action="store_true",
                    help="Skip the detailed backtest (research mode)")
-    p.add_argument("--decile", action="store_true",
-                   help="Run decile-layered backtest (10 equal-weight groups by factor value)")
+    p.add_argument("--no-decile", action="store_true",
+                   help="Skip the decile-layered backtest (default: run it)")
     p.add_argument("--results-root", default="results",
                    help="Root directory for all stage outputs")
     p.add_argument("--tag", default=None,
@@ -682,9 +717,9 @@ def main():
     args.market_cap_neutral = not args.no_cap_neutral
     if args.decay == 0:
         args.decay = None
-    # 默认行为:两者都没传 → top_n=50,保持旧脚本兼容。
+    # 默认行为:两者都没传 → top_pct=0.1(前10%),保持旧脚本兼容。
     if args.top_n is None and args.top_pct is None:
-        args.top_n = 50
+        args.top_pct = 0.1
 
     variant_root = Path(args.results_root) / args.factor_id / args.variant
     tag = _build_tag(args)

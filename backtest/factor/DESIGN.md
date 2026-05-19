@@ -218,7 +218,6 @@ corr 比较在 **同 variant 内** 进行（候选与 library 因子都各自读
 ```bash
 python scripts/run_factor_pipeline.py f_001 \
     --start 20210101 --end 20241231 \
-    --top-n 50 --rebalance 1W --decay 5 \
     --direction desc --benchmark 000300.SH
 ```
 

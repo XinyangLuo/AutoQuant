@@ -31,7 +31,7 @@ backtest/strategy/
 strategy:
   name: "momentum_top20"
   type: "single_factor_topk"
-  rebalance_freq: "1W"          # 1D / 1W / 2W / 1M / EOM
+  rebalance_freq: "1D"          # 1D / 5D / 1W / 2W / 1M / EOM
   delay: 1                      # T日收盘计算 → T+delay日执行
 
 universe:
@@ -199,12 +199,12 @@ from backtest.strategy import (
 )
 
 config = StrategyConfig(
-    name="momentum_top20",
+    name="momentum_top10pct_daily",
     strategy_type="single_factor_topk",
-    rebalance_freq="1W",
+    rebalance_freq="1D",
     universe=UniverseConfig(exclude_st=True, include_kcb=False),
     factors=[FactorConfig(id="f_001", variant="swl2_capq5", direction="desc")],
-    selection=SelectionConfig(method="topk", top_k=20),
+    selection=SelectionConfig(method="topk", top_pct=0.1),
     weighting=WeightingConfig(method="equal"),
 )
 
