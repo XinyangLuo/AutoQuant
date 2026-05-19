@@ -159,14 +159,12 @@ class DecileBacktestResult:
     ls_metrics: dict
     monotonicity_score: float
 
-    def save(self, output_dir: str) -> None:
+    def save(self, output_dir: str, metadata: dict | None = None) -> None:
         """Persist nav and metrics to disk."""
         path = Path(output_dir)
         path.mkdir(parents=True, exist_ok=True)
         if not self.nav_df.empty:
             self.nav_df.to_parquet(path / "nav.parquet", index=False)
-        import json
-
         payload = {
             "decile_metrics": {str(k): v for k, v in self.decile_metrics.items()},
             "ls_metrics": self.ls_metrics,
@@ -174,3 +172,6 @@ class DecileBacktestResult:
         }
         with open(path / "metrics.json", "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, default=str)
+        if metadata:
+            with open(path / "metadata.json", "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2, ensure_ascii=False, default=str)

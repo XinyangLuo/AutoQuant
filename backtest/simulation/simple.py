@@ -5,7 +5,7 @@ import numpy as np
 
 from backtest.simulation.config import SimulationConfig
 from backtest.simulation.models import BacktestResult
-from backtest.simulation.utils import compute_adj_price
+from backtest.simulation.utils import compute_adj_price, cumulate_nav
 
 
 class SimpleSimulator:
@@ -62,8 +62,7 @@ class SimpleSimulator:
         daily_return = (weight_wide * returns_wide.fillna(0)).sum(axis=1)
 
         # 5. 累积净值
-        nav = (1 + daily_return).cumprod()
-        nav.iloc[0] = 1.0  # 第一天设为 1.0
+        nav = cumulate_nav(daily_return)
 
         nav_df = pd.DataFrame({
             "date": nav.index,

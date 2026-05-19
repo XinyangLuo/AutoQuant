@@ -21,11 +21,9 @@ def _make_market_data(
 ) -> pd.DataFrame:
     """Construct market data with a constant daily return per symbol."""
     rows = []
-    for d in dates:
+    for idx, d in enumerate(dates):
         for s in symbols:
             ret = returns.get(s, 0.0) if returns else 0.0
-            # start at price 100, compound
-            idx = dates.index(d)
             price = 100 * (1 + ret) ** idx
             rows.append(
                 {

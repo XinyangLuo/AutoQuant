@@ -668,8 +668,10 @@ def plot_evaluation(
         Path to the saved figure.
     """
     import matplotlib
-    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
+    if matplotlib.get_backend() != "Agg":
+        matplotlib.use("Agg")
 
     ic = result.ic_series.get(horizon)
     ric = result.rank_ic_series.get(horizon)

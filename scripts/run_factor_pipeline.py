@@ -133,6 +133,12 @@ def _build_tag(args) -> str:
     return f"{_selection_tag(args)}_{args.rebalance.lower()}_d{args.decay or 0}"
 
 
+def _stage_label(stage: int, args) -> str:
+    """Stage label: [1/3] or [1/4] depending on --decile."""
+    total = 4 if args.decile else 3
+    return f"[{stage}/{total}]"
+
+
 # ---------------------------------------------------------------------------
 # Stage 1 — factor-level offline evaluation
 # ---------------------------------------------------------------------------
@@ -140,9 +146,8 @@ def _build_tag(args) -> str:
 
 def stage_factor_eval(args, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
-    stage_label = "[1/3]" if not args.decile else "[1/4]"
     print("=" * 70)
-    print(f"{stage_label} Factor evaluation: {args.factor_id}")
+    print(f"{_stage_label(1, args)} Factor evaluation: {args.factor_id}")
     print("=" * 70)
 
     horizons = [int(h) for h in args.horizons.split(",")]
@@ -260,7 +265,7 @@ def _run_simulation(
 ) -> dict:
     """Run one simulator, persist, evaluate, return the flat metrics dict.
 
-    ``label`` is "[2/4] Simple backtest" or "[3/4] Detailed backtest" (or [3/3] when no decile).
+    ``label`` is "[2/3] Simple backtest" or "[3/3] Detailed backtest" (or [2/4] / [3/4] when --decile).
     ``sim_run_args`` is the *positional* arg tuple passed to ``sim.run(...)``
     (Simple = ``(signals, market_data)``; Detailed = ``(signals, market_data, dividends)``).
     """
@@ -284,10 +289,9 @@ def _run_simulation(
 
 def stage_simple_backtest(args, signals: pd.DataFrame, market_data: pd.DataFrame,
                           out_dir: Path) -> dict:
-    label = "[2/4] Simple backtest" if args.decile else "[2/3] Simple backtest"
     return _run_simulation(
         args,
-        label=label,
+        label=f"{_stage_label(2, args)} Simple backtest",
         sim=SimpleSimulator(SimulationConfig(initial_cash=args.initial_cash)),
         sim_run_args=(signals, market_data),
         sim_metadata={"engine": "SimpleSimulator", "initial_cash": args.initial_cash},
@@ -297,10 +301,9 @@ def stage_simple_backtest(args, signals: pd.DataFrame, market_data: pd.DataFrame
 
 def stage_detailed_backtest(args, signals: pd.DataFrame, market_data: pd.DataFrame,
                             dividends: pd.DataFrame, out_dir: Path) -> dict:
-    label = "[3/4] Detailed backtest" if args.decile else "[3/3] Detailed backtest"
     return _run_simulation(
         args,
-        label=label,
+        label=f"{_stage_label(3, args)} Detailed backtest",
         sim=DetailedSimulator(SimulationConfig(
             initial_cash=args.initial_cash,
             commission_rate=args.commission_rate,

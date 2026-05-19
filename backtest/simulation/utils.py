@@ -54,3 +54,17 @@ def round_lot(shares: float, board: Literal["default", "kcb", "bj"] = "default")
 def round_lot_for_symbol(shares: float, symbol: str) -> int:
     """根据股票代码自动判断板块并取整。"""
     return round_lot(shares, detect_board(symbol))
+
+
+def cumulate_nav(daily_returns: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
+    """Cumulate daily returns into NAV, starting at 1.0.
+
+    Handles the edge case where the first row is NaN (from pct_change)
+    by replacing it with 1.0 after cumprod.
+    """
+    nav = (1 + daily_returns).cumprod()
+    # First row: no prior day → return is NaN, cumprod gives NaN.
+    # Explicitly set to 1.0 so NAV starts at par.
+    if hasattr(nav, "iloc"):
+        nav.iloc[0] = 1.0
+    return nav

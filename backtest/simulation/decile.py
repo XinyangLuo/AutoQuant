@@ -5,25 +5,32 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import matplotlib
 import numpy as np
 import pandas as pd
 
+from backtest.evaluation.metrics import compute_single_nav_metrics
 from backtest.simulation.config import SimulationConfig
-from backtest.simulation.utils import compute_adj_price
+from backtest.simulation.models import DecileBacktestResult
+from backtest.simulation.utils import compute_adj_price, cumulate_nav
 
 if TYPE_CHECKING:
-    from backtest.simulation.models import DecileBacktestResult
+    pass
+
+
+_DECILE_NAV_COLUMNS = ["date"] + [f"d{i}_nav" for i in range(10)] + ["ls_nav"]
 
 
 def _decile_cut(x: pd.Series) -> pd.Series:
     """Assign decile labels (0-9) to a cross-section of factor values.
 
     Falls back to fewer groups when there are not enough unique values.
+    NaN values are silently dropped by ``pd.qcut``.
     """
-    n = len(x.dropna())
+    n = x.notna().sum()
     if n < 2:
         return pd.Series(np.nan, index=x.index)
-    n_groups = min(10, n)
+    n_groups = min(10, int(n))
     return pd.qcut(x, n_groups, labels=False, duplicates="drop")
 
 
@@ -57,10 +64,8 @@ class DecileSimulator:
         DecileBacktestResult
         """
         # 1. Merge factor + market data
-        required = ["date", "symbol", "close", "adj_factor"]
-        df = market_data[[c for c in required if c in market_data.columns]].copy()
-        if "open" in market_data.columns:
-            df["open"] = market_data["open"]
+        cols = ["date", "symbol", "close", "open", "adj_factor"]
+        df = market_data[[c for c in cols if c in market_data.columns]].copy()
 
         merged = factor_df.merge(df, on=["date", "symbol"], how="inner")
         if merged.empty:
@@ -68,14 +73,11 @@ class DecileSimulator:
 
         # 2. Adjusted price & daily return
         merged["adj_price"] = compute_adj_price(merged, self.config.price_type)
-
         merged = merged.sort_values(["symbol", "date"])
         merged["daily_return"] = merged.groupby("symbol")["adj_price"].pct_change()
 
-        # 3. Assign decile labels per date
+        # 3. Assign decile labels per date, delay=1
         merged["decile"] = merged.groupby("date")["value"].transform(_decile_cut)
-
-        # delay=1: T-day factor → T+1-day decile assignment
         merged["decile"] = merged.groupby("symbol")["decile"].shift(1)
 
         valid = merged[merged["decile"].notna()].copy()
@@ -86,31 +88,27 @@ class DecileSimulator:
         decile_returns = (
             valid.groupby(["date", "decile"])["daily_return"]
             .mean()
-            .unstack(fill_value=0.0)
+            .unstack()
         )
-
-        # Ensure columns 0-9 exist (missing ones stay flat at nav=1)
+        # Reindex to ensure columns 0-9 exist; missing ones stay flat at nav=1
         decile_returns = decile_returns.reindex(columns=range(10), fill_value=0.0)
         decile_returns = decile_returns.sort_index()
 
         # 5. Cumulate NAV
-        nav = (1 + decile_returns).cumprod()
-        nav.iloc[0] = 1.0
+        nav = cumulate_nav(decile_returns)
 
-        max_label = int(valid["decile"].max())
-        min_label = int(valid["decile"].min())
-        # Long-short: daily return = D_max_return - D_min_return, then cumprod
+        # Long-short: only use deciles that actually have data
+        present_deciles = [c for c in decile_returns.columns if c in valid["decile"].values]
+        max_label = max(present_deciles)
+        min_label = min(present_deciles)
         ls_daily = decile_returns[max_label] - decile_returns[min_label]
-        ls_nav = (1 + ls_daily).cumprod().copy()
-        ls_nav.iloc[0] = 1.0
+        ls_nav = cumulate_nav(ls_daily)
         nav["ls"] = ls_nav.values
 
         nav_df = nav.reset_index()
-        nav_df.columns = ["date"] + [f"d{i}_nav" for i in range(10)] + ["ls_nav"]
+        nav_df.columns = _DECILE_NAV_COLUMNS
 
         # 6. Compute per-decile and long-short metrics
-        from backtest.evaluation.metrics import compute_single_nav_metrics
-
         decile_metrics: dict[int, dict] = {}
         for d in range(10):
             col = f"d{d}_nav"
@@ -133,8 +131,6 @@ class DecileSimulator:
         else:
             monotonicity = float("nan")
 
-        from backtest.simulation.models import DecileBacktestResult
-
         return DecileBacktestResult(
             nav_df=nav_df,
             decile_metrics=decile_metrics,
@@ -143,13 +139,9 @@ class DecileSimulator:
         )
 
 
-def _empty_result() -> "DecileBacktestResult":
-    from backtest.simulation.models import DecileBacktestResult
-
+def _empty_result() -> DecileBacktestResult:
     return DecileBacktestResult(
-        nav_df=pd.DataFrame(
-            columns=["date"] + [f"d{i}_nav" for i in range(10)] + ["ls_nav"]
-        ),
+        nav_df=pd.DataFrame(columns=_DECILE_NAV_COLUMNS),
         decile_metrics={},
         ls_metrics={},
         monotonicity_score=float("nan"),
@@ -174,9 +166,12 @@ def plot_decile_backtest(
         Path to saved figure.
     """
     import matplotlib
-
-    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
+    # Guard: only force Agg backend when not already set (prevents
+    # clobbering an interactive backend in notebooks / tests).
+    if matplotlib.get_backend() != "Agg":
+        matplotlib.use("Agg")
 
     nav_df = result.nav_df.copy()
     if nav_df.empty:
