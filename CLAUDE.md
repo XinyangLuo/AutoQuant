@@ -93,7 +93,7 @@ AutoQuant/
 详见 [`backtest/CLAUDE.md`](backtest/CLAUDE.md)。简要概览：
 
 - **数据模块**：行情/基本面数据下载、缓存、增量更新。详见 [`backtest/data/DESIGN.md`](backtest/data/DESIGN.md)。
-- **因子模块**：定义、计算、登记、静态评估（IC/RankIC/ICIR）。因子值写入 `factors_daily` 长表；稳定因子可晋升回 `market_daily`。详见 [`backtest/factor/DESIGN.md`](backtest/factor/DESIGN.md)。
+- **因子模块**：定义、计算、登记、静态评估（IC/RankIC/ICIR）。因子值写入 `factors_daily` 长表（独立表，不写回 `market_daily`）。详见 [`backtest/factor/DESIGN.md`](backtest/factor/DESIGN.md)。
 - **策略模块**：因子组合 + 选股/择时 + 风控 → **每日目标持仓**（与引擎解耦）。详见 [`backtest/strategy/DESIGN.md`](backtest/strategy/DESIGN.md)。
 - **回测引擎**：目标持仓 + 成本模型 → 成交序列 + 净值曲线。日频、T+1、A 股规则。详见 [`backtest/simulation/DESIGN.md`](backtest/simulation/DESIGN.md)。
 - **评测模块**：从 simulation 落盘的 parquet 反推策略质量。收益 / 风险 / 胜率 / 交易 / 持仓指标 + 8 子图大图 + JSON/CSV。详见 [`backtest/evaluation/DESIGN.md`](backtest/evaluation/DESIGN.md)。
@@ -109,7 +109,7 @@ AutoQuant/
 - **Reader**：抓取并摘要研报 PDF、arXiv 论文、券商研究公众号、雪球/知乎博客；输出结构化摘要（核心论点、可能可量化的信号）
 - **Idea Miner**：从大量摘要中挑出"看起来可以量化"的因子/策略灵感，转成结构化的因子假设（数据需求、计算公式雏形、预期方向）
 - **Researcher**：把因子假设转成代码，调用回测系统 Python API，完成 "写因子 → 跑回测 → 读结果" 闭环，做多轮调参
-- **Curator**：根据回测指标做通过/不通过判定，把通过的因子/策略写入因子库与研究档案，并生成可检索的标签；负责"因子晋升"（长表 → 主表列）的执行
+- **Curator**：根据回测指标做通过/不通过判定，把通过的因子/策略写入因子库与研究档案，并生成可检索的标签
 
 ### 5.3 工具接口（agent 可调用）
 
@@ -117,7 +117,6 @@ AutoQuant/
 - `run_backtest(strategy_config) -> result_id`
 - `get_backtest_result(result_id) -> 指标字典`
 - `search_factor_library(query) -> 候选因子列表`
-- `promote_factor(factor_name)` —— 把因子从 `factors_daily` 晋升为 `market_daily` 的一列
 
 ### 5.4 持久化
 
@@ -166,7 +165,7 @@ AutoQuant/
 
 | 边界 | 提供方 | 消费方 | 形式 |
 |---|---|---|---|
-| 因子注册 / 回测调用 / 晋升 | 回测系统 | Agent 投研系统 | Python tool 接口（§5.3） |
+| 因子注册 / 回测调用 | 回测系统 | Agent 投研系统 | Python tool 接口（§5.3） |
 | 标准化信号 | 回测系统 + 策略 | 交易模块（推送） | JSON/parquet（§6.2） |
 | 持仓回写 | 交易模块 | 回测系统（实盘对比） | YAML/CSV（§6.4） |
 | 数据访问 | 数据模块 | 因子/策略/Agent | Python API（详见 backtest/data/DESIGN.md） |
@@ -197,7 +196,6 @@ AutoQuant/
 
 ## 10. 待决事项（TBD 清单）
 
-- [ ] 回测引擎选型（自研 / vectorbt / backtrader / qlib）
 - [ ] 推送渠道选型（企微 / 飞书 / Server酱 / 邮件）
 - [ ] 文档解析方案（unstructured / PyMuPDF / Claude 多模态）
 - [ ] 网页抓取方案（feedparser / Playwright / httpx+bs4）
@@ -205,4 +203,4 @@ AutoQuant/
 - [ ] `environment.yml` 实际依赖清单（tushare、pandas、pyarrow、duckdb、anthropic、claude-agent-sdk、…）
 - [ ] 是否启用 `pyproject.toml`（建议是，便于 `pip install -e .`）
 
-**已敲定**：DuckDB 六表设计——`market_daily`（日行情，主键 `(date, symbol)`，回测主用）+ `factors_daily`（因子长表 `(date, symbol, factor_name, value)`，研究主用，稳定因子可晋升回 `market_daily`）+ `income_q` / `balancesheet_q` / `cashflow_q`（Tushare 原始三表各自独立物理表，主键 `(symbol, end_date, f_ann_date, update_flag)`，物理保留所有版本，查询时由 `get_fina_snapshot(D)` 分别做 `f_ann_date <= D` + `QUALIFY` 取最新可见版本后 outer-join，正确处理业绩修正及约 1% 的三表独立修正 case）+ `dividends`（分红事件，主键 `(symbol, end_date)`，仅 `div_proc='实施'`）；parquet（分钟级、回测产出）；Claude Agent SDK；交易模块第一阶段仅信号推送 + 仓位跟踪；静态因子评估 IC/RankIC/ICIR；绩效核心指标 Sharpe/年化/波动/最大回撤。
+**已敲定**：DuckDB 六表设计——`market_daily`（日行情，主键 `(date, symbol)`，回测主用）+ `factors_daily`（因子长表 `(date, symbol, factor_name, value)`，研究主用，独立表不写回 `market_daily`）+ `income_q` / `balancesheet_q` / `cashflow_q`（Tushare 原始三表各自独立物理表，主键 `(symbol, end_date, f_ann_date, update_flag)`，物理保留所有版本，查询时由 `get_fina_snapshot(D)` 分别做 `f_ann_date <= D` + `QUALIFY` 取最新可见版本后 outer-join，正确处理业绩修正及约 1% 的三表独立修正 case）+ `dividends`（分红事件，主键 `(symbol, end_date)`，仅 `div_proc='实施'`）；parquet（分钟级、回测产出）；Claude Agent SDK；交易模块第一阶段仅信号推送 + 仓位跟踪；静态因子评估 IC/RankIC/ICIR；绩效核心指标 Sharpe/年化/波动/最大回撤。

@@ -93,8 +93,8 @@ class RiskConfig:
 class BacktestConfig:
     """Backtest date range and benchmark."""
 
-    start_date: str = "20200101"
-    end_date: str = "20241231"
+    start_date: str = "20160101"
+    end_date: str = "20251231"
     benchmark: str | None = "000300.SH"
 
 

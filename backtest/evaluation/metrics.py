@@ -374,3 +374,14 @@ def compute_all_metrics(
     out["end_date"] = artifacts.end.strftime("%Y-%m-%d")
     out["initial_cash"] = artifacts.initial_cash
     return out
+
+
+def compute_single_nav_metrics(nav_df: pd.DataFrame) -> dict:
+    """Compute return + risk + risk-adjusted metrics for a single NAV series.
+
+    Thin wrapper that merges the three core metric functions into one dict.
+    """
+    m = compute_return_metrics(nav_df)
+    m.update(compute_risk_metrics(nav_df))
+    m.update(compute_risk_adjusted(nav_df))
+    return m

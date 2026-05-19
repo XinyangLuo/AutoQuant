@@ -5,6 +5,7 @@ import numpy as np
 
 from backtest.simulation.config import SimulationConfig
 from backtest.simulation.models import BacktestResult
+from backtest.simulation.utils import compute_adj_price
 
 
 class SimpleSimulator:
@@ -34,10 +35,7 @@ class SimpleSimulator:
         """
         # 1. 计算复权价格（按配置选择 o2o/c2c）
         df = market_data.copy()
-        if self.config.price_type == "o2o" and "open" in df.columns:
-            df["adj_price"] = df["open"] * df["adj_factor"]
-        else:
-            df["adj_price"] = df["close"] * df["adj_factor"]
+        df["adj_price"] = compute_adj_price(df, self.config.price_type)
 
         # 2. 将数据 pivot 成 wide
         adj_price_wide = df.pivot(index="date", columns="symbol", values="adj_price")
@@ -45,6 +43,8 @@ class SimpleSimulator:
 
         # 3. 将 signals pivot 成 wide，对齐日期/股票
         weight_wide = signals.pivot(index="date", columns="symbol", values="target_weight")
+        # delay=1: T 日信号 → T+1 日生效，weight 向后错一天配 returns
+        weight_wide = weight_wide.shift(1)
         weight_wide = weight_wide.reindex_like(returns_wide)
         # 调仓日：不在持仓中的股票 weight 显式置为 0
         signal_dates = set(signals["date"])

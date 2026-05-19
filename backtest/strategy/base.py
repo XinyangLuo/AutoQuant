@@ -31,7 +31,7 @@ def _get_rebalance_dates(
     start_date, end_date : str
         YYYYMMDD bounds.
     freq : str
-        ``"1D"``, ``"1W"``, ``"2W"``, ``"1M"``, ``"EOM"``.
+        ``"1D"``, ``"5D"``, ``"1W"``, ``"2W"``, ``"1M"``, ``"EOM"``.
 
     Returns
     -------
@@ -47,7 +47,10 @@ def _get_rebalance_dates(
 
     rebalance_dates: list[str] = []
 
-    if freq == "1W":
+    if freq == "5D":
+        rebalance_dates = trade_dates[::5]
+
+    elif freq == "1W":
         # First trade day of each week
         for i, d in enumerate(trade_dates):
             if i == 0:
@@ -169,9 +172,10 @@ class StrategyBase(ABC):
             if not factor_ids:
                 raise ValueError("No factors configured")
 
-            # Load all factor data for the date range
+            # Load all factor data for the date range — uses each FactorConfig's
+            # variant (default BASELINE_VARIANT = swl2_capq5).
             factor_panel = self._load_factor_panel(
-                factor_ids, start_date, end_date, factor_storage
+                self.config.factors, start_date, end_date, factor_storage
             )
             if factor_panel.empty:
                 raise ValueError("No factor data found for the given date range")
@@ -298,15 +302,31 @@ class StrategyBase(ABC):
 
     @staticmethod
     def _load_factor_panel(
-        factor_ids: list[str],
+        factor_ids_or_configs: list[str] | list,
         start_date: str,
         end_date: str,
         factor_storage: FactorStorage,
     ) -> pd.DataFrame:
-        """Load and merge multiple factors into a wide panel."""
+        """Load and merge multiple factors into a wide panel.
+
+        Accepts either:
+        - ``list[str]`` of factor ids (uses :data:`BASELINE_VARIANT` per factor)
+        - ``list[FactorConfig]`` (uses each entry's ``variant``)
+        """
+        # Normalize to list of (factor_id, variant) tuples
+        from backtest.factor.variants import BASELINE_VARIANT
+        from backtest.strategy.config import FactorConfig
+
+        pairs: list[tuple[str, str]] = []
+        for item in factor_ids_or_configs:
+            if isinstance(item, FactorConfig):
+                pairs.append((item.id, item.variant))
+            else:
+                pairs.append((str(item), BASELINE_VARIANT))
+
         all_factors: list[pd.DataFrame] = []
-        for fid in factor_ids:
-            df = factor_storage.get_factor(fid, start_date, end_date)
+        for fid, variant in pairs:
+            df = factor_storage.get_factor(fid, start_date, end_date, variant=variant)
             if df.empty:
                 continue
             df = df.rename(columns={"value": fid})

@@ -7,7 +7,6 @@ import pandas as pd
 
 from backtest.strategy.base import StrategyBase
 from backtest.strategy.config import StrategyConfig
-from backtest.strategy.neutralize import Neutralizer
 from backtest.strategy.selection import build_signals
 
 
@@ -15,7 +14,9 @@ class MultiFactorStrategy(StrategyBase):
     """Multi-factor combination strategy.
 
     Combines multiple factors into a single composite score, then applies
-    the same selection logic as SingleFactorStrategy.
+    the same selection logic as SingleFactorStrategy. 因子值已经在因子层
+    完成行业/市值中性化(由 :class:`backtest.strategy.config.FactorConfig`
+    的 ``variant`` 选定),所以策略层不再做中性化。
 
     Supported combination methods:
       - **zscore_equal**: Z-score each factor cross-sectionally, then equal-weight sum.
@@ -30,7 +31,6 @@ class MultiFactorStrategy(StrategyBase):
                 "MultiFactorStrategy requires at least 2 factors, "
                 f"got {len(config.factors)}"
             )
-        self.neutralizer = Neutralizer()
 
     def generate_signals(
         self,
@@ -58,11 +58,6 @@ class MultiFactorStrategy(StrategyBase):
             composite = self._build_composite(filtered, date_str)
             if composite.empty:
                 continue
-
-            if self.config.neutralize.market_cap and "circ_mv" in filtered.columns:
-                market_cap = filtered.set_index("symbol")["circ_mv"]
-                composite = self.neutralizer.market_cap_neutralize(composite, market_cap)
-                composite = composite.dropna()
 
             sorted_scores = composite.sort_values(ascending=False)
 

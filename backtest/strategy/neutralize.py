@@ -1,4 +1,14 @@
-"""Industry and market-cap neutralization utilities."""
+"""Industry and market-cap neutralization utilities.
+
+.. deprecated::
+    中性化已下沉到因子层。生产代码不应再调用 :class:`Neutralizer`。请通过
+    :class:`backtest.strategy.config.FactorConfig` 的 ``variant`` 选择已经
+    中性化的因子值;算子实现见 :mod:`backtest.factor.transforms`
+    (``industry_neutralize`` / ``cap_neutralize``)与
+    :mod:`backtest.factor.variants`(命名规范)。
+
+    此模块仅保留作为兼容垫片,内部 API 可能在后续移除。
+"""
 
 from __future__ import annotations
 

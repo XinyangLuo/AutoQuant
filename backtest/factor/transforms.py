@@ -2,6 +2,13 @@
 
 All operators accept a MultiIndex ``(date, symbol)`` Series — the canonical
 output type of registered factors — and return a Series of the same shape.
+
+Provides two families:
+
+- 截面归一化 / 时序变换: :func:`rank`, :func:`z_score`
+- 中性化算子(因子层): :func:`industry_neutralize`, :func:`cap_neutralize`
+
+中性化算子被 backfill 在变体 fan-out 时调用,把"原始因子值"加工成"行业/市值中性化后的纯净因子值",再连同 ``variant`` 列一起写入 ``factors_daily``。
 """
 
 from __future__ import annotations
@@ -115,4 +122,137 @@ def z_score(
     return z.reindex(values.index)
 
 
-__all__ = ["rank", "z_score"]
+def _group_zscore(s: pd.Series) -> pd.Series:
+    """组内 zscore;单元素组 → 0;std=0 → 0。"""
+    mean = s.mean()
+    std = s.std()
+    if std == 0 or pd.isna(std) or len(s) <= 1:
+        return pd.Series(0.0, index=s.index)
+    return (s - mean) / std
+
+
+def industry_neutralize(
+    values: pd.Series,
+    industry_panel: pd.DataFrame,
+) -> pd.Series:
+    """按行业组内 zscore,剥离行业暴露。
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` 的原始因子值。
+    industry_panel : pd.DataFrame
+        列 ``[date, symbol, industry_code]``,提供每个 ``(date, symbol)`` 在
+        所选 level (SW-L1 / SW-L2) 下的行业归属。
+
+    Returns
+    -------
+    pd.Series
+        MultiIndex ``(date, symbol)``,与输入同 shape。每日按 industry_code
+        分组后对组内值做 ``zscore``。
+        - 缺失行业的 symbol 该日产出 ``NaN``
+        - 单成员组该日产出 ``0``
+        - 组内 std=0(常数组)产出 ``0``
+    """
+    _check_panel_series(values)
+    if not {"date", "symbol", "industry_code"}.issubset(industry_panel.columns):
+        raise ValueError(
+            "industry_panel must have columns [date, symbol, industry_code]"
+        )
+
+    panel = industry_panel[["date", "symbol", "industry_code"]].copy()
+    panel["date"] = pd.to_datetime(panel["date"])
+
+    df = values.rename("value").reset_index()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.merge(panel, on=["date", "symbol"], how="left")
+
+    has_ind = df["industry_code"].notna()
+    out = pd.Series(np.nan, index=df.index, dtype=float)
+
+    if has_ind.any():
+        sub = df.loc[has_ind].copy()
+        sub["neutral"] = sub.groupby(
+            ["date", "industry_code"], group_keys=False
+        )["value"].transform(_group_zscore)
+        out.loc[has_ind] = sub["neutral"].values
+
+    out.index = pd.MultiIndex.from_arrays(
+        [df["date"], df["symbol"]], names=["date", "symbol"]
+    )
+    return out.reindex(values.index)
+
+
+def cap_neutralize(
+    values: pd.Series,
+    cap_panel: pd.DataFrame,
+    *,
+    cap_field: str = "circ_mv",
+    quantiles: int = 5,
+) -> pd.Series:
+    """按市值分位组内 zscore,剥离市值暴露。
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` 的因子值(可以是原始,也可以是已经过
+        行业中性化的)。
+    cap_panel : pd.DataFrame
+        列至少含 ``[date, symbol, <cap_field>]``。
+    cap_field : str
+        市值字段名。常用 ``"circ_mv"``(流通市值)或 ``"total_mv"``(总市值)。
+    quantiles : int
+        分组数。常用 5 或 10。
+
+    Returns
+    -------
+    pd.Series
+        MultiIndex ``(date, symbol)``,与输入同 shape。每日按 cap 分位分组
+        后对组内值做 ``zscore``。
+        - 缺失 cap 的 symbol 该日产出 ``NaN``
+        - 单成员组、std=0 → 0
+        - 当某日有效样本数 < ``quantiles`` 时,所有有效样本归到一个组,fallback 为整体 zscore
+    """
+    _check_panel_series(values)
+    if quantiles < 2:
+        raise ValueError(f"quantiles must be >= 2, got {quantiles}")
+    if cap_field not in cap_panel.columns:
+        raise ValueError(f"cap_field '{cap_field}' not in cap_panel columns")
+    if not {"date", "symbol"}.issubset(cap_panel.columns):
+        raise ValueError(
+            "cap_panel must have columns [date, symbol, <cap_field>]"
+        )
+
+    panel = cap_panel[["date", "symbol", cap_field]].copy()
+    panel = panel.rename(columns={cap_field: "_cap"})
+    panel["date"] = pd.to_datetime(panel["date"])
+
+    df = values.rename("value").reset_index()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.merge(panel, on=["date", "symbol"], how="left")
+
+    out = pd.Series(np.nan, index=df.index, dtype=float)
+    has_cap = df["_cap"].notna() & (df["_cap"] > 0)
+
+    if has_cap.any():
+        for date_val, idx in df.loc[has_cap].groupby("date").groups.items():
+            sub = df.loc[idx]
+            n = len(sub)
+            if n < quantiles:
+                out.loc[idx] = _group_zscore(sub["value"]).values
+                continue
+            try:
+                bins = pd.qcut(sub["_cap"], quantiles, labels=False, duplicates="drop")
+            except ValueError:
+                out.loc[idx] = _group_zscore(sub["value"]).values
+                continue
+            neutral = sub["value"].groupby(bins, group_keys=False).transform(_group_zscore)
+            out.loc[idx] = neutral.values
+
+    out.index = pd.MultiIndex.from_arrays(
+        [df["date"], df["symbol"]], names=["date", "symbol"]
+    )
+    return out.reindex(values.index)
+
+
+__all__ = ["rank", "z_score", "industry_neutralize", "cap_neutralize"]

@@ -15,7 +15,7 @@ backtest/strategy/
 ├── base.py                  # 抽象策略基类 StrategyBase
 ├── universe.py              # Universe 筛选器
 ├── weight.py                # 权重分配器
-├── neutralize.py            # 中性化（行业/市值）
+├── neutralize.py            # 中性化（已 deprecated，下沉到因子层）
 ├── signals.py               # 信号格式化（策略输出 → 引擎输入）
 ├── strategies/
 │   ├── __init__.py
@@ -45,6 +45,7 @@ universe:
 
 factors:
   - id: "f_001"
+    variant: "swl2_capq5"        # 选哪个中性化变体 (factor 层),默认 swl2_capq5
     direction: "desc"
     weight: 1.0
 
@@ -56,10 +57,9 @@ selection:
 weighting:
   method: "equal"               # equal / market_cap / factor_value
 
-neutralize:
-  industry: false
-  industry_method: "group_rank"
-  market_cap: false
+# `neutralize` 配置项已 deprecated：中性化由因子层完成，
+# 通过上面 factors[].variant 选择已中性化的因子值。
+# 旧 yaml 仍可解析（保留 dataclass），但策略层不再使用其字段。
 ```
 
 Python 加载：
@@ -110,13 +110,13 @@ signals = strategy.run("20200101", "20241231")
 - **市值加权（market_cap）**：按流通市值加权
 - **因子值加权（factor_value）**：按因子值绝对值加权
 
-### 中性化
+### 中性化（已下沉到因子层）
 
-- **市值中性化**：对因子值做 `log(circ_mv)` 的截面回归，取残差。去除因子中的市值暴露，避免策略实质是押注大小盘。
-- **行业中性化**（待行业数据）：
-  - `group_rank`：每组内做 percentile rank，组间可比
-  - `group_zscore`：每组内做 z-score
-  - `group_topk`：每组内独立选 topK，保证各行业均衡暴露
+策略层**不再做中性化**。中性化是因子的一部分:在因子注册阶段通过 `@register(neutralizations=[...])` 声明,backfill 时按变体 fan-out 写入 `factors_daily`(PK 加 `variant` 列),策略层只需通过 `FactorConfig.variant` 选择消费哪个 variant。
+
+- 行业中性化 / 市值中性化的算子见 `backtest/factor/transforms.py`(`industry_neutralize` / `cap_neutralize`)
+- 命名规范见 `backtest/factor/variants.py`,默认 baseline = `swl2_capq5`(申万 2 级 + 流通市值 5 等分)
+- `strategy/neutralize.py` 与 `strategy/config.py:NeutralizeConfig` 均已 deprecated,仅保留兼容旧 yaml,不再实际生效
 
 ### 再平衡频率
 
@@ -203,7 +203,7 @@ config = StrategyConfig(
     strategy_type="single_factor_topk",
     rebalance_freq="1W",
     universe=UniverseConfig(exclude_st=True, include_kcb=False),
-    factors=[FactorConfig(id="f_001", direction="desc")],
+    factors=[FactorConfig(id="f_001", variant="swl2_capq5", direction="desc")],
     selection=SelectionConfig(method="topk", top_k=20),
     weighting=WeightingConfig(method="equal"),
 )
@@ -217,11 +217,11 @@ signals = strategy.run("20200101", "20241231")
 ### 上游（因子模块）
 
 ```python
-FactorStorage.get_factor(factor_id, start, end)       # 单因子时序
-FactorStorage.get_factor_panel(factor_ids, date)      # 多因子宽截面（pivot）
+FactorStorage.get_factor(factor_id, start, end, variant='swl2_capq5')   # 单因子时序，按 variant 取
+FactorStorage.get_factor_panel(factor_ids, date, variant='swl2_capq5')  # 多因子宽截面（pivot）
 ```
 
-`base.py` 的 `_load_factor_panel()` 将多个因子时序合并为宽表 `(date, symbol, f_001, f_002, ...)`。
+`base.py` 的 `_load_factor_panel(factor_configs)` 接收 `FactorConfig` 列表，按各自声明的 `variant` 分别拉数据再合并为宽表 `(date, symbol, f_001, f_002, ...)`。
 
 ### 下游（回测引擎）
 
@@ -243,16 +243,13 @@ signals_df = strategy.run(start, end)
 
 策略模块依赖以下 data 模块新增功能：
 
-| 需求 | 优先级 | 说明 |
+| 需求 | 状态 | 说明 |
 |---|---|---|
-| 指数成分股 | 高 | `index_members` 表：`symbol, index_code, trade_date, weight`。Tushare `pro.index_weight`。支持 000300.SH / 000905.SH / 000852.SH / 932000.SH / 399006.SZ |
-| 申万行业分类 | 高 | `sw_industry` 表：`symbol, industry_code, industry_name, level, trade_date`。Tushare `pro.index_classify` + `pro.index_member` |
+| 指数成分股 | 待实现 | `index_members` 表：`symbol, index_code, trade_date, weight`。Tushare `pro.index_weight`。支持 000300.SH / 000905.SH / 000852.SH / 932000.CSI / 399006.SZ |
+| 申万行业分类 | 已实现 | `sw_industry` 表 + `get_industry_panel_range()`。见 `backtest/data/DESIGN.md` |
 | 20日平均成交额 | 中 | 策略层用 `get_bars()` 自行计算，或 market_daily 预计算 |
 
 ## 待实现 / 预留
 
-- [ ] 行业中性化：待 `sw_industry` 表落地后，在 `neutralize.py` 中接入真实行业数据
 - [ ] 指数成分股过滤：待 `index_members` 表落地后，在 `universe.py` 中接入
-- [ ] 回测引擎：接收 `signals` DataFrame，模拟成交，输出净值曲线
-- [ ] 分析模块：从 engine 产出计算 Sharpe / 年化 / 回撤 / 归因
 - [ ] CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`

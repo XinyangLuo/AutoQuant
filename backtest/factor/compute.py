@@ -10,6 +10,13 @@ from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
 from backtest.factor.registry import get_factor_function, get_factor_meta
 from backtest.factor.storage import FactorStorage
+from backtest.factor.transforms import cap_neutralize, industry_neutralize
+from backtest.factor.variants import (
+    RAW_VARIANT,
+    expand_variant_names,
+    normalize_neutralizations,
+    parse_variant,
+)
 
 
 def compute_factor(
@@ -29,6 +36,8 @@ def compute_factor(
       4. Return a DataFrame with columns [date, symbol, factor_id, value].
 
     The caller is responsible for writing the result to FactorStorage.
+    Note: only the raw factor is computed here. To produce neutralization
+    variants, pass the result to :func:`apply_neutralizations`.
     """
     meta = get_factor_meta(factor_id)
     compute_fn = get_factor_function(factor_id)
@@ -111,6 +120,120 @@ def compute_factor(
 
         df["factor_id"] = factor_id
         return df[["date", "symbol", "factor_id", "value"]]
+
+    finally:
+        if own_market and market_storage is not None:
+            market_storage.close()
+
+
+def apply_neutralizations(
+    raw_df: pd.DataFrame,
+    factor_id: str,
+    *,
+    market_storage: MarketStorage | None = None,
+) -> pd.DataFrame:
+    """对 raw 因子值应用 registry 声明的所有变体,返回带 ``variant`` 列的 long DF。
+
+    Pipeline per variant: 行业中性化(可选) → 市值中性化(可选)。
+    raw 变体直接拷贝 raw_df 的值,只追加 ``variant='raw'``。
+
+    Parameters
+    ----------
+    raw_df : pd.DataFrame
+        :func:`compute_factor` 的输出: ``[date, symbol, factor_id, value]``。
+    factor_id : str
+        用于从 registry 拿声明的 neutralizations。
+    market_storage : MarketStorage, optional
+        复用已打开的 storage 句柄;None 则自建。
+
+    Returns
+    -------
+    pd.DataFrame
+        ``[date, symbol, factor_id, variant, value]``。每个声明变体一份数据。
+    """
+    if raw_df.empty:
+        return pd.DataFrame(
+            columns=["date", "symbol", "factor_id", "variant", "value"]
+        )
+
+    meta = get_factor_meta(factor_id)
+    neutralizations = normalize_neutralizations(meta.get("neutralizations"))
+    variant_names = [
+        v for v in expand_variant_names(meta.get("neutralizations"))
+    ]
+
+    # Determine what panels we'll need
+    need_industry_levels: set[str] = set()
+    need_cap_fields: set[str] = set()
+    for spec in neutralizations:
+        if spec["industry"]:
+            need_industry_levels.add(
+                "L1" if spec["industry"] == "SW-L1" else "L2"
+            )
+        if spec["cap"]:
+            field, _, _ = spec["cap"].partition("-")
+            need_cap_fields.add(field)
+
+    raw_df = raw_df.copy()
+    raw_df["date"] = pd.to_datetime(raw_df["date"])
+    start = raw_df["date"].min().strftime("%Y%m%d")
+    end = raw_df["date"].max().strftime("%Y%m%d")
+
+    own_market = market_storage is None
+    try:
+        if market_storage is None:
+            market_storage = MarketStorage()
+
+        # Pre-fetch panels once for each declared dimension
+        industry_panels: dict[str, pd.DataFrame] = {}
+        for lvl in need_industry_levels:
+            industry_panels[lvl] = market_storage.get_industry_panel_range(
+                start=start, end=end, level=lvl,
+            )
+
+        cap_panels: dict[str, pd.DataFrame] = {}
+        if need_cap_fields:
+            bars = market_storage.get_bars(
+                start=start, end=end,
+                columns=list(need_cap_fields),
+            )
+            for field in need_cap_fields:
+                if field in bars.columns:
+                    cap_panels[field] = bars[["date", "symbol", field]].copy()
+
+        raw_series = raw_df.set_index(["date", "symbol"])["value"]
+
+        out_frames: list[pd.DataFrame] = []
+        for spec, variant in zip(neutralizations, variant_names):
+            if variant == RAW_VARIANT:
+                series = raw_series
+            else:
+                series = raw_series
+                ind = spec["industry"]
+                cap = spec["cap"]
+                if ind:
+                    lvl = "L1" if ind == "SW-L1" else "L2"
+                    series = industry_neutralize(series, industry_panels[lvl])
+                if cap:
+                    field, _, qpart = cap.partition("-")
+                    q = int(qpart[1:])  # "q5" → 5
+                    series = cap_neutralize(
+                        series, cap_panels[field],
+                        cap_field=field, quantiles=q,
+                    )
+
+            sub = series.reset_index()
+            sub.columns = ["date", "symbol", "value"]
+            sub["factor_id"] = factor_id
+            sub["variant"] = variant
+            sub = sub.dropna(subset=["value"])
+            out_frames.append(sub[["date", "symbol", "factor_id", "variant", "value"]])
+
+        if not out_frames:
+            return pd.DataFrame(
+                columns=["date", "symbol", "factor_id", "variant", "value"]
+            )
+        return pd.concat(out_frames, ignore_index=True)
 
     finally:
         if own_market and market_storage is not None:

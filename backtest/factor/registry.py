@@ -7,6 +7,11 @@ from pathlib import Path
 from typing import Callable
 
 from backtest.data.tushare_client import _find_project_root
+from backtest.factor.variants import (
+    DEFAULT_NEUTRALIZATIONS,
+    expand_variant_names,
+    normalize_neutralizations,
+)
 
 
 _PROJECT_ROOT = _find_project_root()
@@ -44,8 +49,21 @@ def register(
     data_sources: list[str],
     description: str = "",
     parameters: dict | None = None,
+    neutralizations: list[dict] | None = None,
 ):
     """Decorator to register a factor compute function.
+
+    Parameters
+    ----------
+    parameters : dict | None
+        Kwargs forwarded into the compute function. Stored in registry
+        under ``parameters``.
+    neutralizations : list[dict] | None
+        Declared neutralization variants. Each entry is a dict with keys
+        ``industry`` and ``cap`` (see :mod:`backtest.factor.variants`).
+        ``None`` (default) → :data:`DEFAULT_NEUTRALIZATIONS`
+        (``[raw, swl1_capq5]``). Stored as a sibling of ``parameters`` so
+        these meta entries never get forwarded into the compute function.
 
     Registration is in-memory only. Call ``sync_registry()`` to persist to disk.
     """
@@ -66,7 +84,8 @@ def register(
         # in-memory cache.
         preserved = {
             k: existing[k]
-            for k in ("status", "admission", "admission_history")
+            for k in ("status", "admission", "admission_history",
+                      "variant_status", "variant_admission_history")
             if k in existing
         }
 
@@ -76,6 +95,7 @@ def register(
             "data_sources": data_sources,
             "description": description,
             "parameters": parameters or {},
+            "neutralizations": normalize_neutralizations(neutralizations),
             "func_name": func.__name__,
             "func_module": func.__module__,
             **preserved,
@@ -123,6 +143,12 @@ def get_factor_meta(factor_id: str) -> dict:
     if factor_id not in registry:
         raise KeyError(f"factor_id '{factor_id}' not found in registry")
     return registry[factor_id].copy()
+
+
+def get_factor_variants(factor_id: str) -> list[str]:
+    """Return the declared variant names for a factor (default 2 if absent)."""
+    meta = get_factor_meta(factor_id)
+    return expand_variant_names(meta.get("neutralizations"))
 
 
 def list_factors(category: str | None = None) -> list[dict]:

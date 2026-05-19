@@ -168,7 +168,7 @@ class DetailedSimulator:
         Parameters
         ----------
         signals : pd.DataFrame
-            [date, symbol, target_weight]
+            [date, symbol, target_weight] — date 为持仓生效日（已含 delay）
         market_data : pd.DataFrame
             [date, symbol, open, high, low, close, volume, limit_up, limit_down, ...]
         dividends_data : pd.DataFrame | None

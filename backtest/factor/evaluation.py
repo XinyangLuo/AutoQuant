@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from backtest.data.storage import MarketStorage
 from backtest.factor.storage import FactorLibrary, FactorStorage
+from backtest.factor.variants import BASELINE_VARIANT, RAW_VARIANT, canonicalize_variant
 
 
 DEFAULT_HORIZONS = [1, 5, 10, 20, 60]
@@ -56,32 +58,42 @@ def _load_factor_and_returns(
     ret_type: str = "close",
     returns_df: pd.DataFrame | None = None,
     limit_df: pd.DataFrame | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    market_df: pd.DataFrame | None = None,
+    *,
+    variant: str = BASELINE_VARIANT,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load factor values, compute forward returns, and load limit prices for filtering.
 
-    If ``returns_df`` and ``limit_df`` are provided (from a prior
-    :func:`_load_market_data` call), they are reused instead of re-querying
-    the database.
+    ``variant`` 默认为 :data:`BASELINE_VARIANT`(``swl1_capq5``):评测口径统一在
+    中性化后的因子值上,IC/RankIC/turnover/corr 都按此口径算 —— 比较的是消除
+    行业/市值暴露后的真实 alpha,而不是被共同暴露污染的 raw 值。
+    raw 仅作为可选的"诊断口径"暴露给 CLI,默认不暴露。
+
+    If ``returns_df``, ``limit_df``, and ``market_df`` are provided (from a
+    prior :func:`_load_market_data` call), they are reused instead of
+    re-querying the database.
     """
     with FactorStorage() as fs:
-        factor_df = fs.get_factor(factor_id, start, end)
+        factor_df = fs.get_factor(factor_id, start, end, variant=variant)
 
     if factor_df.empty:
-        raise ValueError(f"No factor data for {factor_id} in range {start}~{end}")
+        raise ValueError(
+            f"No factor data for {factor_id} (variant={variant}) in range {start}~{end}"
+        )
 
-    if returns_df is not None and limit_df is not None:
-        return factor_df, returns_df, limit_df
+    if returns_df is not None and limit_df is not None and market_df is not None:
+        return factor_df, returns_df, limit_df, market_df
 
     max_h = max(horizons)
     factor_end = factor_df["date"].max()
     returns_end = (factor_end + pd.Timedelta(days=max_h + 5)).strftime("%Y%m%d")
 
     symbols = factor_df["symbol"].unique().tolist()
-    _, returns_df, limit_df = _load_market_data(
+    market_df, returns_df, limit_df = _load_market_data(
         symbols=symbols, start=start, end=returns_end,
         horizons=horizons, ret_type=ret_type,
     )
-    return factor_df, returns_df, limit_df
+    return factor_df, returns_df, limit_df, market_df
 
 
 def _compute_forward_returns(
@@ -192,17 +204,19 @@ def _corr_with_existing(
     factor_id: str,
     storage: FactorStorage,
     top_k: int = 5,
+    *,
+    variant: str = BASELINE_VARIANT,
 ) -> pd.DataFrame:
-    """Average daily cross-sectional rank correlation with library factors.
+    """同 variant 内的跨因子相关性(默认 baseline = ``swl2_capq5``)。
+
+    ``variant`` 是因子的一部分 —— 入库的值已经是该 variant 下的"纯净因子值"。
+    所以对比时**双方**都拉相同 variant 的入库值,直接 daily cross-section RankIC
+    平均。不同 variant 之间不互比(它们是不同的因子)。
 
     ``storage`` is normally a :class:`~backtest.factor.storage.FactorLibrary`
     instance (passed in from :func:`evaluate`), so the comparison runs
     against the **stable, admitted** factors only — never the temporary
     work-DB churn that would otherwise pollute the duplicate check.
-
-    The function itself doesn't care which DB ``storage`` is backed by
-    (handy for tests), only that it answers ``get_factors_long`` with the
-    right schema.
 
     Pass ``top_k=0`` to skip the comparison entirely.
     """
@@ -212,7 +226,7 @@ def _corr_with_existing(
     start = factor_df["date"].min().strftime("%Y%m%d")
     end = factor_df["date"].max().strftime("%Y%m%d")
     others = storage.get_factors_long(
-        start=start, end=end, exclude=factor_id,
+        start=start, end=end, exclude=factor_id, variant=variant,
     )
     if others.empty:
         return pd.DataFrame(columns=_CORR_COLUMNS)
@@ -244,6 +258,7 @@ def _corr_with_existing(
 @dataclass
 class EvaluationResult:
     factor_id: str
+    variant: str
     ret_type: str
     horizons: list[int]
     start: str
@@ -256,6 +271,7 @@ class EvaluationResult:
     corr_with_existing: pd.DataFrame
     ic_series: dict[int, pd.Series] = field(default_factory=dict)
     rank_ic_series: dict[int, pd.Series] = field(default_factory=dict)
+    decile_result: "DecileBacktestResult | None" = None
 
     def summary(self) -> pd.DataFrame:
         """Return a summary table of all metrics by horizon."""
@@ -308,7 +324,10 @@ class EvaluationResult:
         }
 
     def __repr__(self) -> str:
-        return f"EvaluationResult({self.factor_id}, ret_type={self.ret_type}, horizons={self.horizons})"
+        return (
+            f"EvaluationResult({self.factor_id}, variant={self.variant}, "
+            f"ret_type={self.ret_type}, horizons={self.horizons})"
+        )
 
 
 _LIMIT_EPS = 1e-6
@@ -356,39 +375,50 @@ def evaluate(
     start: str,
     end: str,
     *,
+    variant: str = BASELINE_VARIANT,
     horizons: list[int] | None = None,
     ret_type: str = "close",
     n_groups: int = 10,
     corr_top_k: int = 5,
     exclude_limit_up: bool = True,
+    run_decile_backtest: bool = False,
     _returns_df: pd.DataFrame | None = None,
     _limit_df: pd.DataFrame | None = None,
+    _market_df: pd.DataFrame | None = None,
 ) -> EvaluationResult:
-    """Evaluate a factor's predictive power.
+    """Evaluate a factor variant's predictive power.
 
     Computes IC/RankIC across the requested horizons, turnover, grouped returns,
     and the cross-sectional rank correlation against every other factor in
-    ``FactorStorage`` — sorted by ``|corr|`` descending and truncated to
-    ``corr_top_k`` rows. Pass ``corr_top_k=0`` to skip the correlation step.
-    Use :meth:`EvaluationResult.max_corr` to gate factor admission against
-    duplicates.
+    ``FactorLibrary`` **at the same variant** — sorted by ``|corr|`` descending
+    and truncated to ``corr_top_k`` rows. Pass ``corr_top_k=0`` to skip the
+    correlation step. Use :meth:`EvaluationResult.max_corr` to gate factor
+    admission against duplicates.
 
     Parameters
     ----------
+    variant : str
+        Neutralization variant to evaluate (default ``"swl2_capq5"``).
+        因子的 variant 是其本身的一部分 —— evaluation 直接用入库该 variant 的
+        因子值算 IC/RankIC,corr 比较也在**同 variant 内**做。如果你想看 raw
+        口径,传 ``variant="raw"``。
     exclude_limit_up : bool, default True
         For ``ret_type='close'``, drop rows where the signal-day close hits
         limit-up (unbuyable). For ``ret_type='open'``, drop rows where the
         next-day open hits limit-up.
-    _returns_df, _limit_df : pd.DataFrame, optional
-        Pre-computed forward returns and limit prices (internal optimisation
-        for batch evaluation — reuse market data across factors).
+    _returns_df, _limit_df, _market_df : pd.DataFrame, optional
+        Pre-computed market data, forward returns, and limit prices (internal
+        optimisation for batch evaluation — reuse market data across factors).
     """
+    variant = canonicalize_variant(variant)
+
     if horizons is None:
         horizons = DEFAULT_HORIZONS
 
-    factor_df, returns_df, limit_df = _load_factor_and_returns(
+    factor_df, returns_df, limit_df, market_df = _load_factor_and_returns(
         factor_id, start, end, horizons, ret_type,
-        returns_df=_returns_df, limit_df=_limit_df,
+        returns_df=_returns_df, limit_df=_limit_df, market_df=_market_df,
+        variant=variant,
     )
 
     merged = factor_df.merge(returns_df, on=["date", "symbol"], how="inner")
@@ -431,12 +461,23 @@ def evaluate(
 
     if corr_top_k > 0:
         with FactorLibrary() as lib:
-            corr_df = _corr_with_existing(factor_df, factor_id, lib, top_k=corr_top_k)
+            corr_df = _corr_with_existing(
+                factor_df, factor_id, lib,
+                top_k=corr_top_k, variant=variant,
+            )
     else:
         corr_df = pd.DataFrame(columns=_CORR_COLUMNS)
 
+    decile_result = None
+    if run_decile_backtest:
+        from backtest.simulation.decile import DecileSimulator
+
+        sim = DecileSimulator()
+        decile_result = sim.run(factor_df, market_data=market_df)
+
     return EvaluationResult(
         factor_id=factor_id,
+        variant=variant,
         ret_type=ret_type,
         horizons=horizons,
         start=start,
@@ -449,6 +490,7 @@ def evaluate(
         corr_with_existing=corr_df,
         ic_series=ic_series,
         rank_ic_series=rank_ic_series,
+        decile_result=decile_result,
     )
 
 
@@ -467,6 +509,7 @@ def _print_comparison_table(results: list[EvaluationResult]) -> None:
         max_corr = r.max_corr()
         rows.append({
             "factor_id": r.factor_id,
+            "variant": r.variant,
             "IC_mean": ic.get("ic_mean"),
             "IC_std": ic.get("ic_std"),
             "ICIR": ic.get("icir"),
@@ -486,7 +529,7 @@ def _print_comparison_table(results: list[EvaluationResult]) -> None:
     print(f"Factor Comparison  |  ret_type={results[0].ret_type}  |  horizon={primary_h}d")
     print(f"{'=' * 100}")
     # Round floats for readability
-    float_cols = [c for c in df.columns if c != "factor_id"]
+    float_cols = [c for c in df.columns if c not in ("factor_id", "variant")]
     for c in float_cols:
         df[c] = df[c].apply(lambda x: f"{x:+.4f}" if pd.notna(x) else "N/A")
     print(df.to_string(index=False))
@@ -496,7 +539,7 @@ def _print_comparison_table(results: list[EvaluationResult]) -> None:
 def print_evaluation(result: EvaluationResult) -> None:
     """Pretty-print evaluation results."""
     print(f"\n{'=' * 60}")
-    print(f"Factor Evaluation: {result.factor_id}")
+    print(f"Factor Evaluation: {result.factor_id}  |  variant={result.variant}")
     print(f"Return type: {result.ret_type}")
     print(f"Period: {result.start} ~ {result.end}")
     print(f"Turnover: {result.turnover:.4f}")
@@ -566,6 +609,41 @@ def print_evaluation(result: EvaluationResult) -> None:
     else:
         print(f"  → {4 - n_pass} threshold(s) not met. Consider tuning or rejecting.")
 
+    # Decile backtest summary
+    if result.decile_result is not None:
+        dr = result.decile_result
+        print(f"\n--- Decile Backtest ---")
+        print(f"  Monotonicity score: {dr.monotonicity_score:+.3f}")
+        # All 10 deciles
+        print("\n  Annual return by decile:")
+        for d in range(10):
+            m = dr.decile_metrics.get(d, {})
+            ann = m.get("annual_return")
+            dd = m.get("max_drawdown")
+            if ann is not None and dd is not None:
+                print(f"    D{d + 1:2d}:  ann_ret={ann:+.2%}  max_dd={dd:+.2%}")
+            elif ann is not None:
+                print(f"    D{d + 1:2d}:  ann_ret={ann:+.2%}  max_dd=N/A")
+            else:
+                print(f"    D{d + 1:2d}:  ann_ret=N/A")
+        # Long-Short
+        if dr.ls_metrics:
+            ls_ann = dr.ls_metrics.get("annual_return")
+            ls_dd = dr.ls_metrics.get("max_drawdown")
+            ls_sharpe = dr.ls_metrics.get("sharpe")
+            print(f"\n  Long-Short (D10 - D1):")
+            print(
+                f"    ann_ret={ls_ann:+.2%}" if ls_ann is not None else "    ann_ret=N/A",
+                end="",
+            )
+            print(
+                f", max_dd={ls_dd:.2%}" if ls_dd is not None else ", max_dd=N/A",
+                end="",
+            )
+            print(
+                f", sharpe={ls_sharpe:.2f}" if ls_sharpe is not None else ", sharpe=N/A",
+            )
+
     print(f"{'=' * 60}\n")
 
 
@@ -600,7 +678,8 @@ def plot_evaluation(
 
     fig, axes = plt.subplots(4, 1, figsize=(16, 18))
     fig.suptitle(
-        f"{result.factor_id}  |  horizon={horizon}d  |  {result.start}~{result.end}",
+        f"{result.factor_id}  |  variant={result.variant}  |  "
+        f"horizon={horizon}d  |  {result.start}~{result.end}",
         fontsize=14,
         fontweight="bold",
     )
@@ -658,7 +737,7 @@ def plot_evaluation(
         from pathlib import Path
         out_dir = Path("results") / result.factor_id / "factor_eval"
         out_dir.mkdir(parents=True, exist_ok=True)
-        output_path = str(out_dir / f"{result.factor_id}_{horizon}d.png")
+        output_path = str(out_dir / f"{result.factor_id}_{result.variant}_{horizon}d.png")
 
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -683,6 +762,15 @@ def main():
         help="Return calculation type (default: open)",
     )
     parser.add_argument(
+        "--variant",
+        default=BASELINE_VARIANT,
+        help=(
+            f"Neutralization variant to evaluate (default: {BASELINE_VARIANT}). "
+            f"e.g. 'raw' / 'swl2_capq5' / 'swl1_capq10'. Must already be "
+            f"backfilled into the work DB."
+        ),
+    )
+    parser.add_argument(
         "--corr-top-k",
         type=int,
         default=5,
@@ -703,6 +791,11 @@ def main():
         type=int,
         default=20,
         help="Horizon to plot (default: 20)",
+    )
+    parser.add_argument(
+        "--decile",
+        action="store_true",
+        help="Run decile backtest and include in output",
     )
     args = parser.parse_args()
 
@@ -726,12 +819,13 @@ def main():
     # Batch mode: preload market data once to avoid N database round-trips
     preloaded_returns: pd.DataFrame | None = None
     preloaded_limit: pd.DataFrame | None = None
+    preloaded_market: pd.DataFrame | None = None
     if len(factor_ids) > 1:
         max_h = max(horizons)
         end_dt = pd.to_datetime(args.end, format="%Y%m%d")
         returns_end = (end_dt + pd.Timedelta(days=max_h + 5)).strftime("%Y%m%d")
         try:
-            _, preloaded_returns, preloaded_limit = _load_market_data(
+            preloaded_market, preloaded_returns, preloaded_limit = _load_market_data(
                 symbols=None,  # all symbols
                 start=args.start,
                 end=returns_end,
@@ -748,12 +842,15 @@ def main():
                 fid,
                 args.start,
                 args.end,
+                variant=args.variant,
                 horizons=horizons,
                 ret_type=args.ret_type,
                 corr_top_k=args.corr_top_k,
                 exclude_limit_up=not args.no_exclude_limit_up,
+                run_decile_backtest=args.decile,
                 _returns_df=preloaded_returns,
                 _limit_df=preloaded_limit,
+                _market_df=preloaded_market,
             )
             results.append(result)
         except Exception as exc:
@@ -768,6 +865,27 @@ def main():
                 print(f"Plot saved: {path}")
             except Exception as exc:
                 print(f"Plot error: {exc}")
+        if args.decile and results[0].decile_result is not None:
+            try:
+                from backtest.simulation.decile import plot_decile_backtest
+
+                dr = results[0].decile_result
+                out_dir = (
+                    Path("results")
+                    / results[0].factor_id
+                    / "decile_backtest"
+                )
+                out_dir.mkdir(parents=True, exist_ok=True)
+                path = plot_decile_backtest(
+                    dr,
+                    output_path=str(
+                        out_dir
+                        / f"{results[0].factor_id}_{results[0].variant}_decile.png"
+                    ),
+                )
+                print(f"Decile plot saved: {path}")
+            except Exception as exc:
+                print(f"Decile plot error: {exc}")
     elif len(results) > 1:
         _print_comparison_table(results)
 

@@ -19,9 +19,10 @@ from backtest.data.storage import MarketStorage
 
 
 DEFAULT_INDICES = [
-    "000300.SH",  # CSI 300
-    "000905.SH",  # CSI 500
-    "000852.SH",  # CSI 1000
+    "000300.SH",  # CSI 300       (2005-04-08 -)
+    "000905.SH",  # CSI 500       (2007-01-15 -)
+    "000852.SH",  # CSI 1000      (2014-10-17 -)
+    "932000.CSI", # CSI 2000      (2023-08-11 -)
     "000001.SH",  # SSE Composite
     "399006.SZ",  # ChiNext
 ]

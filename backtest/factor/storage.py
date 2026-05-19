@@ -10,6 +10,13 @@ Two physical DBs:
   ``FactorLibrary``. Only ``admit()`` writes here. The correlation-with-
   existing check in evaluation reads from here so that admission compares
   against *stabilised* factors, never the temporary research churn.
+
+Schema: ``(date, symbol, factor_id, variant, value, ann_date, f_ann_date)``,
+PK = ``(date, symbol, factor_id, variant)``.
+
+``variant`` 是中性化变体标识(如 ``"raw"`` / ``"swl1_capq5"``,见
+:mod:`backtest.factor.variants`)。同一因子的不同变体并列存放,可横向比较;
+也可独立 ``admit`` / ``reject``。
 """
 
 from contextlib import contextmanager
@@ -19,6 +26,7 @@ import duckdb
 import pandas as pd
 
 from backtest.data.tushare_client import _find_project_root
+from backtest.factor.variants import RAW_VARIANT, canonicalize_variant
 
 
 PROJECT_ROOT = _find_project_root()
@@ -32,17 +40,18 @@ FACTORS_DB_PATH = FACTORS_WORK_DB_PATH
 
 FACTORS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS factors_daily (
-    date      DATE,
-    symbol    VARCHAR,
-    factor_id VARCHAR,
-    value     DOUBLE,
-    ann_date  VARCHAR,
+    date       DATE,
+    symbol     VARCHAR,
+    factor_id  VARCHAR,
+    variant    VARCHAR,
+    value      DOUBLE,
+    ann_date   VARCHAR,
     f_ann_date VARCHAR,
-    PRIMARY KEY (date, symbol, factor_id)
+    PRIMARY KEY (date, symbol, factor_id, variant)
 )
 """
 
-FACTOR_COLUMNS = ["date", "symbol", "factor_id", "value", "ann_date", "f_ann_date"]
+FACTOR_COLUMNS = ["date", "symbol", "factor_id", "variant", "value", "ann_date", "f_ann_date"]
 
 
 class FactorStorage:
@@ -52,7 +61,8 @@ class FactorStorage:
     custom ``db_path`` to point at a different file — :class:`FactorLibrary`
     uses this to back the stable library DB.
 
-    Schema: ``(date, symbol, factor_id, value, ann_date, f_ann_date)``.
+    Schema: ``(date, symbol, factor_id, variant, value, ann_date, f_ann_date)``.
+    ``variant`` is the neutralization-variant label (default ``"raw"``).
     ``ann_date`` / ``f_ann_date`` are optional provenance for financial
     factors; non-financial factors leave them NULL.
     """
@@ -64,7 +74,30 @@ class FactorStorage:
         self._init_tables()
 
     def _init_tables(self):
+        # 1. Ensure table exists (idempotent CREATE)
         self.conn.execute(FACTORS_SCHEMA)
+        # 2. Detect legacy schema (pre-variant). If found and empty → recreate;
+        #    if non-empty → raise (caller must run a dedicated migration script).
+        cols = {
+            r[0] for r in self.conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'factors_daily'"
+            ).fetchall()
+        }
+        if "variant" not in cols:
+            row_count = self.conn.execute(
+                "SELECT COUNT(*) FROM factors_daily"
+            ).fetchone()[0]
+            if row_count > 0:
+                raise RuntimeError(
+                    f"factors_daily at {self.db_path} is on the legacy schema "
+                    f"(no `variant` column) and contains {row_count:,} rows. "
+                    f"Run a one-off migration to ALTER ADD COLUMN variant DEFAULT 'raw' "
+                    f"+ rebuild the PRIMARY KEY before reopening."
+                )
+            # Empty legacy schema → safe to drop + recreate
+            self.conn.execute("DROP TABLE factors_daily")
+            self.conn.execute(FACTORS_SCHEMA)
 
     def __enter__(self):
         return self
@@ -87,31 +120,38 @@ class FactorStorage:
 
     # -- write ----------------------------------------------------------------
 
-    def insert_factors(self, df: pd.DataFrame):
+    def insert_factors(self, df: pd.DataFrame, *, default_variant: str = RAW_VARIANT):
         """UPSERT factor rows into factors_daily.
 
         Expected columns: date, symbol, factor_id, value.
-        Optional: ann_date, f_ann_date (for financial factor provenance).
+        Optional: variant (defaults to ``default_variant``), ann_date, f_ann_date.
         """
         if df.empty:
             return
 
-        # Ensure required columns exist
         required = {"date", "symbol", "factor_id", "value"}
         missing = required - set(df.columns)
         if missing:
             raise ValueError(f"Missing required columns: {missing}")
 
-        # Build column list from FACTOR_COLUMNS that exist in df
+        df = df.copy()
+        if "variant" not in df.columns:
+            df["variant"] = default_variant
+        else:
+            df["variant"] = df["variant"].apply(canonicalize_variant)
+
         cols = [c for c in FACTOR_COLUMNS if c in df.columns]
         cols_sql = ", ".join(f'"{c}"' for c in cols)
-        excluded_sql = ", ".join(f'"{c}" = excluded."{c}"' for c in cols if c not in ("date", "symbol", "factor_id"))
+        pk_cols = ("date", "symbol", "factor_id", "variant")
+        excluded_sql = ", ".join(
+            f'"{c}" = excluded."{c}"' for c in cols if c not in pk_cols
+        )
 
         with self._registered("_upsert_factors", df) as view:
             self.conn.execute(f"""
                 INSERT INTO factors_daily ({cols_sql})
                 SELECT {cols_sql} FROM {view}
-                ON CONFLICT (date, symbol, factor_id) DO UPDATE SET
+                ON CONFLICT (date, symbol, factor_id, variant) DO UPDATE SET
                     {excluded_sql}
             """)
 
@@ -123,21 +163,25 @@ class FactorStorage:
         start: str | None = None,
         end: str | None = None,
         *,
+        variant: str = RAW_VARIANT,
         columns: list[str] | None = None,
     ) -> pd.DataFrame:
-        """Return time-series for a single factor.
+        """Return time-series for a single factor variant.
 
         Default columns are ``[date, symbol, value]``. Pass ``columns`` to
         request a different subset — e.g. ``FACTOR_COLUMNS`` to also pull
-        ``factor_id``, ``ann_date``, ``f_ann_date`` (used by
-        ``FactorLibrary.promote_from_work`` to preserve financial-factor
-        provenance).
+        ``factor_id``, ``variant``, ``ann_date``, ``f_ann_date`` (used by
+        :meth:`FactorLibrary.promote_from_work` to preserve full provenance).
+
+        ``variant`` defaults to ``"raw"``. To read all variants of a factor
+        in one query, use :meth:`get_factors_long` with ``variant=None``.
         """
         cols = columns or ["date", "symbol", "value"]
         cols_sql = ", ".join(cols)
 
-        conditions = ["factor_id = ?"]
-        params = [factor_id]
+        variant = canonicalize_variant(variant)
+        conditions = ["factor_id = ?", "variant = ?"]
+        params: list = [factor_id, variant]
 
         if start:
             conditions.append("date >= strptime(?, '%Y%m%d')::DATE")
@@ -158,20 +202,25 @@ class FactorStorage:
         self,
         factor_ids: list[str],
         date: str,
+        *,
+        variant: str = RAW_VARIANT,
     ) -> pd.DataFrame:
-        """Return a wide cross-section for multiple factors on a single date.
+        """Return a wide cross-section for multiple factors on a single date,
+        for a single variant.
 
         Returns DataFrame with columns [date, symbol, f_001, f_002, ...].
         """
+        variant = canonicalize_variant(variant)
         placeholders = ", ".join("?" for _ in factor_ids)
         sql = f"""
             SELECT date, symbol, factor_id, value
             FROM factors_daily
             WHERE date = strptime(?, '%Y%m%d')::DATE
+              AND variant = ?
               AND factor_id IN ({placeholders})
             ORDER BY symbol, factor_id
         """
-        params = [date] + factor_ids
+        params = [date, variant] + factor_ids
         df = self.conn.execute(sql, params).fetchdf()
         if df.empty:
             return df
@@ -183,13 +232,19 @@ class FactorStorage:
         start: str | None = None,
         end: str | None = None,
         exclude: str | None = None,
+        *,
+        variant: str | None = RAW_VARIANT,
     ) -> pd.DataFrame:
         """Return long-form factor values across multiple factors and dates.
 
-        One DuckDB round-trip instead of one per factor. Used by evaluation's
-        correlation check to avoid an N+1 query as the library grows.
+        Used by evaluation's correlation check to avoid an N+1 query as the
+        library grows.
 
-        Returns DataFrame with columns [date, symbol, factor_id, value].
+        ``variant`` filter:
+          - default ``"raw"`` — single variant
+          - ``None`` — no filter (return all variants)
+
+        Returns DataFrame with columns [date, symbol, factor_id, variant, value].
         """
         conditions: list[str] = []
         params: list = []
@@ -207,46 +262,75 @@ class FactorStorage:
         if end:
             conditions.append("date <= strptime(?, '%Y%m%d')::DATE")
             params.append(end)
+        if variant is not None:
+            conditions.append("variant = ?")
+            params.append(canonicalize_variant(variant))
 
         where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
 
         sql = f"""
-            SELECT date, symbol, factor_id, value
+            SELECT date, symbol, factor_id, variant, value
             FROM factors_daily
             {where_clause}
-            ORDER BY factor_id, date, symbol
+            ORDER BY factor_id, variant, date, symbol
         """
         return self.conn.execute(sql, params).fetchdf()
 
     # -- stats ----------------------------------------------------------------
 
-    def get_max_date(self, factor_id: str) -> str | None:
-        """Return max date for a factor as YYYYMMDD, or None."""
+    def get_max_date(self, factor_id: str, *, variant: str = RAW_VARIANT) -> str | None:
+        """Return max date for a factor variant as YYYYMMDD, or None."""
+        variant = canonicalize_variant(variant)
         result = self.conn.execute(
-            "SELECT MAX(date) FROM factors_daily WHERE factor_id = ?",
-            [factor_id],
+            "SELECT MAX(date) FROM factors_daily "
+            "WHERE factor_id = ? AND variant = ?",
+            [factor_id, variant],
         ).fetchone()
         if result[0]:
             return result[0].strftime("%Y%m%d")
         return None
 
     def get_existing_factor_ids(self) -> set[str]:
-        """Return set of factor_ids that already have data."""
+        """Return set of factor_ids that have any data (any variant)."""
         rows = self.conn.execute(
             "SELECT DISTINCT factor_id FROM factors_daily"
         ).fetchall()
         return {r[0] for r in rows}
 
-    def delete_factor(self, factor_id: str) -> int:
-        """Delete all rows for a factor_id. Returns number of rows deleted."""
-        result = self.conn.execute(
-            "DELETE FROM factors_daily WHERE factor_id = ?",
+    def get_existing_variants(self, factor_id: str) -> set[str]:
+        """Return set of variants present for a given factor_id."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT variant FROM factors_daily WHERE factor_id = ?",
             [factor_id],
-        ).fetchone()
+        ).fetchall()
+        return {r[0] for r in rows}
+
+    def delete_factor(
+        self,
+        factor_id: str,
+        *,
+        variant: str | None = None,
+    ) -> int:
+        """Delete rows for ``factor_id``. Returns number of rows deleted.
+
+        ``variant=None`` (default) deletes **all** variants of the factor.
+        Pass an explicit variant string to scope the delete.
+        """
+        if variant is None:
+            result = self.conn.execute(
+                "DELETE FROM factors_daily WHERE factor_id = ?",
+                [factor_id],
+            ).fetchone()
+        else:
+            result = self.conn.execute(
+                "DELETE FROM factors_daily WHERE factor_id = ? AND variant = ?",
+                [factor_id, canonicalize_variant(variant)],
+            ).fetchone()
         return result[0] if result else 0
 
     def delete_factors(self, factor_ids: list[str]) -> dict[str, int]:
-        """Delete multiple factors in one round-trip; return ``{fid: rows}``.
+        """Delete multiple factors (all variants) in one round-trip;
+        return ``{fid: rows}``.
 
         DuckDB's ``DELETE`` doesn't return a per-key breakdown, so we run one
         ``GROUP BY`` to count first, then a single bulk ``DELETE``.
@@ -267,18 +351,37 @@ class FactorStorage:
         )
         return {fid: counts.get(fid, 0) for fid in factor_ids}
 
-    def get_factor_stats(self, factor_id: str) -> dict:
-        """Return basic stats for a factor."""
+    def get_factor_stats(self, factor_id: str, *, variant: str | None = None) -> dict:
+        """Return basic stats for a factor.
+
+        ``variant=None`` aggregates across all variants of the factor.
+        """
+        if variant is None:
+            row = self.conn.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT symbol), MIN(date), MAX(date), "
+                "COUNT(DISTINCT variant) "
+                "FROM factors_daily WHERE factor_id = ?",
+                [factor_id],
+            ).fetchone()
+            return {
+                "total_rows": row[0],
+                "total_symbols": row[1],
+                "min_date": row[2].strftime("%Y%m%d") if row[2] else None,
+                "max_date": row[3].strftime("%Y%m%d") if row[3] else None,
+                "n_variants": row[4],
+            }
+        variant_canon = canonicalize_variant(variant)
         row = self.conn.execute(
             "SELECT COUNT(*), COUNT(DISTINCT symbol), MIN(date), MAX(date) "
-            "FROM factors_daily WHERE factor_id = ?",
-            [factor_id],
+            "FROM factors_daily WHERE factor_id = ? AND variant = ?",
+            [factor_id, variant_canon],
         ).fetchone()
         return {
             "total_rows": row[0],
             "total_symbols": row[1],
             "min_date": row[2].strftime("%Y%m%d") if row[2] else None,
             "max_date": row[3].strftime("%Y%m%d") if row[3] else None,
+            "variant": variant_canon,
         }
 
 
@@ -296,7 +399,7 @@ class FactorLibrary(FactorStorage):
         super().__init__(db_path=Path(db_path) if db_path is not None
                                  else FACTOR_LIBRARY_DB_PATH)
 
-    def delete_factor(self, factor_id: str) -> int:  # noqa: D401 — override
+    def delete_factor(self, factor_id: str, *, variant: str | None = None) -> int:  # noqa: D401 — override
         """Disabled on the library DB.
 
         Admitted factors are intended to be stable. Deleting one is a
@@ -318,8 +421,10 @@ class FactorLibrary(FactorStorage):
         self,
         factor_id: str,
         work_storage: FactorStorage,
+        *,
+        variant: str = RAW_VARIANT,
     ) -> int:
-        """Copy a factor's data from the work DB into the library.
+        """Copy a factor variant's data from the work DB into the library.
 
         Reads the full long rows (including ``ann_date`` / ``f_ann_date``)
         from ``work_storage`` and upserts them into this library. Caller
@@ -328,7 +433,7 @@ class FactorLibrary(FactorStorage):
 
         Returns the number of rows written.
         """
-        df = work_storage.get_factor(factor_id, columns=FACTOR_COLUMNS)
+        df = work_storage.get_factor(factor_id, variant=variant, columns=FACTOR_COLUMNS)
         if df.empty:
             return 0
         self.insert_factors(df)

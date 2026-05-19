@@ -6,12 +6,14 @@ import pandas as pd
 
 from backtest.strategy.base import StrategyBase
 from backtest.strategy.config import StrategyConfig
-from backtest.strategy.neutralize import Neutralizer
 from backtest.strategy.selection import build_signals
 
 
 class SingleFactorStrategy(StrategyBase):
     """Single-factor strategy: rank stocks by one factor and select.
+
+    因子值已经在因子层完成行业/市值中性化(由 FactorConfig.variant 选定),
+    策略层不再做中性化。
 
     Supports three selection modes:
       - **topk**: Long the top-K stocks (equal or cap-weighted).
@@ -27,7 +29,6 @@ class SingleFactorStrategy(StrategyBase):
                 f"got {len(config.factors)}"
             )
         self.factor_config = config.factors[0]
-        self.neutralizer = Neutralizer()
 
     def generate_signals(
         self,
@@ -58,13 +59,6 @@ class SingleFactorStrategy(StrategyBase):
                 continue
 
             factor_values = filtered.set_index("symbol")[factor_id]
-
-            if self.config.neutralize.market_cap and "circ_mv" in filtered.columns:
-                market_cap = filtered.set_index("symbol")["circ_mv"]
-                factor_values = self.neutralizer.market_cap_neutralize(
-                    factor_values, market_cap
-                )
-                factor_values = factor_values.dropna()
 
             ascending = self.factor_config.direction == "asc"
             sorted_scores = factor_values.sort_values(ascending=ascending)

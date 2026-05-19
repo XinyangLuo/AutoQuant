@@ -2,6 +2,19 @@ from __future__ import annotations
 
 from typing import Literal
 
+import pandas as pd
+
+
+def compute_adj_price(df: pd.DataFrame, price_type: Literal["o2o", "c2c"]) -> pd.Series:
+    """Compute adjusted price based on price type.
+
+    Uses ``open * adj_factor`` for ``o2o`` when ``open`` is available,
+    otherwise falls back to ``close * adj_factor``.
+    """
+    if price_type == "o2o" and "open" in df.columns:
+        return df["open"] * df["adj_factor"]
+    return df["close"] * df["adj_factor"]
+
 
 def detect_board(symbol: str) -> Literal["default", "kcb", "bj"]:
     """根据股票代码识别板块。

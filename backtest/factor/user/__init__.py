@@ -18,7 +18,7 @@ After adding a factor:
 
     # 3. run the full screening pipeline
     python scripts/run_factor_pipeline.py f_xxx \\
-        --start 20210101 --end 20241231
+        --start 20160101 --end 20251231
 
     # 4. depending on results, admit or reject
     python -m backtest.factor.admission admit  f_xxx

@@ -37,7 +37,7 @@
   - 同一 `(symbol, end_date)` 可能有 1 行（无修正）或 2+ 行（每次修正多一行）
 - **物理表保留所有版本，不在存储层去重**——可溯源、可回放历史。"D 日只看一条"的语义由 `get_fina_snapshot()` 在查询时实现
 
-### `dividends`（分红送股事件表）
+### `dividends`(分红送股事件表)
 
 - **数据源**：Tushare `pro.dividend`（14 列）
 - **Schema**：`(symbol VARCHAR, end_date VARCHAR, ann_date VARCHAR, ex_date VARCHAR, record_date VARCHAR, pay_date VARCHAR, cash_div DOUBLE, cash_div_tax DOUBLE, stk_div DOUBLE, stk_bo_rate DOUBLE, div_proc VARCHAR)`
@@ -45,6 +45,34 @@
 - **入库过滤**：只保留 `div_proc = '实施'`
 - `ex_date`（除权除息日）是回测最关键日期：价格跳空、送转股生效
 - 预估总量 < 20 万行，事件型查询 `WHERE ex_date = ?`
+
+### `index_daily`(宽基指数日行情)
+
+- **数据源**：Tushare `pro.index_daily`
+- **Schema**：`(date DATE, symbol VARCHAR, open / high / low / close / pre_close / change / pct_chg / volume / amount DOUBLE)`
+- **主键**：`(date, symbol)`
+- **默认 4 大宽基**（`DEFAULT_INDICES` in `backfill_indices.py`,从各自基日起回填):
+  - `000300.SH`(沪深 300, 基日 2004-12-31)
+  - `000905.SH`(中证 500, 基日 2004-12-31)
+  - `000852.SH`(中证 1000, 基日 2004-12-31)
+  - `932000.CSI`(中证 2000, 基日 2013-12-31)
+  - 此外含 `000001.SH`(上证综指) `399006.SZ`(创业板指)
+- **后缀注意**：中证 2000 走 `.CSI`(中证指数公司),Tushare `pro.index_daily` 原生支持
+- **查询路径**:`get_index_bars(symbols, start, end)`(签名同 `get_bars`,读 `index_daily` 表)
+
+### `sw_industry`(申万行业归属历史, SW2021 体系)
+
+- **数据源**：Tushare `pro.index_classify`(行业代码 → 名称映射) + `pro.index_member`(成分股历史,**注意不是 `pro.index_member_all`** —— 后者只返回当前归属,丢失历史)
+- **Schema**：`(symbol VARCHAR, level VARCHAR, industry_code VARCHAR, industry_name VARCHAR, in_date DATE, out_date DATE)`
+- **主键**：`(symbol, level, industry_code, in_date)`
+  - 同一 `(symbol, level)` 在不同时段可属于不同行业,也可多次进出同一行业
+- **level 取值**：`'L1'`(申万一级,31 个行业) / `'L2'`(申万二级,约 125 个行业,SW2021 体系下有 9 个 L2 行业暂无成分股)
+- **out_date 语义**：`NULL` = 截至最新数据日仍在该行业;否则为剔除日
+- **典型样本**:`000034.SZ` 历史上 2007-07-03 ~ 2009-06-01 在农林牧渔(L1),2015-07-01 ~ 2017-06-30 又回到农林牧渔(L1) —— 表里保留两行
+- **入库脚本**:`python -m backtest.data.backfill_sw_industry`(默认 L1+L2,全量重拉。行业变更不频繁,可周/月频跑)
+- **查询路径**：
+  - `get_industry_panel(date, level='L1')` —— D 日横截面 `[symbol, industry_code, industry_name]`(按 `in_date <= D AND (out_date IS NULL OR out_date > D)` 过滤)
+  - `get_industry_history(symbol, level=None)` —— 某股票的全历史归属
 
 ## Fetch/Merge 模式
 
@@ -85,6 +113,8 @@ pro.cashflow(report_type=1)     → DataFrame  → rename ts_code→symbol
 | `market_daily` | 按交易日历，从 `MAX(date)+1` 开始 | 交易日历 |
 | `income_q` / `balancesheet_q` / `cashflow_q` | 按 `f_ann_date` 游标，从 `MAX(f_ann_date)` 起扫到今天 | 实际见报日（含修正） |
 | `dividends` | 每日查 `ex_date=today` 和 `ann_date=today` | 除权日/公告日 |
+| `index_daily` | 按 `(symbol, MAX(date)+1)` 起增量(per symbol) | 各指数自身最大日 |
+| `sw_industry` | 全量重拉(UPSERT),周/月频跑 | 不依赖时间游标(行业变更稀疏,直接全表覆盖最便宜) |
 
 **注意**：财务表必须以 `f_ann_date` 而非 `ann_date` 为增量游标——只有 `f_ann_date` 能捕获多年后回头发布的修正版（修正版的 `ann_date` 是当年的旧日期，按 `ann_date` 排序会被认为"早已拉过"而漏掉）。
 
@@ -141,4 +171,7 @@ get_fina_snapshot(as_of_date, symbols=None, columns=None)     # D 日财报 wide
 get_factor(factor_name, start, end)                           # 因子表单因子时序
 get_factor_panel(factor_names, date)                          # 因子表 pivot 宽表
 get_dividend(symbol, start, end)                              # 分红事件
+get_index_bars(symbols, start, end, columns=[...])            # 指数日行情时序
+get_industry_panel(date, level='L1')                          # 申万行业归属 D 日横截面
+get_industry_history(symbol, level=None)                      # 申万行业归属全历史(各分段)
 ```

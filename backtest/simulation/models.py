@@ -148,3 +148,29 @@ class BacktestResult:
             end=dates.max(),
         )
         return compute_all_metrics(arts, bench_nav=None)
+
+
+@dataclass
+class DecileBacktestResult:
+    """Result of a decile-layered backtest."""
+
+    nav_df: pd.DataFrame
+    decile_metrics: dict[int, dict]
+    ls_metrics: dict
+    monotonicity_score: float
+
+    def save(self, output_dir: str) -> None:
+        """Persist nav and metrics to disk."""
+        path = Path(output_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        if not self.nav_df.empty:
+            self.nav_df.to_parquet(path / "nav.parquet", index=False)
+        import json
+
+        payload = {
+            "decile_metrics": {str(k): v for k, v in self.decile_metrics.items()},
+            "ls_metrics": self.ls_metrics,
+            "monotonicity_score": self.monotonicity_score,
+        }
+        with open(path / "metrics.json", "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, default=str)

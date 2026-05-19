@@ -96,6 +96,5 @@ result = sim.run(signals, market_data, dividends_data)
 
 - **回测引擎与策略解耦**：策略只产出目标持仓，引擎负责成交模拟（停牌、涨跌停、成本、复权）
 - **因子双库 + 人工 admission**：研究中的新因子值写 `factors.duckdb`（work, 临时）。看完三层评测（factor eval + simple BT + detailed BT）后人工 `admit`，把数据迁移到 `factor_library.duckdb`（library, 稳定）并清空 work；`reject` 则只清 work、不写 library。Evaluation 的"与现有因子相关性"只读 library，避免临时数据互相污染。整体使用方式见 [`backtest/PIPELINE.md`](PIPELINE.md)。
-- **因子晋升机制（roadmap）**：library 中长期稳定的因子，可进一步物理列化为 `market_daily` 的一列，加速常用路径。当前未实现。
 - **财务数据未来信息隔离（PIT）**：`income_q` / `balancesheet_q` / `cashflow_q` 三张物理表各自保留所有版本（原始 + 修正）；查询时 `get_fina_snapshot(D)` 对每张表分别按 `f_ann_date <= D` 过滤 + `QUALIFY ROW_NUMBER()` 取最新可见版本，再 outer-join 成 wide DataFrame，正确处理业绩修正（restatement）及约 1% 的三表独立修正 case。详见 [`backtest/data/DESIGN.md`](data/DESIGN.md) 的 PIT 章节
 - **评测指标单一来源**：所有 Sharpe / 回撤 / 换手 / 胜率等指标只在 `backtest/evaluation/metrics.py` 实现。`BacktestResult.summary()` 与 `scripts/` 中的 `compute_metrics` 都委托到此，杜绝公式漂移

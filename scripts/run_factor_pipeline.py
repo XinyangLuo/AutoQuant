@@ -18,7 +18,7 @@ to promote, or ``reject ...`` to discard. The admission CLI auto-reads
 Usage:
     python scripts/run_factor_pipeline.py f_rev_05 \\
         --variant swl2_capq5 \\
-        --start 20210101 --end 20241231 \\
+        --start 20160101 --end 20251231 \\
         --top-n 50 --rebalance 1W --decay 5 \\
         --direction asc --benchmark 000300.SH
 
@@ -365,8 +365,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--variant", default=BASELINE_VARIANT,
                    help=f"Neutralization variant (default: {BASELINE_VARIANT}). "
                         "Common: 'raw' (no neutralization), 'swl2_capq5' (SW-L2 + circ_mv quintile).")
-    p.add_argument("--start", default="20210101")
-    p.add_argument("--end", default="20241231")
+    p.add_argument("--start", default="20160101")
+    p.add_argument("--end", default="20251231")
     p.add_argument("--horizons", default="1,5,10,20,60")
     p.add_argument("--ret-type", default="open", choices=["close", "open"])
     p.add_argument("--plot-horizon", type=int, default=20)

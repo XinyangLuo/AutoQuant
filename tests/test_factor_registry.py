@@ -19,8 +19,12 @@ from backtest.factor.registry import (
 
 
 @pytest.fixture(autouse=True)
-def clean_registry():
-    """Clean registry before each test."""
+def clean_registry(tmp_path, monkeypatch):
+    """Clean in-memory registry **and** redirect ``_REGISTRY_PATH`` to a tmp
+    file so any ``sync_registry()`` triggered by tests cannot clobber the
+    real ``data/factor_library/registry.json`` on disk.
+    """
+    monkeypatch.setattr(registry, "_REGISTRY_PATH", tmp_path / "registry.json")
     # Clear in-memory state
     registry._REGISTRY_CACHE = {}
     registry._FACTOR_FUNCTIONS.clear()
