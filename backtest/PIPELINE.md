@@ -26,19 +26,34 @@ data/duckdb/factor_library.duckdb  ← 稳定库 (FactorLibrary)
 
 **意义**：新因子的研究数据永远不会污染稳定库；与稳定库的相关性比较永远是"对照已稳定的对手"。
 
-### 七个阶段
+### 七个阶段（含可选十段分层）
 
 ```
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │ 1. 定义因子  │ │ 2. 回填(work)│ │ 3. 离线评测  │ │ 4. 策略组装  │
 │  @register   │→│  backfill    │→│  factor.eval │→│  Strategy    │
 └──────────────┘ └──────────────┘ └──────────────┘ │   Config     │
-                                                    └──────┬───────┘
-                                                           ▼
-┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
-│ 8. 人工决策  │ │ 7. 回测评测  │ │ 6. 详细回测  │ │ 5. 简单回测  │
-│ admit/reject │←│  eval.eval   │←│  Detailed    │←│  Simple      │
-└──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+       │                            │               └──────┬───────┘
+       │                            │ (可选 --decile)        ▼
+       │                            ▼              ┌──────────────┐
+       │                      ┌──────────────┐    │ 5. 简单回测  │
+       │                      │ 十段分层回测 │    │  Simple      │
+       │                      │  Decile BT   │    └──────┬───────┘
+       │                      └──────────────┘           ▼
+       │                                         ┌──────────────┐
+       │                                         │ 6. 详细回测  │
+       │                                         │  Detailed    │
+       │                                         └──────┬───────┘
+       │                                                ▼
+       │                                         ┌──────────────┐
+       │                                         │ 7. 回测评测  │
+       │                                         │  eval.eval   │
+       │                                         └──────┬───────┘
+       │                                                ▼
+       │                                         ┌──────────────┐
+       └────────────────────────────────────────→│ 8. 人工决策  │
+                                                 │ admit/reject │
+                                                 └──────────────┘
 ```
 
 ### 端到端命令一览
@@ -58,6 +73,9 @@ python scripts/run_factor_pipeline.py f_xxx \
     --start 20210101 --end 20241231 \
     --top-n 50 --rebalance 1W --decay 5 \
     --direction desc --benchmark 000300.SH
+
+# 带十段分层回测（验证因子单调性）
+python scripts/run_factor_pipeline.py f_xxx --decile
 
 # 8. 看完三层报告后人工决定（独立命令，不会自动触发）
 python -m backtest.factor.admission admit  f_xxx --notes "Sharpe 1.45"   # work→library
@@ -202,6 +220,7 @@ print(res.threshold_metrics(20))  # 4 项 admission 参考指标
 | `--no-exclude-limit-up` | off | 默认排除涨停无法成交的样本 |
 | `--all` | off | 一次跑所有注册因子；输出对比表 |
 | `--plot` / `--plot-horizon` | off, 20 | 单因子模式下保存日频 IC/RankIC + 累计 IC/RankIC 四图到 `results/<factor_id>/<variant>/factor_eval/<factor_id>_<h>d.png` |
+| `--decile` | off | 跑十段分层回测，产出 10 组 NAV 曲线 + 多空对冲图 |
 
 ### 3.3 输出指标怎么看
 
@@ -273,6 +292,8 @@ print(res.threshold_metrics(20))  # 4 项 admission 参考指标
 
 10 分位前瞻收益均值表，看 **top vs bottom 的 spread + 单调性**。第 0 组到第 9 组应当单调变化。中间出现"驼峰"或"V 型"说明因子主要靠极端值生效，鲁棒性差。
 
+> 与 `--decile` 十段分层回测的区别：`group_returns` 是**静态截面均值**（每组只算一次前瞻收益的平均），不产时间序列；`--decile` 是**动态净值曲线**（每期重新分组、等权、 cumprod），能看回撤和稳定性。
+
 #### 与现有（library）因子相关性
 
 ```
@@ -285,7 +306,35 @@ f_rev_03  -0.34    600
 - 即便低于 0.85，超过 0.7 也应当反思相对边际信息。
 - 比较只对 **library 库中已 admitted** 的因子做，**不与其他 pending 因子比对**（避免临时数据互相污染）。
 
-### 3.4 画图（`--plot`）
+### 3.4 十段分层回测（`--decile`）
+
+十段分层是离线评测的**可选补充**，不依赖策略信号，直接用因子值将 universe 股票每期分 10 组（`pd.qcut`），每组等权持有，追踪 10 条净值曲线 + 多空对冲（D10 - D1）。
+
+| 指标 | 看什么 |
+|---|---|
+| **Monotonicity** | 年化收益与分位排名的相关系数；**> 0.5 强单调**，0.2~0.5 弱单调，< 0 反向或无序 |
+| **D10 vs D1 年化收益** | 头尾差距越大，因子区分度越好；理想：D10 最高、D1 最低（或反向因子则相反） |
+| **LS Sharpe** | 多空对冲的年化 Sharpe；> 0.5 说明对冲后仍有稳定 alpha |
+| **LS MaxDD** | 多空对冲的回撤；> -20% 说明对冲比较干净 |
+
+> **注意**：十段分层和策略回测（simple/detailed）是**独立的验证维度**。一个因子可以有高 IC 但分层不单调（如 `z(-ret) * z(turnover)` 这类四象限因子），也可以分层单调但 IC 一般（非线性关系）。两者互补。
+
+命令：
+
+```bash
+python scripts/run_factor_pipeline.py f_xxx --decile
+# 或单独跑（不跑 simple/detailed）
+python -m backtest.factor.evaluation f_xxx --start 20210101 --end 20241231 --decile
+```
+
+输出到 `results/<factor_id>/<variant>/decile_backtest/<factor_id>_<variant>_decile.png`：
+
+| 面板 | 看什么 |
+|---|---|
+| 上：10 条 NAV 曲线（log 轴） | D1~D10 是否单调排列；RdYlGn 色谱，D1 红、D10 绿 |
+| 下：Long-Short NAV | D10 - D1 的累计净值；> 1 且持续上升 = 多空有效 |
+
+### 3.5 画图（`--plot`）
 
 输出到 `results/<factor_id>/<variant>/factor_eval/<factor_id>_<h>d.png`，四个面板：
 
@@ -680,28 +729,32 @@ python -m backtest.factor.backfill f_rev_05
 python scripts/run_factor_pipeline.py f_rev_05 \
     --start 20210101 --end 20241231 \
     --top-n 100 --rebalance 1W --decay 5 \
-    --direction asc --benchmark 000300.SH
+    --direction asc --benchmark 000300.SH \
+    --decile
 ```
 
 控制台打印（节选）：
 
 ```
-[1/3] Factor evaluation: f_rev_05
+[1/4] Factor evaluation: f_rev_05
   RankICIR (h=20) = 0.31, IC+ratio = 0.55, Turnover = 0.42
   Reference thresholds: 4/4 OK
   saved: results/f_rev_05/swl2_capq5/factor_eval/f_rev_05_20d.png
+  saved: results/f_rev_05/swl2_capq5/decile_backtest/f_rev_05_swl2_capq5_decile.png
 
-[2/3] Simple backtest: f_rev_05
+[2/4] Simple backtest: f_rev_05
   Annual Return = +18.2%, Sharpe = 1.45, MaxDD = -22.1%
   saved: results/f_rev_05/swl2_capq5/top100_1w_d5/simple/report.png
 
-[3/3] Detailed backtest: f_rev_05
+[3/4] Detailed backtest: f_rev_05
   Annual Return = +16.1%, Sharpe = 1.31, MaxDD = -23.4%
   Fees % Initial = 2.8%, IR = 0.92 (vs 000300.SH)
   saved: results/f_rev_05/swl2_capq5/top100_1w_d5/detailed/report.png
 
 Decision summary
   Factor thresholds passed : 4/4
+  Decile monotonicity      : +0.612
+  Decile LS ann_ret / sharpe: +8.34% / 0.72
   Simple   Sharpe / MDD    : 1.45 / -22.10%
   Detailed Sharpe / MDD    : 1.31 / -23.40%
   Cost drag (simple - det) : +2.10%
@@ -719,6 +772,8 @@ results/f_rev_05/
     ├── factor_eval/              # variant-scoped: tag 无关,变 tag 不重算
     │   ├── f_rev_05_20d.png
     │   └── eval_summary.json
+    ├── decile_backtest/          # variant-scoped, 仅 --decile
+    │   └── f_rev_05_swl2_capq5_decile.png
     └── top100_1w_d5/              # tag = top{n|pct}_{rebalance}_d{decay}
         ├── pipeline.json
         ├── simple/
@@ -735,10 +790,11 @@ results/f_rev_05/
 
 ### Step 8：人工决策
 
-打开三份 `report.png` 和 `summary.json`，确认：
+打开三份 `report.png` 和 `summary.json`（如有 `--decile` 则再加一份 `decile_backtest/*.png`），确认：
 - RankICIR 0.31 达 RECOMMENDED
 - detailed Sharpe 1.31，max_corr 0.78 < 0.85
 - 成本侵蚀 2.1 pp 在可接受范围
+- 十段分层 monotonicity +0.61，D10 > D9 > ... > D1 排列整齐
 
 → 入库：
 
@@ -777,6 +833,8 @@ Admission: f_rev_05  ->  ADMITTED
 | IC+_ratio | > 0.62 | 0.56 ~ 0.62 | 0.52 ~ 0.56 | 0.50 ~ 0.52 | < 0.50 |
 | Turnover | < 0.20 | 0.20 ~ 0.30 | 0.30 ~ 0.50 | 0.50 ~ 0.70 | > 0.70 |
 | 与 library \|corr\| | < 0.50 | 0.50 ~ 0.70 | 0.70 ~ 0.85 | 0.85 ~ 0.95 | > 0.95 |
+| **Decile monotonicity** | > 0.70 | 0.50 ~ 0.70 | 0.30 ~ 0.50 | 0.10 ~ 0.30 | < 0.10 |
+| **Decile LS Sharpe** | > 1.0 | 0.7 ~ 1.0 | 0.5 ~ 0.7 | 0.3 ~ 0.5 | < 0.3 |
 
 ### 策略回测（backtest.evaluation）
 
@@ -845,6 +903,7 @@ Admission: f_rev_05  ->  ADMITTED
 - [x] admit / reject / cleanup 独立命令
 - [x] results 分层（`results/<factor_id>/<variant>/{factor_eval,<tag>/{simple,detailed}}/`）
 - [x] `scripts/run_factor_pipeline.py` 通用 driver
+- [x] 十段分层回测（`--decile`）
 - [ ] `sw_industry` 表落地 → 行业中性化、板块归因
 - [ ] `index_members` 表落地 → 限定股票池
 - [ ] 多因子组合的样本外参数选择器

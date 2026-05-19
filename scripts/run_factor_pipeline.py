@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run the full factor screening pipeline for ONE factor.
 
-Three stages of evaluation, output layout:
+Three (or four with --decile) stages of evaluation, output layout:
 
     results/<factor_id>/<variant>/
         factor_eval/        # variant-scoped, shared across runs (tag-agnostic)
+        decile_backtest/    # variant-scoped, only when --decile
         <tag>/              # 默认 top{n|pct}_{rebalance}_d{decay}
             pipeline.json
             simple/         # vectorised backtest on adjusted prices, no costs
@@ -28,6 +29,9 @@ Usage:
 
     # Skip detailed backtest (factor research mode)
     python scripts/run_factor_pipeline.py f_rev_05 --skip-detailed
+
+    # Include decile-layered backtest in Stage 1
+    python scripts/run_factor_pipeline.py f_rev_05 --decile
 
 The CLI surface is intentionally narrow — for anything more elaborate
 build your own driver using the same building blocks (StrategyConfig +
@@ -136,8 +140,9 @@ def _build_tag(args) -> str:
 
 def stage_factor_eval(args, out_dir: Path) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
+    stage_label = "[1/3]" if not args.decile else "[1/4]"
     print("=" * 70)
-    print(f"[1/3] Factor evaluation: {args.factor_id}")
+    print(f"{stage_label} Factor evaluation: {args.factor_id}")
     print("=" * 70)
 
     horizons = [int(h) for h in args.horizons.split(",")]
@@ -150,12 +155,22 @@ def stage_factor_eval(args, out_dir: Path) -> dict:
         ret_type=args.ret_type,
         corr_top_k=5,
         exclude_limit_up=True,
+        run_decile_backtest=args.decile,
     )
     print_evaluation(result)
 
     plot_path = out_dir / f"{args.factor_id}_{args.plot_horizon}d.png"
     plot_evaluation(result, horizon=args.plot_horizon, output_path=str(plot_path))
     print(f"  saved: {plot_path}")
+
+    # Decile plot
+    if args.decile and result.decile_result is not None:
+        from backtest.simulation.decile import plot_decile_backtest
+        decile_dir = out_dir.parent / "decile_backtest"
+        decile_dir.mkdir(parents=True, exist_ok=True)
+        decile_plot_path = decile_dir / f"{args.factor_id}_{args.variant}_decile.png"
+        plot_decile_backtest(result.decile_result, output_path=str(decile_plot_path))
+        print(f"  saved: {decile_plot_path}")
 
     metrics = result.threshold_metrics(args.plot_horizon)
     checks = check_recommended_thresholds(metrics)
@@ -172,6 +187,17 @@ def stage_factor_eval(args, out_dir: Path) -> dict:
         "threshold_checks": checks,
         "max_corr": result.max_corr(),
     }
+    if args.decile and result.decile_result is not None:
+        dr = result.decile_result
+        summary["decile"] = {
+            "monotonicity_score": dr.monotonicity_score,
+            "ls_annual_return": dr.ls_metrics.get("annual_return"),
+            "ls_sharpe": dr.ls_metrics.get("sharpe"),
+            "ls_max_drawdown": dr.ls_metrics.get("max_drawdown"),
+            "d1_annual_return": dr.decile_metrics.get(0, {}).get("annual_return"),
+            "d10_annual_return": dr.decile_metrics.get(9, {}).get("annual_return"),
+        }
+
     with open(out_dir / "eval_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2, default=str)
     print(f"  saved: {out_dir / 'eval_summary.json'}\n")
@@ -234,7 +260,7 @@ def _run_simulation(
 ) -> dict:
     """Run one simulator, persist, evaluate, return the flat metrics dict.
 
-    ``label`` is "[2/3] Simple backtest" or "[3/3] Detailed backtest".
+    ``label`` is "[2/4] Simple backtest" or "[3/4] Detailed backtest" (or [3/3] when no decile).
     ``sim_run_args`` is the *positional* arg tuple passed to ``sim.run(...)``
     (Simple = ``(signals, market_data)``; Detailed = ``(signals, market_data, dividends)``).
     """
@@ -258,9 +284,10 @@ def _run_simulation(
 
 def stage_simple_backtest(args, signals: pd.DataFrame, market_data: pd.DataFrame,
                           out_dir: Path) -> dict:
+    label = "[2/4] Simple backtest" if args.decile else "[2/3] Simple backtest"
     return _run_simulation(
         args,
-        label="[2/3] Simple backtest",
+        label=label,
         sim=SimpleSimulator(SimulationConfig(initial_cash=args.initial_cash)),
         sim_run_args=(signals, market_data),
         sim_metadata={"engine": "SimpleSimulator", "initial_cash": args.initial_cash},
@@ -270,9 +297,10 @@ def stage_simple_backtest(args, signals: pd.DataFrame, market_data: pd.DataFrame
 
 def stage_detailed_backtest(args, signals: pd.DataFrame, market_data: pd.DataFrame,
                             dividends: pd.DataFrame, out_dir: Path) -> dict:
+    label = "[3/4] Detailed backtest" if args.decile else "[3/3] Detailed backtest"
     return _run_simulation(
         args,
-        label="[3/3] Detailed backtest",
+        label=label,
         sim=DetailedSimulator(SimulationConfig(
             initial_cash=args.initial_cash,
             commission_rate=args.commission_rate,
@@ -320,6 +348,7 @@ def write_pipeline_summary(args, root: Path, eval_summary: dict,
             "threshold_metrics": eval_summary["threshold_metrics"],
             "threshold_checks": eval_summary["threshold_checks"],
         },
+        "decile_backtest": eval_summary.get("decile"),
         "simple_backtest": _pick_key_metrics(simple_metrics),
         "detailed_backtest": _pick_key_metrics(detailed_metrics) if detailed_metrics else None,
         "recommended_thresholds": RECOMMENDED_THRESHOLDS,
@@ -336,6 +365,11 @@ def print_decision_hint(args, eval_summary: dict, simple: dict, detailed: dict |
     checks = eval_summary["threshold_checks"]
     n_pass = sum(checks.values())
     print(f"  Factor thresholds passed : {n_pass}/4  ({checks})")
+    decile = eval_summary.get("decile")
+    if decile:
+        print(f"  Decile monotonicity      : {decile.get('monotonicity_score', float('nan')):+.3f}")
+        print(f"  Decile LS ann_ret / sharpe: "
+              f"{decile.get('ls_annual_return', 0) or 0:+.2%} / {decile.get('ls_sharpe', float('nan')):.2f}")
     print(f"  Simple   Sharpe / MDD    : "
           f"{simple.get('sharpe'):.2f} / {simple.get('max_drawdown'):.2%}")
     if detailed:
@@ -396,6 +430,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--skip-detailed", action="store_true",
                    help="Skip the detailed backtest (research mode)")
+    p.add_argument("--decile", action="store_true",
+                   help="Run decile-layered backtest (10 equal-weight groups by factor value)")
     p.add_argument("--results-root", default="results",
                    help="Root directory for all stage outputs")
     p.add_argument("--tag", default=None,
