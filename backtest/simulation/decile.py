@@ -14,10 +14,6 @@ from backtest.simulation.config import SimulationConfig
 from backtest.simulation.models import DecileBacktestResult
 from backtest.simulation.utils import compute_adj_price, cumulate_nav
 
-if TYPE_CHECKING:
-    pass
-
-
 _DECILE_NAV_COLUMNS = ["date"] + [f"d{i}_nav" for i in range(10)] + ["ls_nav"]
 
 
@@ -30,7 +26,7 @@ def _decile_cut(x: pd.Series) -> pd.Series:
     n = x.notna().sum()
     if n < 2:
         return pd.Series(np.nan, index=x.index)
-    n_groups = min(10, int(n))
+    n_groups = min(10, n)
     return pd.qcut(x, n_groups, labels=False, duplicates="drop")
 
 

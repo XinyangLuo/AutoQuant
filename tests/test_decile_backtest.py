@@ -23,7 +23,7 @@ def _make_market_data(
     rows = []
     for idx, d in enumerate(dates):
         for s in symbols:
-            ret = returns.get(s, 0.0) if returns else 0.0
+            ret = (returns or {}).get(s, 0.0)
             price = 100 * (1 + ret) ** idx
             rows.append(
                 {
