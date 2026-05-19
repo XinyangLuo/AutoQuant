@@ -205,5 +205,55 @@
     ],
     "func_name": "reversal_quiet_decline",
     "func_module": "backtest.factor.user.reversal_extensions"
+  },
+  "f_rev_13": {
+    "name": "reversal_turnover_additive",
+    "category": "reversal",
+    "data_sources": [
+      "market_daily"
+    ],
+    "description": "20日反转 + 换手偏离:加法组合+时序平滑,降低换手和波动",
+    "parameters": {
+      "ret_window": 20,
+      "turnover_window": 20,
+      "smooth_window": 10
+    },
+    "neutralizations": [
+      {
+        "industry": null,
+        "cap": null
+      },
+      {
+        "industry": "SW-L2",
+        "cap": "circ_mv-q5"
+      }
+    ],
+    "func_name": "reversal_turnover_additive",
+    "func_module": "backtest.factor.user.reversal_extensions"
+  },
+  "f_rev_14": {
+    "name": "reversal_volatility_turnover",
+    "category": "reversal",
+    "data_sources": [
+      "market_daily"
+    ],
+    "description": "20日反转 + 日内振幅 + 换手偏离 + 收益波动:捕捉情绪驱动型反转",
+    "parameters": {
+      "ret_window": 20,
+      "turnover_window": 20,
+      "vol_window": 20
+    },
+    "neutralizations": [
+      {
+        "industry": null,
+        "cap": null
+      },
+      {
+        "industry": "SW-L2",
+        "cap": "circ_mv-q5"
+      }
+    ],
+    "func_name": "reversal_volatility_turnover",
+    "func_module": "backtest.factor.user.reversal_extensions"
   }
 }

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Run the full factor screening pipeline for ONE factor.
 
-Three (or four with --decile) stages of evaluation, output layout:
+Output layout:
 
     results/<factor_id>/<variant>/
         factor_eval/        # variant-scoped, shared across runs (tag-agnostic)
-        decile_backtest/    # variant-scoped, only when --decile
+        decile_backtest/    # variant-scoped, default ON (use --no-decile to skip)
         <tag>/              # 默认 top{n|pct}_{rebalance}_d{decay}
             pipeline.json
             simple/         # vectorised backtest on adjusted prices, no costs
             detailed/       # event-driven backtest with commission, dividends, etc.
 
-After this script finishes, look at the three reports and run
+After this script finishes, look at the reports and run
 ``python -m backtest.factor.admission admit <factor_id> --variant <variant> --tag <tag>``
 to promote, or ``reject ...`` to discard. The admission CLI auto-reads
 ``pipeline.json`` and stamps the strategy config into the registry history.
@@ -34,7 +34,8 @@ Usage:
     # Skip detailed backtest (factor research mode)
     python scripts/run_factor_pipeline.py f_rev_05 --skip-detailed
 
-    # Skip decile-layered backtest
+    # Skip decile-layered backtest (not recommended — decile monotonicity is
+    # an independent validation dimension complementary to IC and strategy BT)
     python scripts/run_factor_pipeline.py f_rev_05 --no-decile
 
 The CLI surface is intentionally narrow — for anything more elaborate

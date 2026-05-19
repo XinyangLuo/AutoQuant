@@ -236,10 +236,7 @@ class DetailedSimulator:
                 else:
                     portfolio.positions[sym] = pos
 
-            # 2. 更新持仓市值（用当日 close）
-            portfolio.update_market_value(bar_by_symbol)
-
-            # 3. 检查退市：持仓中有退市股票的，清零
+            # 2. 检查退市：持仓中有退市股票的，清零
             for sym in list(portfolio.positions.keys()):
                 if sym in delisted:
                     lost_value = portfolio.remove_position(sym)
@@ -254,7 +251,9 @@ class DetailedSimulator:
                         reason="delisted",
                     ))
 
-            # 4. 调仓信号（只在权重发生变化时执行）
+            # 3. 调仓信号（只在权重发生变化时执行）
+            #    用前一日收盘市值计算目标仓位，避免 look-ahead bias：
+            #    当日 close 在开盘时未知，不能用于开盘成交的权重分配。
             sig_df = signal_by_date.get(date_str)
             if sig_df is not None and not sig_df.empty:
                 current_weights = {
@@ -273,6 +272,9 @@ class DetailedSimulator:
                         trades=trades,
                     )
                     daily_trades = trades[pre_trade_count:]
+
+            # 4. 更新持仓市值（用当日 close），仅用于收盘后 NAV 计算
+            portfolio.update_market_value(bar_by_symbol)
 
             # 5. 记录每日快照
             total_value = portfolio.total_value

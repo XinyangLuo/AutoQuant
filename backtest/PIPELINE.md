@@ -26,7 +26,7 @@ data/duckdb/factor_library.duckdb  ← 稳定库 (FactorLibrary)
 
 **意义**：新因子的研究数据永远不会污染稳定库；与稳定库的相关性比较永远是"对照已稳定的对手"。
 
-### 七个阶段（含可选十段分层）
+### 七个阶段（含十段分层回测，默认执行）
 
 ```
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
@@ -34,7 +34,7 @@ data/duckdb/factor_library.duckdb  ← 稳定库 (FactorLibrary)
 │  @register   │→│  backfill    │→│  factor.eval │→│  Strategy    │
 └──────────────┘ └──────────────┘ └──────────────┘ │   Config     │
        │                            │               └──────┬───────┘
-       │                            │ (可选 --decile)        ▼
+       │                            │ (默认执行)             ▼
        │                            ▼              ┌──────────────┐
        │                      ┌──────────────┐    │ 5. 简单回测  │
        │                      │ 十段分层回测 │    │  Simple      │
@@ -79,7 +79,7 @@ python scripts/run_factor_pipeline.py f_xxx \
     --top-n 50 --rebalance 1W --decay 5 \
     --direction desc --benchmark 000300.SH
 
-# 跳过十段分层回测
+# 跳过十段分层回测（不推荐 —— 十段分层是 IC/策略回测之外的独立验证维度，默认执行）
 python scripts/run_factor_pipeline.py f_xxx --no-decile
 
 # 8. 看完三层报告后人工决定（独立命令，不会自动触发）
@@ -228,7 +228,7 @@ print(res.threshold_metrics(20))  # 4 项 admission 参考指标
 | `--no-exclude-limit-up` | off | 默认排除涨停无法成交的样本 |
 | `--all` | off | 一次跑所有注册因子；输出对比表 |
 | `--plot` / `--plot-horizon` | off, 20 | 单因子模式下保存日频 IC/RankIC + 累计 IC/RankIC 四图到 `results/<factor_id>/<variant>/factor_eval/<factor_id>_<h>d.png` |
-| `--decile` | off | 跑十段分层回测，产出 10 组 NAV 曲线 + 多空对冲图 |
+| `--no-decile` | off | **默认跑十段分层**；加此 flag 才跳过。十段单调性是 IC/策略回测之外的独立验证维度，强烈建议保留 |
 
 ### 3.3 输出指标怎么看
 
@@ -314,9 +314,11 @@ f_rev_03  -0.34    600
 - 即便低于 0.85，超过 0.7 也应当反思相对边际信息。
 - 比较只对 **library 库中已 admitted** 的因子做，**不与其他 pending 因子比对**（避免临时数据互相污染）。
 
-### 3.4 十段分层回测（`--decile`）
+### 3.4 十段分层回测（默认执行，用 `--no-decile` 跳过）
 
-十段分层是离线评测的**可选补充**，不依赖策略信号，直接用因子值将 universe 股票每期分 10 组（`pd.qcut`），每组等权持有，追踪 10 条净值曲线 + 多空对冲（D10 - D1）。
+十段分层是离线评测的**默认阶段**，不依赖策略信号，直接用因子值将 universe 股票每期分 10 组（`pd.qcut`），每组等权持有，追踪 10 条净值曲线 + 多空对冲（D10 - D1）。
+
+> **默认不跳过**。十段分层和 IC/RankIC、策略回测（simple/detailed）是**三个独立的验证维度**。一个因子可以有高 IC 但分层不单调（如 `z(-ret) * z(turnover)` 这类四象限因子），也可以分层单调但 IC 一般（非线性关系）。三者互补，缺了分层图容易误判因子质量。
 
 | 指标 | 看什么 |
 |---|---|
