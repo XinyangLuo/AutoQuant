@@ -63,7 +63,7 @@ from backtest.factor.storage import (
     FactorLibrary,
     FactorStorage,
 )
-from backtest.factor.transforms import rank, z_score
+from backtest.factor.transforms import cap_neutralize, industry_neutralize, rank, ts_mean, ts_rank, ts_std, z_score
 
 # Import user-defined factors so their @register decorators run on package
 # load — keeps the registry populated for backfill / evaluate / pipeline.
@@ -97,4 +97,9 @@ __all__ = [
     "FACTOR_LIBRARY_DB_PATH",
     "rank",
     "z_score",
+    "ts_rank",
+    "ts_mean",
+    "ts_std",
+    "cap_neutralize",
+    "industry_neutralize",
 ]

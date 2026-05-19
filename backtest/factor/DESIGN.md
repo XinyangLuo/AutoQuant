@@ -95,25 +95,60 @@ def momentum_20d(panel: pd.DataFrame) -> pd.Series:
 
 ### 通用算子（transforms.py）
 
+所有算子输入 / 输出均为 MultiIndex `(date, symbol)` 的 `pd.Series`。按用途分为三类：截面归一化、时序变换、中性化。
+
 ```python
-from backtest.factor import rank, z_score
+from backtest.factor import (
+    rank, z_score,           # 截面 + 时序
+    ts_rank, ts_mean, ts_std,  # 纯时序滚动
+)
 from backtest.factor.transforms import industry_neutralize, cap_neutralize
+```
 
-# 截面归一化到 [0, 1]，参考 WorldQuant BRAIN 的 rank()
-ranked = rank(raw_series)             # 升序，最大值 → 1
-ranked_desc = rank(raw_series, ascending=False)
+#### 截面算子
 
-# 时序 z-score，每个 symbol 按 window 滚动
-z = z_score(raw_series, window=60)
-z_lenient = z_score(raw_series, window=60, min_periods=20)
+| 算子 | 功能 | 输出范围 | 典型用法 |
+|---|---|---|---|
+| `rank(s, ascending=True)` | 每日截面排名，归一化到 `[0, 1]` | `[0, 1]` | `rank(s)` 消除量纲，便于多因子组合 |
 
-# 中性化算子：raw_series → 纯净因子值，由 backfill.fan_out 调用。
-# 用户通常不直接调用 —— 在 @register(neutralizations=[...]) 中声明即可。
+```python
+ranked = rank(raw_series)              # 升序，最大值 → 1
+ranked_desc = rank(raw_series, ascending=False)  # 降序，最大值 → 0
+```
+
+#### 时序算子
+
+| 算子 | 功能 | 输出范围 | 参数 |
+|---|---|---|---|
+| `ts_rank(s, window)` | 每个 symbol 在滚动窗口内的排名，缩放到 `[-1, 1]` | `[-1, 1]` | `window`, `min_periods` |
+| `ts_mean(s, window)` | 滚动均值 | 原值域 | `window`, `min_periods` |
+| `ts_std(s, window)` | 滚动标准差 (ddof=1) | `≥ 0` | `window`, `min_periods` |
+| `z_score(s, window)` | 滚动 z-score：`(x - μ) / σ` | 无界 | `window`, `min_periods` |
+
+```python
+# ts_rank: 过去 20 日内的排名，-1=窗口最小，1=窗口最大
+tr = ts_rank(raw_series, window=20)
+
+# ts_mean / ts_std: 过去 60 日均值与波动
+m60 = ts_mean(raw_series, window=60)
+v60 = ts_std(raw_series, window=60)
+
+# z_score: 过去 60 日 z-score（与 ts_rank 不同：z_score 用标准化值，ts_rank 用秩次）
+z60 = z_score(raw_series, window=60, min_periods=20)
+```
+
+**`ts_rank` 与 `rank` 的区别**：
+- `rank` 是**截面**的（同一天不同股票之间比），输出 `[0, 1]`
+- `ts_rank` 是**时序**的（同一股票不同日期之间比），输出 `[-1, 1]`
+
+#### 中性化算子
+
+由 `backfill.fan_out` 内部调用，用户通常**不直接调用** —— 在 `@register(neutralizations=[...])` 中声明即可。
+
+```python
 ind_neutral = industry_neutralize(raw_series, industry_panel)
 cap_neutral = cap_neutralize(raw_series, cap_panel, cap_field='circ_mv', quantiles=5)
 ```
-
-输入与输出均为 MultiIndex `(date, symbol)` 的 `pd.Series`。
 
 ### 双库存储
 

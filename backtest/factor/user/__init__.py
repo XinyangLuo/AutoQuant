@@ -25,4 +25,5 @@ After adding a factor:
     python -m backtest.factor.admission reject f_xxx
 """
 
+from backtest.factor.user import reversal_extensions  # noqa: F401
 from backtest.factor.user import reversal_zscore_combo  # noqa: F401

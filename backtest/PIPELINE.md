@@ -148,8 +148,11 @@ def my_idea(panel, ret_window=20, turnover_window=20, z_window=60):
 | `rank(s)` | 截面 percentile rank，输出 `[0, 1]` | 让因子尺度统一、抗厚尾 |
 | `rank(s, ascending=False)` | 反向 | direction 不想配成 `asc` 时 |
 | `z_score(s, window)` | 时序 z-score（每 symbol 按 `window` 滚动） | 时序异常值消除、做时变标准化 |
+| `ts_rank(s, window)` | 时序排名，窗口内缩放到 `[-1, 1]` | 当前值在历史上的位置；`-1`=窗口最小，`1`=窗口最大 |
+| `ts_mean(s, window)` | 时序滚动均值 | 平滑因子值 |
+| `ts_std(s, window)` | 时序滚动标准差 | 衡量因子值的时序波动 |
 
-混用很常见：`z_score`（时序）→ `rank`（截面）的两步走最稳。
+混用很常见：`z_score`（时序标准化）→ `rank`（截面归一化）的两步走最稳。
 
 ### 1.4 命名建议
 
@@ -764,6 +767,8 @@ Next step:
   python -m backtest.factor.admission reject f_rev_05 --variant swl2_capq5 --tag top100_1w_d5
 ```
 
+> pipeline 跑完会自动生成一份 `pipeline_report.md`，汇总所有阶段的关键指标（IC/RankIC、threshold checks、回测收益/风险、cost drag、决策汇总），打开即可快速决策。
+
 输出结构：
 
 ```
@@ -775,7 +780,8 @@ results/f_rev_05/
     ├── decile_backtest/          # variant-scoped, 仅 --decile
     │   └── f_rev_05_swl2_capq5_decile.png
     └── top100_1w_d5/              # tag = top{n|pct}_{rebalance}_d{decay}
-        ├── pipeline.json
+        ├── pipeline.json            # 机器可读：所有指标 + threshold checks
+        ├── pipeline_report.md       # 人类可读：汇总决策报告
         ├── simple/
         │   ├── nav.parquet
         │   ├── metadata.json

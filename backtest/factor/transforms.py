@@ -74,6 +74,30 @@ def rank(values: pd.Series, ascending: bool = True) -> pd.Series:
     return values.groupby(level=0, group_keys=False).apply(_one)
 
 
+def _ts_roll(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None,
+    *,
+    window_min: int,
+    min_periods_min: int = 1,
+) -> pd.DataFrame:
+    """Sort by (symbol, date), groupby symbol, rolling, restore (date, symbol) order.
+
+    Returns the unmodified rolling result (caller does .mean(), .std(), etc.).
+    """
+    if min_periods is None:
+        min_periods = window
+    if window < window_min:
+        raise ValueError(f"window must be >= {window_min}, got {window}")
+    if min_periods < min_periods_min:
+        raise ValueError(f"min_periods must be >= {min_periods_min}, got {min_periods}")
+
+    sorted_vals = values.sort_index(level=[1, 0])
+    result = sorted_vals.groupby(level=1).rolling(window, min_periods=min_periods)
+    return result
+
+
 def z_score(
     values: pd.Series,
     window: int,
@@ -103,21 +127,11 @@ def z_score(
         Same index as ``values``, with time-series z-scored values.
     """
     _check_panel_series(values)
-    if window < 2:
-        raise ValueError(f"window must be >= 2, got {window}")
-    if min_periods is None:
-        min_periods = window
-    if min_periods < 2:
-        raise ValueError(f"min_periods must be >= 2, got {min_periods}")
-
-    sorted_vals = values.sort_index(level=[1, 0])
-    stats = (
-        sorted_vals.groupby(level=1)
-        .rolling(window, min_periods=min_periods)
-        .agg(["mean", "std"])
-    )
+    roller = _ts_roll(values, window, min_periods, window_min=2, min_periods_min=2)
+    stats = roller.agg(["mean", "std"])
     stats.index = stats.index.droplevel(0)
 
+    sorted_vals = values.sort_index(level=[1, 0])
     z = (sorted_vals - stats["mean"]) / stats["std"].where(stats["std"] > 0, np.nan)
     return z.reindex(values.index)
 
@@ -255,4 +269,113 @@ def cap_neutralize(
     return out.reindex(values.index)
 
 
-__all__ = ["rank", "z_score", "industry_neutralize", "cap_neutralize"]
+def ts_rank(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Time-series rank per symbol over a trailing rolling window, scaled to ``[-1, 1]``.
+
+    For each symbol, the current value is ranked within the trailing window
+    of ``window`` observations. The rank is then linearly rescaled:
+    ``(rank - 1) / (N - 1) * 2 - 1``, so the minimum value in the window
+    maps to ``-1`` and the maximum to ``1``.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations (typically trading days).
+    min_periods : int, optional
+        Minimum number of observations to produce a value. Defaults to
+        ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``, with values in ``[-1, 1]``.
+    """
+    _check_panel_series(values)
+
+    def _rank_last(x: np.ndarray) -> float:
+        valid = x[~np.isnan(x)]
+        n = len(valid)
+        if n <= 1:
+            return 0.0
+        last = valid[-1]
+        le = int(np.sum(valid <= last))
+        lt = int(np.sum(valid < last))
+        r = (le + lt + 1) / 2.0
+        return (r - 1.0) / (n - 1.0) * 2.0 - 1.0
+
+    result = _ts_roll(values, window, min_periods, window_min=2).apply(
+        _rank_last, raw=True
+    )
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_mean(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling mean per symbol.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=1).mean()
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_std(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling standard deviation per symbol (ddof=1).
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=2).std()
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+__all__ = [
+    "rank",
+    "z_score",
+    "ts_rank",
+    "ts_mean",
+    "ts_std",
+    "industry_neutralize",
+    "cap_neutralize",
+]

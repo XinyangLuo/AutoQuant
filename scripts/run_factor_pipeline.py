@@ -49,10 +49,12 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import numpy as np
 import pandas as pd
 
 from backtest.data.storage import MarketStorage
 from backtest.evaluation import evaluate as bt_evaluate, render_table
+from backtest.evaluation.report import _fmt
 from backtest.factor import (
     RECOMMENDED_THRESHOLDS,
     check_recommended_thresholds,
@@ -361,6 +363,238 @@ def write_pipeline_summary(args, root: Path, eval_summary: dict,
     print(f"  saved: {root / 'pipeline.json'}")
 
 
+# ---------------------------------------------------------------------------
+# Markdown report generation
+# ---------------------------------------------------------------------------
+
+
+def _md_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    """Build markdown table lines from headers and rows."""
+    lines = [f"| {' | '.join(headers)} |"]
+    lines.append(f"|{'|'.join('---' for _ in headers)}|")
+    for row in rows:
+        lines.append(f"| {' | '.join(str(c) for c in row)} |")
+    return lines
+
+
+def write_pipeline_markdown(
+    args,
+    root: Path,
+    eval_summary: dict,
+    simple_metrics: dict,
+    detailed_metrics: dict | None,
+) -> None:
+    """Generate a comprehensive Markdown report from all pipeline stages.
+
+    The report combines factor evaluation, simple/detailed backtest metrics,
+    and decile backtest results into a single human-readable document for
+    decision-making.
+    """
+    fid = eval_summary["factor_id"]
+    tag = _build_tag(args)
+    period = f"{args.start} ~ {args.end}"
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+
+    lines: list[str] = []
+    lines.append(f"# Factor Pipeline Report: `{fid}`")
+    lines.append("")
+    lines.append(f"- **Generated**: {now}")
+    lines.append(f"- **Period**: {period}")
+    lines.append(f"- **Variant**: `{args.variant}`")
+    lines.append(f"- **Tag**: `{tag}`")
+    lines.append("")
+
+    # ── 1. Strategy Configuration ───────────────────────────────────────
+    sel = f"top{args.top_n}" if args.top_n else f"top{int(args.top_pct * 100)}pct"
+    cfg_rows = [
+        ["Universe selection", sel],
+        ["Rebalance", args.rebalance],
+        ["Direction", args.direction],
+        ["Decay", str(args.decay or 0)],
+        ["Market-cap neutral", "Yes" if args.market_cap_neutral else "No"],
+        ["Min market cap", f"{args.min_market_cap:,.0f}"],
+        ["Min avg amount", f"{args.min_avg_amount:,.0f}"],
+        ["Benchmark", args.benchmark],
+    ]
+    if args.index_members:
+        cfg_rows.append(["Index members", args.index_members])
+    lines.append("## 1. Strategy Configuration")
+    lines.append("")
+    lines.extend(_md_table(["Parameter", "Value"], cfg_rows))
+    lines.append("")
+
+    # ── 2. Factor Static Evaluation ─────────────────────────────────────
+    lines.append("## 2. Factor Static Evaluation")
+    lines.append("")
+
+    # IC / RankIC table
+    metrics_by_h = eval_summary.get("metrics_by_horizon", [])
+    if metrics_by_h:
+        ic_headers = ["Horizon", "IC_mean", "IC_std", "ICIR", "IC_tstat",
+                      "RankIC_mean", "RankIC_std", "RankICIR", "RankIC_tstat"]
+        ic_rows = []
+        for row in metrics_by_h:
+            h = row.get("horizon", "")
+            ic_rows.append([
+                str(h),
+                _fmt(row.get("IC_mean"), "f4"), _fmt(row.get("IC_std"), "f4"),
+                _fmt(row.get("ICIR"), "f4"), _fmt(row.get("IC_tstat"), "f4"),
+                _fmt(row.get("RankIC_mean"), "f4"), _fmt(row.get("RankIC_std"), "f4"),
+                _fmt(row.get("RankICIR"), "f4"), _fmt(row.get("RankIC_tstat"), "f4"),
+            ])
+        lines.append("### 2.1 IC / RankIC by Horizon")
+        lines.append("")
+        lines.extend(_md_table(ic_headers, ic_rows))
+        lines.append("")
+
+    # Threshold checks
+    checks = eval_summary.get("threshold_checks", {})
+    tm = eval_summary.get("threshold_metrics", {})
+    n_pass = sum(checks.values())
+    thr_rows = [
+        ["RankICIR", _fmt(tm.get("rankicir"), "f4"),
+         f">= {RECOMMENDED_THRESHOLDS['min_rankicir']}", "PASS" if checks.get("rankicir") else "FAIL"],
+        ["IC+ ratio", _fmt(tm.get("ic_positive_ratio"), "pct"),
+         f">= {RECOMMENDED_THRESHOLDS['min_ic_positive_ratio']:.0%}", "PASS" if checks.get("ic_positive_ratio") else "FAIL"],
+        ["Turnover", _fmt(tm.get("turnover"), "f4"),
+         f"< {RECOMMENDED_THRESHOLDS['max_turnover']}", "PASS" if checks.get("turnover") else "FAIL"],
+        ["Max |corr|", _fmt(tm.get("max_corr"), "f4"),
+         f"< {RECOMMENDED_THRESHOLDS['max_corr']}", "PASS" if checks.get("max_corr") else "FAIL"],
+    ]
+    lines.append("### 2.2 Admission Threshold Checks")
+    lines.append("")
+    lines.extend(_md_table(["Check", "Value", "Threshold", "Pass"], thr_rows))
+    lines.append("")
+    if n_pass == 4:
+        lines.append("> All 4 reference thresholds **PASSED**. Proceed to backtest review.")
+    else:
+        lines.append(f"> **{4 - n_pass} threshold(s) FAILED**. Consider tuning or rejecting.")
+    lines.append("")
+
+    # Turnover & max corr
+    lines.append("### 2.3 Other Metrics")
+    lines.append("")
+    lines.append(f"- **Turnover**: {tm.get('turnover', 'N/A')}")
+    max_corr = eval_summary.get("max_corr")
+    if max_corr:
+        lines.append(f"- **Max correlation with existing factors**: {max_corr[0]} → {_fmt(max_corr[1], 'f4')}")
+    else:
+        lines.append("- **Max correlation with existing factors**: N/A (no existing factors)")
+    lines.append("")
+
+    # Decile backtest
+    decile = eval_summary.get("decile")
+    if decile:
+        lines.append("### 2.4 Decile Backtest")
+        lines.append("")
+        lines.append(f"- **Monotonicity score**: {decile.get('monotonicity_score', 'N/A')}")
+        lines.append(f"- **Long-Short annual return**: {_fmt(decile.get('ls_annual_return'), 'pct')}")
+        lines.append(f"- **Long-Short Sharpe**: {_fmt(decile.get('ls_sharpe'), 'f3')}")
+        lines.append(f"- **Long-Short max drawdown**: {_fmt(decile.get('ls_max_drawdown'), 'pct')}")
+        d1 = decile.get("d1_annual_return")
+        d10 = decile.get("d10_annual_return")
+        if d1 is not None and d10 is not None:
+            lines.append(f"- **D1 annual return**: {_fmt(d1, 'pct')}")
+            lines.append(f"- **D10 annual return**: {_fmt(d10, 'pct')}")
+            lines.append(f"- **D10 - D1 spread**: {_fmt(d10 - d1, 'pct')}")
+        lines.append("")
+
+    # ── 3. Simple Backtest ──────────────────────────────────────────────
+    lines.append("## 3. Simple Backtest (Vectorised, No Costs)")
+    lines.append("")
+    lines.extend(_md_metrics_section(simple_metrics))
+
+    # ── 4. Detailed Backtest ────────────────────────────────────────────
+    if detailed_metrics:
+        lines.append("## 4. Detailed Backtest (Event-Driven, With Costs)")
+        lines.append("")
+        lines.extend(_md_metrics_section(detailed_metrics))
+
+        # Cost drag
+        simple_ann = simple_metrics.get("annual_return", 0) or 0
+        detailed_ann = detailed_metrics.get("annual_return", 0) or 0
+        drag = simple_ann - detailed_ann
+        lines.append("### 4.1 Cost Drag")
+        lines.append("")
+        lines.append(f"- **Simple annual return**: {_fmt(simple_ann, 'pct')}")
+        lines.append(f"- **Detailed annual return**: {_fmt(detailed_ann, 'pct')}")
+        lines.append(f"- **Cost drag (simple - detailed)**: {_fmt(drag, 'pct')}")
+        lines.append("")
+
+    # ── 5. Decision Summary ─────────────────────────────────────────────
+    ds_rows = [
+        ["Factor eval", "Thresholds passed", f"{n_pass}/4"],
+    ]
+    if decile:
+        ds_rows.append(
+            ["Decile", "Monotonicity", _fmt(decile.get("monotonicity_score"), "f3")]
+        )
+    ds_rows.append(
+        ["Simple BT", "Sharpe / MDD",
+         f"{_fmt(simple_metrics.get('sharpe'), 'f3')} / {_fmt(simple_metrics.get('max_drawdown'), 'pct')}"]
+    )
+    if detailed_metrics:
+        ds_rows.append(
+            ["Detailed BT", "Sharpe / MDD",
+             f"{_fmt(detailed_metrics.get('sharpe'), 'f3')} / {_fmt(detailed_metrics.get('max_drawdown'), 'pct')}"]
+        )
+    lines.append("## 5. Decision Summary")
+    lines.append("")
+    lines.extend(_md_table(["Stage", "Metric", "Value"], ds_rows))
+    lines.append("")
+
+    # Next steps
+    lines.append("## 6. Next Steps")
+    lines.append("")
+    lines.append("```bash")
+    lines.append(f"# Admit this factor to the library")
+    lines.append(f"python -m backtest.factor.admission admit {fid} --variant {args.variant} --tag {tag}")
+    lines.append("")
+    lines.append(f"# Or reject it")
+    lines.append(f"python -m backtest.factor.admission reject {fid} --variant {args.variant} --tag {tag}")
+    lines.append("```")
+    lines.append("")
+
+    md_path = root / "pipeline_report.md"
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"  saved: {md_path}")
+
+
+def _md_metrics_section(metrics: dict) -> list[str]:
+    """Render a subset of key metrics as markdown lines."""
+    if not metrics:
+        return ["*No metrics available.*", ""]
+
+    lines: list[str] = []
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+
+    _rows: list[tuple[str, str, str]] = [
+        ("Total Return", "total_return", "pct"),
+        ("Annualised Return", "annual_return", "pct"),
+        ("Annualised Volatility", "annual_volatility", "pct"),
+        ("Sharpe", "sharpe", "f3"),
+        ("Sortino", "sortino", "f3"),
+        ("Calmar", "calmar", "f3"),
+        ("Max Drawdown", "max_drawdown", "pct"),
+        ("Daily Win Rate", "daily_win_rate", "pct"),
+        ("Monthly Win Rate", "monthly_win_rate", "pct"),
+        ("Information Ratio", "information_ratio", "f3"),
+        ("Annual Excess Return", "annual_excess_return", "pct"),
+        ("Avg Daily Turnover", "avg_daily_turnover", "pct"),
+        ("Annual Turnover", "annual_turnover", "f2"),
+        ("Total Trades", "total_trades", "int"),
+        ("Fees % of Initial", "fees_pct_of_initial", "pct"),
+    ]
+    for label, key, kind in _rows:
+        v = metrics.get(key)
+        if v is not None:
+            lines.append(f"| {label} | {_fmt(v, kind)} |")
+    lines.append("")
+    return lines
+
+
 def print_decision_hint(args, eval_summary: dict, simple: dict, detailed: dict | None) -> None:
     print("=" * 70)
     print("Decision summary")
@@ -483,6 +717,7 @@ def main():
         )
 
     write_pipeline_summary(args, run_root, eval_summary, simple_metrics, detailed_metrics)
+    write_pipeline_markdown(args, run_root, eval_summary, simple_metrics, detailed_metrics)
     print_decision_hint(args, eval_summary, simple_metrics, detailed_metrics)
 
 

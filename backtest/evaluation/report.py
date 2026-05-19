@@ -249,7 +249,7 @@ _BENCH_KEYS = [
 
 
 def _fmt(value, kind: str) -> str:
-    if value is None or (isinstance(value, float) and np.isnan(value)):
+    if value is None or (isinstance(value, float) and (np.isnan(value) or np.isinf(value))):
         return "n/a"
     if kind == "pct":
         return f"{value:+.2%}"
