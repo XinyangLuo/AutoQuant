@@ -157,7 +157,7 @@ MarketStorage.get_stock_status(symbol, date)                # L/D/S 状态
 
 ```python
 result = sim.run(signals, market_data)
-result.save("results/<factor_id>/detailed/")
+result.save("results/<factor_id>/<variant>/<tag>/detailed/")
 # analysis_module.load(result) -> Sharpe, 归因, 可视化
 ```
 

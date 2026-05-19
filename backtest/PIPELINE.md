@@ -53,7 +53,7 @@ $EDITOR backtest/factor/user/my_factor.py
 python -m backtest.factor.backfill f_xxx                 # 全历史
 python -m backtest.factor.backfill f_xxx --test-days 60  # 调试只跑近 60 天
 
-# 3-7. 一条命令跑完三层评测，输出到 results/<factor_id>/{factor_eval,simple,detailed}
+# 3-7. 一条命令跑完三层评测，输出到 results/<factor_id>/<variant>/{factor_eval, <tag>/{simple,detailed}}
 python scripts/run_factor_pipeline.py f_xxx \
     --start 20210101 --end 20241231 \
     --top-n 50 --rebalance 1W --decay 5 \
@@ -201,7 +201,7 @@ print(res.threshold_metrics(20))  # 4 项 admission 参考指标
 | `--corr-top-k` | `5` | 与 **library 库** 中已 admitted 因子的相关性 Top-K；`0` 跳过 |
 | `--no-exclude-limit-up` | off | 默认排除涨停无法成交的样本 |
 | `--all` | off | 一次跑所有注册因子；输出对比表 |
-| `--plot` / `--plot-horizon` | off, 20 | 单因子模式下保存日频 IC/RankIC + 累计 IC/RankIC 四图到 `results/<factor_id>/factor_eval/<factor_id>_<h>d.png` |
+| `--plot` / `--plot-horizon` | off, 20 | 单因子模式下保存日频 IC/RankIC + 累计 IC/RankIC 四图到 `results/<factor_id>/<variant>/factor_eval/<factor_id>_<h>d.png` |
 
 ### 3.3 输出指标怎么看
 
@@ -287,7 +287,7 @@ f_rev_03  -0.34    600
 
 ### 3.4 画图（`--plot`）
 
-输出到 `results/<factor_id>/factor_eval/<factor_id>_<h>d.png`，四个面板：
+输出到 `results/<factor_id>/<variant>/factor_eval/<factor_id>_<h>d.png`，四个面板：
 
 | 面板 | 看什么 |
 |---|---|
@@ -448,7 +448,7 @@ from backtest.simulation import SimpleSimulator, SimulationConfig
 
 sim = SimpleSimulator(SimulationConfig(initial_cash=1e8))
 result = sim.run(signals, market_data)
-result.save("results/f_101/simple/", metadata={...})
+result.save("results/f_101/raw/top50_1w_d5/simple/", metadata={...})
 ```
 
 何时用：因子第一次回测、参数扫描、与离线评测对照（看"理论"上的 alpha 上限）。**不能**作为生产决策最终依据——成本会吃掉 0.5%~3% 年化。
@@ -484,7 +484,7 @@ SimulationConfig(
 ```python
 sim = DetailedSimulator(SimulationConfig(commission_rate=0.0003, price_type="o2o"))
 result = sim.run(signals, market_data, dividends)
-result.save("results/f_101/detailed/", metadata={...})
+result.save("results/f_101/raw/top50_1w_d5/detailed/", metadata={...})
 ```
 
 何时用：简单回测筛过的候选才值得跑详细回测。看 **成本侵蚀** 和 **涨跌停滑点** 吃掉多少。详细 vs 简单的 `annual_return` 差距典型 0.5~3 pp，> 5 pp 说明因子过度依赖涨停股或停牌前后突变。
@@ -498,13 +498,13 @@ result.save("results/f_101/detailed/", metadata={...})
 ### 7.1 命令 / API
 
 ```bash
-python -m backtest.evaluation results/f_101/detailed \
+python -m backtest.evaluation results/f_101/raw/top50_1w_d5/detailed \
     --benchmark 000300.SH --rf 0.0 --rolling-window 90
 ```
 
 ```python
 from backtest.evaluation import evaluate, render_table
-report = evaluate("results/f_101/detailed",
+report = evaluate("results/f_101/raw/top50_1w_d5/detailed",
                   benchmark="000300.SH", plot=True, rf=0.0)
 print(render_table(report))
 ```
@@ -578,7 +578,7 @@ print(render_table(report))
 
 ### 8.1 核心原则
 
-**`admit` 不再绑死评测**。当前三层评测（factor eval + simple + detailed）跑完后，由人类阅读 `results/<factor_id>/` 下三份 `summary.json` + `report.png`，自己做决定。
+**`admit` 不再绑死评测**。当前三层评测（factor eval + simple + detailed）跑完后，由人类阅读 `results/<factor_id>/<variant>/<tag>/` 下三份 `summary.json` + `report.png`，自己做决定。
 
 ### 8.2 命令
 
@@ -689,16 +689,16 @@ python scripts/run_factor_pipeline.py f_rev_05 \
 [1/3] Factor evaluation: f_rev_05
   RankICIR (h=20) = 0.31, IC+ratio = 0.55, Turnover = 0.42
   Reference thresholds: 4/4 OK
-  saved: results/f_rev_05/factor_eval/f_rev_05_20d.png
+  saved: results/f_rev_05/swl2_capq5/factor_eval/f_rev_05_20d.png
 
 [2/3] Simple backtest: f_rev_05
   Annual Return = +18.2%, Sharpe = 1.45, MaxDD = -22.1%
-  saved: results/f_rev_05/simple/report.png
+  saved: results/f_rev_05/swl2_capq5/top100_1w_d5/simple/report.png
 
 [3/3] Detailed backtest: f_rev_05
   Annual Return = +16.1%, Sharpe = 1.31, MaxDD = -23.4%
   Fees % Initial = 2.8%, IR = 0.92 (vs 000300.SH)
-  saved: results/f_rev_05/detailed/report.png
+  saved: results/f_rev_05/swl2_capq5/top100_1w_d5/detailed/report.png
 
 Decision summary
   Factor thresholds passed : 4/4
@@ -707,28 +707,30 @@ Decision summary
   Cost drag (simple - det) : +2.10%
 
 Next step:
-  python -m backtest.factor.admission admit  f_rev_05
-  python -m backtest.factor.admission reject f_rev_05
+  python -m backtest.factor.admission admit  f_rev_05 --variant swl2_capq5 --tag top100_1w_d5
+  python -m backtest.factor.admission reject f_rev_05 --variant swl2_capq5 --tag top100_1w_d5
 ```
 
 输出结构：
 
 ```
 results/f_rev_05/
-├── factor_eval/
-│   ├── f_rev_05_20d.png
-│   └── eval_summary.json
-├── simple/
-│   ├── nav.parquet
-│   ├── metadata.json
-│   ├── summary.json / summary.csv
-│   └── report.png
-├── detailed/
-│   ├── nav.parquet, positions.parquet, trades.parquet, metrics.parquet
-│   ├── metadata.json
-│   ├── summary.json / summary.csv
-│   └── report.png
-└── pipeline.json
+└── swl2_capq5/                   # variant
+    ├── factor_eval/              # variant-scoped: tag 无关,变 tag 不重算
+    │   ├── f_rev_05_20d.png
+    │   └── eval_summary.json
+    └── top100_1w_d5/              # tag = top{n|pct}_{rebalance}_d{decay}
+        ├── pipeline.json
+        ├── simple/
+        │   ├── nav.parquet
+        │   ├── metadata.json
+        │   ├── summary.json / summary.csv
+        │   └── report.png
+        └── detailed/
+            ├── nav.parquet, positions.parquet, trades.parquet, metrics.parquet
+            ├── metadata.json
+            ├── summary.json / summary.csv
+            └── report.png
 ```
 
 ### Step 8：人工决策
@@ -742,6 +744,7 @@ results/f_rev_05/
 
 ```bash
 python -m backtest.factor.admission admit f_rev_05 \
+    --variant swl2_capq5 --tag top100_1w_d5 \
     --notes "RankICIR 0.31, detailed Sharpe 1.31, IR 0.92 vs 000300.SH"
 ```
 
@@ -826,7 +829,7 @@ Admission: f_rev_05  ->  ADMITTED
 
 ### 入库层（admission）
 
-- **没看完三层报告就 admit**：admit 不再 gate，全靠人工。看完 `results/<fid>/{factor_eval,simple,detailed}/summary.json + report.png` 再决定。
+- **没看完三层报告就 admit**：admit 不再 gate，全靠人工。看完 `results/<fid>/<variant>/{factor_eval,<tag>/{simple,detailed}}/summary.json + report.png` 再决定。
 - **work 库孤儿行**：admit 期间崩溃可能留下 work 中已 admitted 的副本。定期：
   ```bash
   python -m backtest.factor.cleanup --orphans
@@ -840,7 +843,7 @@ Admission: f_rev_05  ->  ADMITTED
 
 - [x] 双 DuckDB 库（work + library）
 - [x] admit / reject / cleanup 独立命令
-- [x] results 扁平化（`results/<factor_id>/{factor_eval,simple,detailed}/`）
+- [x] results 分层（`results/<factor_id>/<variant>/{factor_eval,<tag>/{simple,detailed}}/`）
 - [x] `scripts/run_factor_pipeline.py` 通用 driver
 - [ ] `sw_industry` 表落地 → 行业中性化、板块归因
 - [ ] `index_members` 表落地 → 限定股票池

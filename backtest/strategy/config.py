@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from backtest.factor.variants import BASELINE_VARIANT
+
 
 @dataclass
 class UniverseConfig:
@@ -23,20 +25,35 @@ class UniverseConfig:
 
 @dataclass
 class FactorConfig:
-    """Single factor configuration within a strategy."""
+    """Single factor configuration within a strategy.
+
+    ``variant`` selects which neutralization variant of the factor to load
+    from the factor table — the value the strategy actually consumes.
+    Defaults to :data:`backtest.factor.variants.BASELINE_VARIANT`
+    (``"swl2_capq5"``), i.e. the SW-L2 + circ_mv-q5 neutralized version.
+    Pass ``"raw"`` to consume the un-neutralized factor.
+    """
 
     id: str
+    variant: str = BASELINE_VARIANT
     direction: str = "desc"  # "desc" = higher is better, "asc" = lower is better
     weight: float = 1.0
 
 
 @dataclass
 class SelectionConfig:
-    """Stock selection parameters."""
+    """Stock selection parameters.
+
+    ``top_k`` / ``bottom_k`` 与 ``top_pct`` / ``bottom_pct`` 互斥 —— 一边指
+    绝对数量(``top_k=50`` 选前 50 只),一边指相对百分位(``top_pct=0.1``
+    选前 10%)。每端必须恰好指定其中一个,validate 会强制。
+    """
 
     method: str = "topk"  # "topk" / "long_short" / "decile"
-    top_k: int = 20
-    bottom_k: int = 20
+    top_k: int | None = None
+    bottom_k: int | None = None
+    top_pct: float | None = None       # (0, 1],e.g. 0.1 表示前 10%
+    bottom_pct: float | None = None    # (0, 1],e.g. 0.1 表示后 10%
     decile_group: int | None = None  # 0-9 for decile; None = return all groups
 
 
@@ -49,12 +66,16 @@ class WeightingConfig:
 
 @dataclass
 class NeutralizeConfig:
-    """Neutralization parameters."""
+    """Neutralization parameters.
+
+    .. deprecated::
+        中性化已下沉到因子层(参见 :mod:`backtest.factor.transforms` 与
+        :mod:`backtest.factor.variants`)。策略通过 :class:`FactorConfig`
+        的 ``variant`` 选择已经中性化的因子值,所以这里的开关不会再生效。
+        仅保留 dataclass 以兼容旧 yaml,不抛错。
+    """
 
     industry: bool = False
-    # group_rank   : rank within each group, scale to [0, 1]
-    # group_demean : subtract group mean so each group's mean is 0
-    # group_zscore : z-score within each group
     industry_method: str = "group_rank"
     market_cap: bool = False
 
@@ -167,9 +188,11 @@ class StrategyConfig:
                 f"got {self.selection.method}"
             )
 
-        if self.rebalance_freq not in ("1D", "1W", "2W", "1M", "EOM"):
+        self._validate_selection_counts()
+
+        if self.rebalance_freq not in ("1D", "5D", "1W", "2W", "1M", "EOM"):
             raise ValueError(
-                f"Rebalance frequency must be '1D', '1W', '2W', '1M', or 'EOM', "
+                f"Rebalance frequency must be '1D', '5D', '1W', '2W', '1M', or 'EOM', "
                 f"got {self.rebalance_freq}"
             )
 
@@ -199,3 +222,25 @@ class StrategyConfig:
 
         if self.decay is not None and self.decay < 1:
             raise ValueError(f"Decay must be >= 1 or None, got {self.decay}")
+
+    def _validate_selection_counts(self) -> None:
+        """互斥校验:每端(long/short)恰好指定 k 或 pct 一个。"""
+        s = self.selection
+        if s.method == "topk":
+            self._check_xor("top_k", s.top_k, "top_pct", s.top_pct)
+        elif s.method == "long_short":
+            self._check_xor("top_k", s.top_k, "top_pct", s.top_pct)
+            self._check_xor("bottom_k", s.bottom_k, "bottom_pct", s.bottom_pct)
+        # decile 不需要 top_k/top_pct,跳过
+
+    @staticmethod
+    def _check_xor(k_name: str, k_val, pct_name: str, pct_val) -> None:
+        if (k_val is None) == (pct_val is None):
+            raise ValueError(
+                f"必须恰好指定 {k_name} 或 {pct_name} 之一,"
+                f"得到 {k_name}={k_val}, {pct_name}={pct_val}"
+            )
+        if pct_val is not None and not (0 < pct_val <= 1):
+            raise ValueError(f"{pct_name} 必须在 (0, 1] 区间,得到 {pct_val}")
+        if k_val is not None and k_val < 1:
+            raise ValueError(f"{k_name} 必须 >= 1,得到 {k_val}")

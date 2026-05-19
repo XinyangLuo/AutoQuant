@@ -582,7 +582,7 @@ def plot_evaluation(
         Which forward-return horizon to plot (default 20).
     output_path : str, optional
         File path to save the figure.  If None, writes to
-        ``results/<factor_id>/factor_eval/<factor_id>_<horizon>d.png``.
+        ``results/<factor_id>/<variant>/factor_eval/<factor_id>_<horizon>d.png``.
 
     Returns
     -------

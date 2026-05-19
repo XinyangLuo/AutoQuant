@@ -1,24 +1,30 @@
 #!/usr/bin/env python3
 """Run the full factor screening pipeline for ONE factor.
 
-Three stages of evaluation, each written under ``results/<factor_id>/``:
+Three stages of evaluation, output layout:
 
-1. ``factor_eval/`` — factor-level offline metrics (IC / RankIC / ICIR /
-   turnover / cross-factor correlation) via ``backtest.factor.evaluate``.
-2. ``simple/``      — vectorised backtest on adjusted prices, no costs,
-   no limit-up filter. Net of the strategy config but optimistic.
-3. ``detailed/``    — event-driven backtest with commission, stamp duty,
-   limit-up / suspension filtering, board lot sizing, dividend events.
+    results/<factor_id>/<variant>/
+        factor_eval/        # variant-scoped, shared across runs (tag-agnostic)
+        <tag>/              # 默认 top{n|pct}_{rebalance}_d{decay}
+            pipeline.json
+            simple/         # vectorised backtest on adjusted prices, no costs
+            detailed/       # event-driven backtest with commission, dividends, etc.
 
 After this script finishes, look at the three reports and run
-``python -m backtest.factor.admission admit <factor_id>`` to promote, or
-``reject <factor_id>`` to discard.
+``python -m backtest.factor.admission admit <factor_id> --variant <variant> --tag <tag>``
+to promote, or ``reject ...`` to discard. The admission CLI auto-reads
+``pipeline.json`` and stamps the strategy config into the registry history.
 
 Usage:
     python scripts/run_factor_pipeline.py f_rev_05 \\
+        --variant swl2_capq5 \\
         --start 20210101 --end 20241231 \\
         --top-n 50 --rebalance 1W --decay 5 \\
         --direction asc --benchmark 000300.SH
+
+    # 分位选股 + 指数成分股 universe
+    python scripts/run_factor_pipeline.py f_rev_05 \\
+        --top-pct 0.1 --index-members 000300.SH
 
     # Skip detailed backtest (factor research mode)
     python scripts/run_factor_pipeline.py f_rev_05 --skip-detailed
@@ -56,6 +62,7 @@ from backtest.simulation import (
     SimpleSimulator,
     SimulationConfig,
 )
+from backtest.factor.variants import BASELINE_VARIANT
 from backtest.strategy import (
     BacktestConfig,
     FactorConfig,
@@ -80,14 +87,46 @@ def _market_end(end: str) -> str:
 def _strategy_metadata(args) -> dict:
     """The 'strategy' block of the metadata.json — shared by simple/detailed."""
     return {
-        "name": f"{args.factor_id}_top{args.top_n}_{args.rebalance.lower()}",
+        "name": f"{args.factor_id}_{args.variant}_{_selection_tag(args)}_{args.rebalance.lower()}",
         "factor": args.factor_id,
+        **_strategy_config_dict(args),
+    }
+
+
+def _strategy_config_dict(args) -> dict:
+    """Strategy knobs that admission.json / pipeline.json need to record verbatim.
+
+    Single source of truth — used by both ``_strategy_metadata`` (per-run
+    metadata) and ``write_pipeline_summary`` (top-level pipeline.json that
+    admission reads).
+    """
+    return {
+        "variant": args.variant,
         "top_n": args.top_n,
+        "top_pct": args.top_pct,
         "rebalance": args.rebalance,
         "direction": args.direction,
         "decay": args.decay,
         "market_cap_neutral": args.market_cap_neutral,
+        "min_market_cap": args.min_market_cap,
+        "min_avg_amount": args.min_avg_amount,
+        "index_members": args.index_members,
+        "benchmark": args.benchmark,
     }
+
+
+def _selection_tag(args) -> str:
+    """``top50`` / ``top10pct`` — selection portion of the run tag."""
+    if args.top_pct is not None:
+        return f"top{int(round(args.top_pct * 100))}pct"
+    return f"top{args.top_n}"
+
+
+def _build_tag(args) -> str:
+    """run tag = top{n|pct%}_{rebalance}_d{decay or 0},可被 --tag 覆盖。"""
+    if args.tag:
+        return args.tag
+    return f"{_selection_tag(args)}_{args.rebalance.lower()}_d{args.decay or 0}"
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +145,7 @@ def stage_factor_eval(args, out_dir: Path) -> dict:
     result = factor_evaluate(
         args.factor_id,
         args.start, args.end,
+        variant=args.variant,
         horizons=horizons,
         ret_type=args.ret_type,
         corr_top_k=5,
@@ -153,11 +193,16 @@ def _build_strategy_config(args) -> StrategyConfig:
             exclude_st=True,
             exclude_new_ipo_days=252,
             include_kcb=False,
+            index_members=args.index_members,
             min_market_cap=args.min_market_cap,
             min_avg_amount=args.min_avg_amount,
         ),
-        factors=[FactorConfig(id=args.factor_id, direction=args.direction)],
-        selection=SelectionConfig(method="topk", top_k=args.top_n),
+        factors=[FactorConfig(id=args.factor_id, variant=args.variant, direction=args.direction)],
+        selection=SelectionConfig(
+            method="topk",
+            top_k=args.top_n,
+            top_pct=args.top_pct,
+        ),
         weighting=WeightingConfig(method="equal"),
         neutralize=NeutralizeConfig(market_cap=args.market_cap_neutral),
         decay=args.decay,
@@ -270,16 +315,7 @@ def write_pipeline_summary(args, root: Path, eval_summary: dict,
         "factor_id": args.factor_id,
         "generated_at": datetime.utcnow().isoformat() + "Z",
         "period": {"start": args.start, "end": args.end},
-        "strategy_config": {
-            "top_n": args.top_n,
-            "rebalance": args.rebalance,
-            "direction": args.direction,
-            "decay": args.decay,
-            "market_cap_neutral": args.market_cap_neutral,
-            "min_market_cap": args.min_market_cap,
-            "min_avg_amount": args.min_avg_amount,
-            "benchmark": args.benchmark,
-        },
+        "strategy_config": {**_strategy_config_dict(args), "tag": _build_tag(args)},
         "factor_eval": {
             "threshold_metrics": eval_summary["threshold_metrics"],
             "threshold_checks": eval_summary["threshold_checks"],
@@ -293,7 +329,7 @@ def write_pipeline_summary(args, root: Path, eval_summary: dict,
     print(f"  saved: {root / 'pipeline.json'}")
 
 
-def print_decision_hint(eval_summary: dict, simple: dict, detailed: dict | None) -> None:
+def print_decision_hint(args, eval_summary: dict, simple: dict, detailed: dict | None) -> None:
     print("=" * 70)
     print("Decision summary")
     print("=" * 70)
@@ -308,9 +344,13 @@ def print_decision_hint(eval_summary: dict, simple: dict, detailed: dict | None)
         gap = (simple.get('annual_return', 0) or 0) - (detailed.get('annual_return', 0) or 0)
         print(f"  Cost drag (simple - det) : {gap:+.2%}")
     print()
+    tag = _build_tag(args)
+    fid = eval_summary['factor_id']
     print("Next step:")
-    print(f"  python -m backtest.factor.admission admit  {eval_summary['factor_id']}")
-    print(f"  python -m backtest.factor.admission reject {eval_summary['factor_id']}")
+    print(f"  python -m backtest.factor.admission admit  {fid} "
+          f"--variant {args.variant} --tag {tag}")
+    print(f"  python -m backtest.factor.admission reject {fid} "
+          f"--variant {args.variant} --tag {tag}")
     print("=" * 70)
 
 
@@ -322,15 +362,22 @@ def print_decision_hint(eval_summary: dict, simple: dict, detailed: dict | None)
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the factor screening pipeline")
     p.add_argument("factor_id")
+    p.add_argument("--variant", default=BASELINE_VARIANT,
+                   help=f"Neutralization variant (default: {BASELINE_VARIANT}). "
+                        "Common: 'raw' (no neutralization), 'swl2_capq5' (SW-L2 + circ_mv quintile).")
     p.add_argument("--start", default="20210101")
     p.add_argument("--end", default="20241231")
     p.add_argument("--horizons", default="1,5,10,20,60")
     p.add_argument("--ret-type", default="open", choices=["close", "open"])
     p.add_argument("--plot-horizon", type=int, default=20)
 
-    p.add_argument("--top-n", type=int, default=50)
+    sel = p.add_mutually_exclusive_group()
+    sel.add_argument("--top-n", type=int, default=None,
+                     help="选股绝对数量;与 --top-pct 互斥;两者均未传则默认 50。")
+    sel.add_argument("--top-pct", type=float, default=None,
+                     help="选股分位数 (0, 1],如 0.1 表示前 10%%。")
     p.add_argument("--rebalance", default="1W",
-                   choices=["1D", "1W", "2W", "1M", "EOM"])
+                   choices=["1D", "5D", "1W", "2W", "1M", "EOM"])
     p.add_argument("--direction", default="desc", choices=["desc", "asc"])
     p.add_argument("--decay", type=int, default=5,
                    help="Linear decay window; pass 0 to disable")
@@ -338,6 +385,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Disable market-cap neutralisation")
     p.add_argument("--min-market-cap", type=float, default=5e8)
     p.add_argument("--min-avg-amount", type=float, default=1e7)
+    p.add_argument("--index-members", default=None,
+                   help="限制 universe 到指定指数成分股,如 000300.SH。"
+                        "需先跑 backfill_index_members 准备数据。")
 
     p.add_argument("--initial-cash", type=float, default=1e8)
     p.add_argument("--commission-rate", type=float, default=0.0003)
@@ -348,6 +398,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Skip the detailed backtest (research mode)")
     p.add_argument("--results-root", default="results",
                    help="Root directory for all stage outputs")
+    p.add_argument("--tag", default=None,
+                   help="覆盖 results/<fid>/<variant>/<tag>/ 中的 tag 段,"
+                        "默认 top{n|pct}_{rebalance}_d{decay}。")
     return p
 
 
@@ -356,11 +409,16 @@ def main():
     args.market_cap_neutral = not args.no_cap_neutral
     if args.decay == 0:
         args.decay = None
+    # 默认行为:两者都没传 → top_n=50,保持旧脚本兼容。
+    if args.top_n is None and args.top_pct is None:
+        args.top_n = 50
 
-    root = Path(args.results_root) / args.factor_id
-    root.mkdir(parents=True, exist_ok=True)
+    variant_root = Path(args.results_root) / args.factor_id / args.variant
+    tag = _build_tag(args)
+    run_root = variant_root / tag
+    run_root.mkdir(parents=True, exist_ok=True)
 
-    eval_summary = stage_factor_eval(args, root / "factor_eval")
+    eval_summary = stage_factor_eval(args, variant_root / "factor_eval")
 
     config = _build_strategy_config(args)
     print(f"\nGenerating signals ({config.name}) ...")
@@ -377,16 +435,16 @@ def main():
             if not args.skip_detailed else None
         )
 
-    simple_metrics = stage_simple_backtest(args, signals, market_data, root / "simple")
+    simple_metrics = stage_simple_backtest(args, signals, market_data, run_root / "simple")
 
     detailed_metrics = None
     if not args.skip_detailed:
         detailed_metrics = stage_detailed_backtest(
-            args, signals, market_data, dividends, root / "detailed",
+            args, signals, market_data, dividends, run_root / "detailed",
         )
 
-    write_pipeline_summary(args, root, eval_summary, simple_metrics, detailed_metrics)
-    print_decision_hint(eval_summary, simple_metrics, detailed_metrics)
+    write_pipeline_summary(args, run_root, eval_summary, simple_metrics, detailed_metrics)
+    print_decision_hint(args, eval_summary, simple_metrics, detailed_metrics)
 
 
 if __name__ == "__main__":

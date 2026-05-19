@@ -147,7 +147,7 @@ python scripts/run_factor_pipeline.py f_001 \
     --direction desc --benchmark 000300.SH
 ```
 
-输出到 `results/<factor_id>/{factor_eval, simple, detailed}/`。
+输出到 `results/<factor_id>/<variant>/{factor_eval, <tag>/{simple, detailed}}/`。
 
 ### 4. 入库 / 拒绝（人工触发）
 

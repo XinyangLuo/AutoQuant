@@ -89,7 +89,7 @@ from backtest.evaluation import (
 )
 
 report = evaluate(
-    result_dir="results/<factor_id>/detailed",
+    result_dir="results/<factor_id>/<variant>/<tag>/detailed",
     benchmark="000300.SH",   # 可选
     plot=True,               # 默认 True
     output_dir=None,         # 默认与 result_dir 同
@@ -265,7 +265,7 @@ return nav / nav.iloc[0]
 ```python
 from backtest.simulation import DetailedSimulator
 result = sim.run(signals, market_data, dividends_data)
-result.save("results/<factor_id>/detailed/")
+result.save("results/<factor_id>/<variant>/<tag>/detailed/")
 ```
 
 ### 上游（数据模块）—— 仅当有 benchmark 时

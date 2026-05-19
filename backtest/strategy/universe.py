@@ -97,12 +97,10 @@ class UniverseFilter:
     ) -> set[str]:
         """Return the set of symbols belonging to an index on a given date.
 
-        .. note::
-            This queries an ``index_members`` table that must be added to
-            ``market.duckdb`` by the data module.  If the table does not exist,
-            a ``NotImplementedError`` is raised.
+        Reads from ``MarketStorage.get_index_members`` which expects the
+        ``index_members`` table to already be densified to every trade date
+        (see ``backtest.data.backfill_index_members``).
         """
-        # Check table existence first to avoid catching generic DB exceptions
         tables = {
             r[0] for r in market_storage.conn.execute(
                 "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
@@ -110,16 +108,10 @@ class UniverseFilter:
         }
         if "index_members" not in tables:
             raise NotImplementedError(
-                "index_members table not found. "
-                "Run data module index component backfill first."
+                "index_members table not found. Run "
+                "`python -m backtest.data.backfill_index_members` first."
             )
-
-        sql = """
-            SELECT symbol FROM index_members
-            WHERE index_code = ? AND trade_date = strptime(?, '%Y%m%d')::DATE
-        """
-        result = market_storage.conn.execute(sql, [index_code, date]).fetchdf()
-        return set(result["symbol"]) if not result.empty else set()
+        return market_storage.get_index_members(index_code, date)
 
     def _filter_by_avg_amount(
         self,

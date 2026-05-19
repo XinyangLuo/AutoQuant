@@ -70,10 +70,11 @@ class TestConfig:
 
     def test_validate_invalid_direction(self):
         """Test that invalid factor direction is rejected."""
-        from backtest.strategy.config import StrategyConfig, FactorConfig
+        from backtest.strategy.config import StrategyConfig, FactorConfig, SelectionConfig
 
         config = StrategyConfig()
         config.factors = [FactorConfig(id="f_001", direction="invalid")]
+        config.selection = SelectionConfig(method="topk", top_k=20)
         with pytest.raises(ValueError, match="'asc' or 'desc'"):
             config.validate()
 
@@ -89,13 +90,51 @@ class TestConfig:
 
     def test_validate_invalid_rebalance_freq(self):
         """Test that invalid rebalance frequency is rejected."""
-        from backtest.strategy.config import StrategyConfig, FactorConfig
+        from backtest.strategy.config import StrategyConfig, FactorConfig, SelectionConfig
 
         config = StrategyConfig()
         config.factors = [FactorConfig(id="f_001")]
+        config.selection = SelectionConfig(method="topk", top_k=20)
         config.rebalance_freq = "3W"
         with pytest.raises(ValueError, match="1D.*1W.*2W.*1M.*EOM"):
             config.validate()
+
+    def test_validate_top_k_top_pct_xor(self):
+        """topk 模式 top_k / top_pct 必须恰好一个非 None。"""
+        from backtest.strategy.config import StrategyConfig, FactorConfig, SelectionConfig
+
+        config = StrategyConfig()
+        config.factors = [FactorConfig(id="f_001")]
+        config.selection = SelectionConfig(method="topk")  # 两者都 None
+        with pytest.raises(ValueError, match="top_k 或 top_pct"):
+            config.validate()
+
+        config.selection = SelectionConfig(method="topk", top_k=10, top_pct=0.1)
+        with pytest.raises(ValueError, match="top_k 或 top_pct"):
+            config.validate()
+
+    def test_validate_top_pct_range(self):
+        """top_pct 必须在 (0, 1] 区间。"""
+        from backtest.strategy.config import StrategyConfig, FactorConfig, SelectionConfig
+
+        config = StrategyConfig()
+        config.factors = [FactorConfig(id="f_001")]
+        config.selection = SelectionConfig(method="topk", top_pct=1.5)
+        with pytest.raises(ValueError, match="top_pct"):
+            config.validate()
+
+        config.selection = SelectionConfig(method="topk", top_pct=0.0)
+        with pytest.raises(ValueError, match="top_pct"):
+            config.validate()
+
+    def test_validate_top_pct_happy(self):
+        """top_pct=0.1 单独使用应通过。"""
+        from backtest.strategy.config import StrategyConfig, FactorConfig, SelectionConfig
+
+        config = StrategyConfig()
+        config.factors = [FactorConfig(id="f_001")]
+        config.selection = SelectionConfig(method="topk", top_pct=0.1)
+        config.validate()  # 不抛错
 
 
 class TestUniverseFilter:
@@ -649,6 +688,48 @@ class TestSelection:
         assert len(rows) == 2
         assert all(r["target_weight"] > 0 for r in rows)
 
+    def test_build_signals_topk_with_pct(self):
+        """topk + top_pct=0.1 在 100 只股票上应选 10 只。"""
+        from backtest.strategy.selection import build_signals
+        from backtest.strategy.config import SelectionConfig, WeightingConfig
+
+        scores = pd.Series({f"S{i:03d}": float(100 - i) for i in range(100)})
+        df = pd.DataFrame({"symbol": list(scores.index)})
+        selection = SelectionConfig(method="topk", top_pct=0.1)
+        weighting = WeightingConfig(method="equal")
+
+        rows = build_signals(
+            pd.Timestamp("2024-01-01"), scores.sort_values(ascending=False),
+            df, selection, weighting,
+        )
+
+        assert len(rows) == 10
+        assert sum(r["target_weight"] for r in rows) == pytest.approx(1.0)
+
+    def test_build_signals_long_short_with_pct(self):
+        """long_short + top_pct=0.05 / bottom_pct=0.05 在 100 只上各选 5 只。"""
+        from backtest.strategy.selection import build_signals
+        from backtest.strategy.config import SelectionConfig, WeightingConfig
+
+        scores = pd.Series({f"S{i:03d}": float(100 - i) for i in range(100)})
+        df = pd.DataFrame({"symbol": list(scores.index)})
+        selection = SelectionConfig(
+            method="long_short", top_pct=0.05, bottom_pct=0.05,
+        )
+        weighting = WeightingConfig(method="equal")
+
+        rows = build_signals(
+            pd.Timestamp("2024-01-01"), scores.sort_values(ascending=False),
+            df, selection, weighting,
+        )
+
+        longs = [r for r in rows if r["target_weight"] > 0]
+        shorts = [r for r in rows if r["target_weight"] < 0]
+        assert len(longs) == 5
+        assert len(shorts) == 5
+        assert sum(r["target_weight"] for r in longs) == pytest.approx(0.5)
+        assert sum(r["target_weight"] for r in shorts) == pytest.approx(-0.5)
+
 
 class TestRebalanceDates:
     """Test rebalance date generation."""
@@ -718,7 +799,15 @@ class MockFactorStorage:
                     })
             self._data = pd.DataFrame(rows)
 
-    def get_factor(self, factor_id: str, start: str | None = None, end: str | None = None):
+    def get_factor(
+        self,
+        factor_id: str,
+        start: str | None = None,
+        end: str | None = None,
+        *,
+        variant: str | None = None,
+    ):
+        # Mock has a single conceptual variant; the kwarg is accepted but ignored.
         if factor_id not in self._data.columns:
             return pd.DataFrame(columns=["date", "symbol", "value"])
         df = self._data[["date", "symbol", factor_id]].copy()
@@ -730,7 +819,13 @@ class MockFactorStorage:
             df = df[df["date"] <= pd.Timestamp(end)]
         return df
 
-    def get_factor_panel(self, factor_ids: list[str], date: str):
+    def get_factor_panel(
+        self,
+        factor_ids: list[str],
+        date: str,
+        *,
+        variant: str | None = None,
+    ):
         d = pd.Timestamp(date)
         available = [f for f in factor_ids if f in self._data.columns]
         cols = ["date", "symbol"] + available

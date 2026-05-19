@@ -239,6 +239,53 @@ CREATE TABLE IF NOT EXISTS index_daily (
 )
 """
 
+# ---------------------------------------------------------------------------
+# Schema: sw_industry (申万行业归属历史, SW2021 体系)
+# ---------------------------------------------------------------------------
+# 同一 (symbol, level) 在不同时段可能属于不同行业,也可能多次进出同一行业。
+# PK (symbol, level, industry_code, in_date) 唯一区分每段所属;
+# out_date IS NULL 表示截至最新数据日仍在该行业。
+# 数据源: pro.index_classify (拿 industry_code → industry_name 映射)
+#         pro.index_member   (拿成分股历史,含 in_date / out_date)
+# ---------------------------------------------------------------------------
+
+SW_INDUSTRY_COLUMNS = [
+    "symbol", "level", "industry_code", "industry_name", "in_date", "out_date",
+]
+
+SW_INDUSTRY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS sw_industry (
+    symbol        VARCHAR,
+    level         VARCHAR,
+    industry_code VARCHAR,
+    industry_name VARCHAR,
+    in_date       DATE,
+    out_date      DATE,
+    PRIMARY KEY (symbol, level, industry_code, in_date)
+)
+"""
+
+# ---------------------------------------------------------------------------
+# Schema: index_members (宽基指数成分股, 已密集化到每个交易日)
+# ---------------------------------------------------------------------------
+# 数据源 pro.index_weight 是月度快照(每月一次再平衡日发布权重)。回填时
+# 把月度快照展开到下次发布日前的每个交易日,日期等值查询直接可用,
+# 不需要 as-of 逻辑。
+# PK (index_code, symbol, trade_date) 唯一识别"某只股票在 D 日属于哪只指数"。
+# ---------------------------------------------------------------------------
+
+INDEX_MEMBERS_COLUMNS = ["index_code", "symbol", "trade_date", "weight"]
+
+INDEX_MEMBERS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS index_members (
+    index_code  VARCHAR,
+    symbol      VARCHAR,
+    trade_date  DATE,
+    weight      DOUBLE,
+    PRIMARY KEY (index_code, symbol, trade_date)
+)
+"""
+
 
 class MarketStorage:
     """DuckDB storage for market_daily, fundamental tables, and dividends."""
@@ -256,6 +303,8 @@ class MarketStorage:
         self.conn.execute(CASHFLOW_SCHEMA)
         self.conn.execute(DIVIDEND_SCHEMA)
         self.conn.execute(INDEX_DAILY_SCHEMA)
+        self.conn.execute(SW_INDUSTRY_SCHEMA)
+        self.conn.execute(INDEX_MEMBERS_SCHEMA)
         self._add_double_columns("market_daily", DAILY_COLUMNS[2:])
         self._add_double_columns("income_q", INCOME_NUMERIC)
         self._add_double_columns("balancesheet_q", BALANCESHEET_NUMERIC)
@@ -648,3 +697,210 @@ class MarketStorage:
             ORDER BY date, symbol
         """
         return self.conn.execute(sql, params).fetchdf()
+
+    # -- sw_industry ----------------------------------------------------------
+
+    def insert_sw_industry(self, df: pd.DataFrame):
+        """UPSERT 申万行业归属记录。
+
+        df 列至少包含 SW_INDUSTRY_COLUMNS 的子集;in_date/out_date 必须为
+        pandas.Timestamp 或 datetime.date,空值用 None / NaT 表示。
+        """
+        self._upsert(
+            df,
+            table="sw_industry",
+            pk_cols=("symbol", "level", "industry_code", "in_date"),
+            schema_cols=SW_INDUSTRY_COLUMNS,
+        )
+
+    def get_sw_industry_stats(self) -> dict:
+        row = self.conn.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT symbol), "
+            "COUNT(DISTINCT industry_code) FILTER (WHERE level='L1'), "
+            "COUNT(DISTINCT industry_code) FILTER (WHERE level='L2') "
+            "FROM sw_industry"
+        ).fetchone()
+        return {
+            "total_rows": row[0],
+            "total_symbols": row[1],
+            "n_l1_industries": row[2],
+            "n_l2_industries": row[3],
+        }
+
+    def get_industry_panel(
+        self,
+        date: str,
+        level: str = "L1",
+    ) -> pd.DataFrame:
+        """返回 ``date`` 日各股票的申万行业归属横截面。
+
+        Parameters
+        ----------
+        date : str
+            YYYYMMDD 日期(归属判定日)。
+        level : str
+            ``'L1'`` 或 ``'L2'``。
+
+        Returns
+        -------
+        pd.DataFrame
+            列 ``[symbol, industry_code, industry_name]``。无对应记录的股票不出现。
+            当一只股票在该日同时命中多条分段(``sw_industry`` 存在重叠分段)时,
+            按 "最新 ``in_date`` 胜出" 规则取一条。
+        """
+        sql = """
+            SELECT symbol, industry_code, industry_name
+            FROM (
+                SELECT symbol, industry_code, industry_name,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol
+                           ORDER BY in_date DESC
+                       ) AS rn
+                FROM sw_industry
+                WHERE level = ?
+                  AND in_date <= strptime(?, '%Y%m%d')::DATE
+                  AND (out_date IS NULL OR out_date > strptime(?, '%Y%m%d')::DATE)
+            )
+            WHERE rn = 1
+            ORDER BY symbol
+        """
+        return self.conn.execute(sql, [level, date, date]).fetchdf()
+
+    def get_industry_history(
+        self,
+        symbol: str,
+        level: str | None = None,
+    ) -> pd.DataFrame:
+        """返回某股票的申万行业归属全历史(各分段)。
+
+        Parameters
+        ----------
+        symbol : str
+            股票 ts_code。
+        level : str | None
+            ``'L1'`` / ``'L2'`` 过滤,None 表示两级都返回。
+        """
+        conditions = ["symbol = ?"]
+        params: list = [symbol]
+        if level:
+            conditions.append("level = ?")
+            params.append(level)
+        where = " AND ".join(conditions)
+        sql = f"""
+            SELECT symbol, level, industry_code, industry_name, in_date, out_date
+            FROM sw_industry
+            WHERE {where}
+            ORDER BY level, in_date
+        """
+        return self.conn.execute(sql, params).fetchdf()
+
+    def get_industry_panel_range(
+        self,
+        start: str,
+        end: str,
+        level: str = "L1",
+        *,
+        symbols: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """``[start, end]`` 区间内每个 ``(date, symbol)`` 的行业归属。
+
+        以 ``market_daily`` 的实际交易日为基准,把 ``sw_industry`` 的分段归属
+        展开为每日记录。用于因子层的批量行业中性化。
+
+        Returns DataFrame ``[date, symbol, industry_code, industry_name]``,
+        缺失行业的 ``(date, symbol)`` 不出现。
+
+        当某 ``(symbol, level)`` 在 ``sw_industry`` 中存在分段重叠(``in_date``
+        范围互相覆盖)时,按 "最新 ``in_date`` 胜出" 规则取一条,保证返回的
+        ``(date, symbol)`` 唯一。
+        """
+        symbol_filter = ""
+        if symbols:
+            placeholders = ", ".join("?" for _ in symbols)
+            symbol_filter = f"AND m.symbol IN ({placeholders})"
+        sql = f"""
+            SELECT date, symbol, industry_code, industry_name
+            FROM (
+                SELECT m.date AS date, m.symbol AS symbol,
+                       s.industry_code AS industry_code,
+                       s.industry_name AS industry_name,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY m.date, m.symbol
+                           ORDER BY s.in_date DESC
+                       ) AS rn
+                FROM market_daily m
+                INNER JOIN sw_industry s
+                    ON s.symbol = m.symbol
+                   AND s.level = ?
+                   AND s.in_date <= m.date
+                   AND (s.out_date IS NULL OR s.out_date > m.date)
+                WHERE m.date >= strptime(?, '%Y%m%d')::DATE
+                  AND m.date <= strptime(?, '%Y%m%d')::DATE
+                  {symbol_filter}
+            )
+            WHERE rn = 1
+            ORDER BY date, symbol
+        """
+        params = [level, start, end] + (symbols or [])
+        return self.conn.execute(sql, params).fetchdf()
+
+    # -- index_members --------------------------------------------------------
+
+    def insert_index_members(self, df: pd.DataFrame):
+        """UPSERT 宽基指数成分股记录(每个交易日一行,已密集化)。
+
+        df 至少包含 ``index_code, symbol, trade_date``,``weight`` 可选。
+        ``trade_date`` 必须为 ``pandas.Timestamp`` / ``datetime.date``。
+        """
+        self._upsert(
+            df,
+            table="index_members",
+            pk_cols=("index_code", "symbol", "trade_date"),
+            schema_cols=INDEX_MEMBERS_COLUMNS,
+        )
+
+    def get_max_index_member_date(self, index_code: str):
+        """单个指数已写入的最大 trade_date,用于增量回填。无数据返回 None。"""
+        row = self.conn.execute(
+            "SELECT MAX(trade_date) FROM index_members WHERE index_code = ?",
+            [index_code],
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def get_index_members(self, index_code: str, date: str) -> set[str]:
+        """返回 ``index_code`` 在 ``date`` (YYYYMMDD) 的成分股 symbol 集合。
+
+        前提:``index_members`` 已通过 ``backfill_index_members`` 密集化到每个
+        交易日;如果该日无记录则返回空集。
+        """
+        result = self.conn.execute(
+            "SELECT symbol FROM index_members "
+            "WHERE index_code = ? AND trade_date = strptime(?, '%Y%m%d')::DATE",
+            [index_code, date],
+        ).fetchdf()
+        return set(result["symbol"]) if not result.empty else set()
+
+    def get_index_members_stats(self) -> pd.DataFrame:
+        """按 index_code 汇总:行数 + 覆盖区间(用于 CLI banner)。"""
+        return self.conn.execute(
+            "SELECT index_code, COUNT(*) AS rows, "
+            "COUNT(DISTINCT symbol) AS n_symbols, "
+            "MIN(trade_date) AS min_date, MAX(trade_date) AS max_date "
+            "FROM index_members GROUP BY index_code ORDER BY index_code"
+        ).fetchdf()
+
+    def get_trade_dates_in_db(self, start: str, end: str) -> list:
+        """市场实际交易日(``market_daily.date``)在 [start, end] 内的升序列表。
+
+        与 ``backtest.data.trade_calendar.get_trade_dates`` 不同 —— 本方法以
+        本地 ``market_daily`` 为真理源,不调 Tushare;返回 ``datetime.date``
+        而不是 YYYYMMDD 字符串(下游 ``pd.merge_asof`` 需要 datetime 类型)。
+        """
+        rows = self.conn.execute(
+            "SELECT DISTINCT date FROM market_daily "
+            "WHERE date >= strptime(?, '%Y%m%d')::DATE "
+            "  AND date <= strptime(?, '%Y%m%d')::DATE "
+            "ORDER BY date",
+            [start, end],
+        ).fetchall()
+        return [r[0] for r in rows]
