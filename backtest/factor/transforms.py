@@ -370,12 +370,886 @@ def ts_std(
     return result.reindex(values.index)
 
 
+def ts_sum(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling sum per symbol.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=1).sum()
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_min(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling minimum per symbol.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=1).min()
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_max(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling maximum per symbol.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=1).max()
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def _argmax_last(arr: np.ndarray) -> float:
+    """Return distance from end to the maximum value (0-based).
+
+    For array [1, 2, 3] → max=3 at position 2 → distance from end = 0.
+    For array [3, 2, 1] → max=3 at position 0 → distance from end = 2.
+    NaN values are ignored.
+    """
+    valid = ~np.isnan(arr)
+    if not valid.any():
+        return np.nan
+    v = arr[valid]
+    idx = int(np.argmax(v))
+    return float(len(v) - 1 - idx)
+
+
+def _argmin_last(arr: np.ndarray) -> float:
+    """Return distance from end to the minimum value (0-based).
+
+    NaN values are ignored.
+    """
+    valid = ~np.isnan(arr)
+    if not valid.any():
+        return np.nan
+    v = arr[valid]
+    idx = int(np.argmin(v))
+    return float(len(v) - 1 - idx)
+
+
+def ts_argmax(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Distance from window end to the maximum value, per symbol.
+
+    For each symbol, over a trailing window of ``window`` observations,
+    returns how many steps back from the current observation the maximum
+    value occurs. A value of ``0`` means the current observation is the
+    maximum; ``window - 1`` means the maximum is at the earliest point
+    in the window.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``, values are integers in ``[0, window-1]``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=1).apply(
+        _argmax_last, raw=True
+    )
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_argmin(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Distance from window end to the minimum value, per symbol.
+
+    See :func:`ts_argmax` for semantics; this returns the distance to
+    the minimum instead.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``, values are integers in ``[0, window-1]``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=1).apply(
+        _argmin_last, raw=True
+    )
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_delta(
+    values: pd.Series,
+    d: int,
+) -> pd.Series:
+    """Difference between current value and the value ``d`` observations ago.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    d : int
+        Look-back offset in observations (must be >= 1).
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``. First ``d`` observations per symbol are NaN.
+    """
+    _check_panel_series(values)
+    if d < 1:
+        raise ValueError(f"d must be >= 1, got {d}")
+
+    sorted_vals = values.sort_index(level=[1, 0])
+    result = sorted_vals.groupby(level=1).diff(d)
+    return result.reindex(values.index)
+
+
+def ts_delay(
+    values: pd.Series,
+    d: int,
+) -> pd.Series:
+    """Value from ``d`` observations ago.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    d : int
+        Look-back offset in observations (must be >= 1).
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``. First ``d`` observations per symbol are NaN.
+    """
+    _check_panel_series(values)
+    if d < 1:
+        raise ValueError(f"d must be >= 1, got {d}")
+
+    sorted_vals = values.sort_index(level=[1, 0])
+    result = sorted_vals.groupby(level=1).shift(d)
+    return result.reindex(values.index)
+
+
+def ts_pct_change(
+    values: pd.Series,
+    d: int,
+) -> pd.Series:
+    """Percentage change over ``d`` observations: ``(current - prior) / prior``.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    d : int
+        Look-back offset in observations (must be >= 1).
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``. First ``d`` observations per symbol are NaN.
+        Division by zero yields NaN.
+    """
+    _check_panel_series(values)
+    if d < 1:
+        raise ValueError(f"d must be >= 1, got {d}")
+
+    delayed = ts_delay(values, d)
+    return (values - delayed) / delayed
+
+
+def ts_product(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling product per symbol.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=1).apply(
+        lambda x: np.nanprod(x) if len(x) > 0 else np.nan, raw=True
+    )
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_skewness(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling skewness (Fisher's definition) per symbol.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations (must be >= 3).
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=3).skew()
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_kurtosis(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling excess kurtosis (Fisher's definition) per symbol.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations (must be >= 4).
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    result = _ts_roll(values, window, min_periods, window_min=4).kurt()
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_ir(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing information ratio per symbol: ``mean / std``.
+
+    When the rolling std is zero, the result is NaN.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations (must be >= 2).
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    roller = _ts_roll(values, window, min_periods, window_min=2)
+    stats = roller.agg(["mean", "std"])
+    stats.index = stats.index.droplevel(0)
+
+    sorted_vals = values.sort_index(level=[1, 0])
+    ir = stats["mean"] / stats["std"].where(stats["std"] > 0, np.nan)
+    return ir.reindex(values.index)
+
+
+def _linear_decay_weights(window: int) -> np.ndarray:
+    """Weights [1, 2, ..., window] normalized to sum to 1."""
+    w = np.arange(1, window + 1, dtype=float)
+    return w / w.sum()
+
+
+def ts_decay_linear(
+    values: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Linearly decay-weighted rolling average per symbol.
+
+    Weights increase linearly from the oldest to the newest observation
+    within the window: ``[1, 2, ..., window] / sum(1..window)``.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
+    if min_periods is None:
+        min_periods = window
+
+    weights = _linear_decay_weights(window)
+
+    def _wmean(arr: np.ndarray) -> float:
+        valid = ~np.isnan(arr)
+        n = int(valid.sum())
+        if n < min_periods:
+            return np.nan
+        v = arr[valid]
+        w = weights[-n:]
+        return float(np.dot(v, w / w.sum()))
+
+    result = _ts_roll(values, window, min_periods, window_min=1).apply(
+        _wmean, raw=True
+    )
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_decay_exp(
+    values: pd.Series,
+    window: int,
+    *,
+    halflife: float = 10.0,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Exponentially decay-weighted rolling average per symbol.
+
+    Weights follow ``w_i = 0.5 ^ ((window - 1 - i) / halflife)`` where
+    ``i = 0`` is the oldest observation in the window.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    window : int
+        Rolling window length in observations.
+    halflife : float, default 10.0
+        Number of observations for weight to decay by half.
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    if window < 1:
+        raise ValueError(f"window must be >= 1, got {window}")
+    if halflife <= 0:
+        raise ValueError(f"halflife must be > 0, got {halflife}")
+    if min_periods is None:
+        min_periods = window
+
+    # weights[i] for i=0..window-1 where i=0 is oldest
+    ages = np.arange(window - 1, -1, -1, dtype=float)
+    weights = np.power(0.5, ages / halflife)
+
+    def _wmean(arr: np.ndarray) -> float:
+        valid = ~np.isnan(arr)
+        n = int(valid.sum())
+        if n < min_periods:
+            return np.nan
+        v = arr[valid]
+        w = weights[-n:]
+        return float(np.dot(v, w / w.sum()))
+
+    result = _ts_roll(values, window, min_periods, window_min=1).apply(
+        _wmean, raw=True
+    )
+    result.index = result.index.droplevel(0)
+    return result.reindex(values.index)
+
+
+def ts_corr(
+    x: pd.Series,
+    y: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling Pearson correlation between two series per symbol.
+
+    Parameters
+    ----------
+    x, y : pd.Series
+        MultiIndex ``(date, symbol)`` Series with matching index.
+    window : int
+        Rolling window length in observations (must be >= 2).
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``x`` (and ``y``).
+    """
+    _check_panel_series(x)
+    _check_panel_series(y)
+    if not x.index.equals(y.index):
+        raise ValueError("x and y must have identical MultiIndex")
+    if min_periods is None:
+        min_periods = window
+    if window < 2:
+        raise ValueError(f"window must be >= 2, got {window}")
+    if min_periods < 2:
+        raise ValueError(f"min_periods must be >= 2, got {min_periods}")
+
+    df = pd.DataFrame({"x": x, "y": y})
+    sorted_df = df.sort_index(level=[1, 0])
+
+    # Per-symbol rolling corr to avoid pandas MultiIndex corr bug.
+    out_vals: list[np.ndarray] = []
+    out_idx: list[tuple] = []
+    for sym, sub in sorted_df.groupby(level=1):
+        sub = sub.droplevel(1)
+        corr = sub["x"].rolling(window, min_periods=min_periods).corr(sub["y"])
+        out_vals.append(corr.values)
+        out_idx.extend([(d, sym) for d in corr.index])
+
+    if not out_vals:
+        return pd.Series(np.nan, index=x.index)
+
+    result = pd.Series(
+        np.concatenate(out_vals),
+        index=pd.MultiIndex.from_tuples(out_idx, names=["date", "symbol"]),
+    )
+    return result.reindex(x.index)
+
+
+def ts_covariance(
+    x: pd.Series,
+    y: pd.Series,
+    window: int,
+    min_periods: int | None = None,
+) -> pd.Series:
+    """Trailing rolling covariance between two series per symbol (ddof=1).
+
+    Parameters
+    ----------
+    x, y : pd.Series
+        MultiIndex ``(date, symbol)`` Series with matching index.
+    window : int
+        Rolling window length in observations (must be >= 2).
+    min_periods : int, optional
+        Minimum observations. Defaults to ``window``.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``x`` (and ``y``).
+    """
+    _check_panel_series(x)
+    _check_panel_series(y)
+    if not x.index.equals(y.index):
+        raise ValueError("x and y must have identical MultiIndex")
+    if min_periods is None:
+        min_periods = window
+    if window < 2:
+        raise ValueError(f"window must be >= 2, got {window}")
+    if min_periods < 2:
+        raise ValueError(f"min_periods must be >= 2, got {min_periods}")
+
+    df = pd.DataFrame({"x": x, "y": y})
+    sorted_df = df.sort_index(level=[1, 0])
+
+    out_vals: list[np.ndarray] = []
+    out_idx: list[tuple] = []
+    for sym, sub in sorted_df.groupby(level=1):
+        sub = sub.droplevel(1)
+        cov = sub["x"].rolling(window, min_periods=min_periods).cov(sub["y"])
+        out_vals.append(cov.values)
+        out_idx.extend([(d, sym) for d in cov.index])
+
+    if not out_vals:
+        return pd.Series(np.nan, index=x.index)
+
+    result = pd.Series(
+        np.concatenate(out_vals),
+        index=pd.MultiIndex.from_tuples(out_idx, names=["date", "symbol"]),
+    )
+    return result.reindex(x.index)
+
+
+# ---------------------------------------------------------------------------
+# Cross-sectional operators (cs_*)
+# ---------------------------------------------------------------------------
+
+
+def cs_zscore(values: pd.Series) -> pd.Series:
+    """Cross-sectional z-score per date: ``(x - mean) / std``.
+
+    For each date, non-NaN values are centered and scaled. NaNs are
+    preserved. If a date has <= 1 non-NaN value or std == 0, all
+    non-NaN values are mapped to 0.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+
+    def _one(s: pd.Series) -> pd.Series:
+        mean = s.mean()
+        std = s.std()
+        if std == 0 or pd.isna(std) or s.notna().sum() <= 1:
+            return s.where(s.isna(), 0.0)
+        return (s - mean) / std
+
+    return values.groupby(level=0, group_keys=False).apply(_one)
+
+
+def cs_demean(values: pd.Series) -> pd.Series:
+    """Cross-sectional demean per date: ``x - mean(x)``.
+
+    For each date, subtract the cross-sectional mean from all non-NaN
+    values. NaNs are preserved.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+
+    def _one(s: pd.Series) -> pd.Series:
+        mean = s.mean()
+        if pd.isna(mean):
+            return s
+        return s - mean
+
+    return values.groupby(level=0, group_keys=False).apply(_one)
+
+
+def cs_winsorize(
+    values: pd.Series,
+    *,
+    lower: float = 0.01,
+    upper: float = 0.99,
+) -> pd.Series:
+    """Cross-sectional winsorization (percentile clip) per date.
+
+    For each date, non-NaN values are clipped to the ``lower`` and
+    ``upper`` percentiles of the cross-sectional distribution.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    lower : float, default 0.01
+        Lower percentile (0.0–1.0).
+    upper : float, default 0.99
+        Upper percentile (0.0–1.0).
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    if not 0.0 <= lower < upper <= 1.0:
+        raise ValueError(f"require 0 <= lower < upper <= 1, got lower={lower}, upper={upper}")
+
+    def _one(s: pd.Series) -> pd.Series:
+        valid = s.dropna()
+        if len(valid) < 2:
+            return s
+        lo = valid.quantile(lower)
+        hi = valid.quantile(upper)
+        clipped = s.clip(lower=lo, upper=hi)
+        return clipped
+
+    return values.groupby(level=0, group_keys=False).apply(_one)
+
+
+# ---------------------------------------------------------------------------
+# Math / utility operators
+# ---------------------------------------------------------------------------
+
+
+def abs_(values: pd.Series) -> pd.Series:
+    """Element-wise absolute value.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    return values.abs()
+
+
+def sign(values: pd.Series) -> pd.Series:
+    """Element-wise sign: -1, 0, or 1.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    return np.sign(values)
+
+
+def log(values: pd.Series) -> pd.Series:
+    """Element-wise natural logarithm.
+
+    Non-positive values produce NaN.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    return np.log(values.where(values > 0, np.nan))
+
+
+def sqrt(values: pd.Series) -> pd.Series:
+    """Element-wise square root.
+
+    Negative values produce NaN.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    return np.sqrt(values.where(values >= 0, np.nan))
+
+
+def signed_power(values: pd.Series, power: float) -> pd.Series:
+    """``sign(x) * |x| ^ power``.
+
+    Preserves the sign of the original value while raising its
+    magnitude to ``power``. NaN values are preserved.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    power : float
+        Exponent applied to the absolute value.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    return np.sign(values) * np.power(np.abs(values), power)
+
+
+def inverse(values: pd.Series) -> pd.Series:
+    """Element-wise reciprocal: ``1 / x``.
+
+    Division by zero produces NaN.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``values``.
+    """
+    _check_panel_series(values)
+    return 1.0 / values.replace(0, np.nan)
+
+
+def if_else(
+    condition: pd.Series,
+    true_values: pd.Series,
+    false_values: pd.Series,
+) -> pd.Series:
+    """Element-wise conditional selection.
+
+    For each observation, returns ``true_values`` where ``condition``
+    is True, else ``false_values``. All three series must share the
+    same MultiIndex.
+
+    Parameters
+    ----------
+    condition : pd.Series
+        Boolean MultiIndex ``(date, symbol)`` Series.
+    true_values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    false_values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+
+    Returns
+    -------
+    pd.Series
+        Same index as ``condition``.
+    """
+    _check_panel_series(condition)
+    _check_panel_series(true_values)
+    _check_panel_series(false_values)
+    if not condition.index.equals(true_values.index):
+        raise ValueError("condition and true_values must have identical index")
+    if not condition.index.equals(false_values.index):
+        raise ValueError("condition and false_values must have identical index")
+
+    return true_values.where(condition, false_values)
+
+
 __all__ = [
     "rank",
     "z_score",
     "ts_rank",
     "ts_mean",
     "ts_std",
+    "ts_sum",
+    "ts_min",
+    "ts_max",
+    "ts_argmin",
+    "ts_argmax",
+    "ts_delta",
+    "ts_delay",
+    "ts_pct_change",
+    "ts_product",
+    "ts_skewness",
+    "ts_kurtosis",
+    "ts_ir",
+    "ts_decay_linear",
+    "ts_decay_exp",
+    "ts_corr",
+    "ts_covariance",
+    "cs_zscore",
+    "cs_demean",
+    "cs_winsorize",
+    "abs_",
+    "sign",
+    "log",
+    "sqrt",
+    "signed_power",
+    "inverse",
+    "if_else",
     "industry_neutralize",
     "cap_neutralize",
 ]

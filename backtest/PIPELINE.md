@@ -920,3 +920,264 @@ Admission: f_rev_05  ->  ADMITTED
 - [ ] 多因子组合的样本外参数选择器
 - [ ] Walk-forward 滚动评测：训练窗口/评估窗口分离
 - [ ] Agent 投研系统调用本 pipeline 作为底层 tool
+- [ ] **P1：Barra 风格自动化 Pipeline**（设计稿见附录 A，落地后取代第 1~8 章）
+
+---
+
+## 附录 A：P1 自动化 Pipeline（设计稿，未实现）
+
+> 本附录是 PLAN.md §4 的回填版，记录**未来**取代当前手动流程的自动化 step1~step9 全套设计。所有阈值、公式、分流规则都在此固定。落地时按本节施工，不再回头改 PLAN.md。
+>
+> **前置依赖**（按编号顺序完成才能上 P1）：
+> 1. **P0-1 算子库**（`feat/factor-operators`）—— 提供 `cs_zscore` / `cs_winsorize`
+> 2. **P0-2 Barra 风险模型**（待 P0-1 merge 后开 worktree）—— 提供 7 个一级 Barra 因子 + 统一中性化 pipeline
+> 3. **P0-3 交易日历**（`feat/trade-calendar`）—— 提供 `is_week_first` / `is_month_first` 等列
+> 4. rd-agent 框架（`agents/rdagent/`）—— 提供 step6/7 重试时的决策能力
+
+### A.0 总览
+
+```
+step1: 计算 raw 因子值（截面缺失率筛）
+  ↓
+step2: 应用统一 Barra 中性化（OLS 取残差） → 与已入库因子做相关性检查
+  ↓
+step3: 离线 IC/ICIR/t/正IC占比 检查（日频 + 月频两套阈值）
+  ↓
+step4: 分 10 组检验单调性（Spearman 组号→收益）
+  ↓
+step5: 策略组装（默认 top10%, decay=5, universe=全A）
+  ↓
+step6: 简单回测（向量化）+ 必检阈值 → 失败回 step5，agent 改 decay/universe，最多 3 次
+  ↓
+step7: 详细回测（含分红/成本）+ 必检阈值 → 失败回 step5，agent 改 decay/universe，最多 3 次
+  ↓
+step8: 与剩余 6 个一级 Barra 因子做 Ridge Regression，按 R² 分流入库
+  ↓
+step9: admit + 写 meta + 自动生成 markdown 报告
+```
+
+**重试上限**：step6/7 各最多 3 次。每次 agent 拿到失败指标后选择 (a) 改 `decay` (1/3/5/10) (b) 改 `universe` (全A / 沪深 300 / 中证 500 / 中证 1000) (c) 改 `selection.top_pct` (5% / 10% / 20%)，组合空间不超过 12 种，3 次重试通常足以覆盖代表性配置。
+
+### A.1 step1：因子原始值计算
+
+**通过标准（按因子类型分场景）**：
+
+| 因子类型 | 截面缺失率上限 |
+|---|---|
+| 量价因子（用 `market_daily`） | < 10% |
+| 财务因子（用 `income_q` / `balancesheet_q` / `cashflow_q`） | < 30% |
+
+**测度**：每日截面 = `(NaN 股票数 / universe 内全部股票数)`，取时序平均。
+
+**不通过 → 直接 reject**，不进入 step2。
+
+### A.2 step2：统一中性化 + 与已有因子相关性
+
+**中性化 pipeline**（详见 `backtest/factor/DESIGN.md` 的 P0-2 节，PLAN.md §2.2）：
+
+```
+1. cs_winsorize(raw, k=3, mad_const=1.4826)    -- MAD 去极值，median ± 3·1.4826·MAD clip
+2. 申万一级行业截面中位数填充               -- get_industry_panel_range(level='L1')
+3. cs_zscore                                     -- 截面标准化
+4. OLS: factor ~ industry_dummies + size_z      -- 截面回归，size_z = cs_zscore(log(circ_mv))
+5. 取残差，cs_zscore 再标准化                    -- 得到 'neutral' variant
+```
+
+**通过标准**：
+
+| 测度 | 阈值 | 用途 |
+|---|---|---|
+| 与 size 的 Pearson corr | \|corr\| < 0.05 | 验中性化是否成功（截面 Pearson 日均，取 abs） |
+| 与 industry dummies 的 Pearson corr（任一行业） | \|corr\| < 0.05 | 同上 |
+| 与 library 已入库因子的最大 Pearson corr | max\|corr\| < 0.5 | 拒绝重复因子 |
+
+**所有相关性测度统一定义**：取每日截面 Pearson 相关系数序列，再取时序均值，最后取绝对值。
+
+不通过 → reject。
+
+### A.3 step3：离线 IC / ICIR
+
+**年化 ICIR 公式**：
+
+$$\text{ICIR}_{\text{ann}} = \frac{\mu(\text{IC})}{\sigma(\text{IC})} \cdot \sqrt{\frac{252}{h}}$$
+
+$h$ 为预测周期（日频 = 1 或 5，月频 = 21）。
+
+**日频阈值（1D 和 5D 任一通过即可）**：
+
+| 指标 | 阈值 | 说明 |
+|---|---|---|
+| \|IC\| | > 0.01 | 截面 Pearson 日均 |
+| 年化 ICIR | > 1.0 | 上式 |
+| t-stat | > 2.0 | `IC_mean / (IC_std / √n)` |
+| 正 IC 占比 | > 55% | |
+
+**月频阈值（h=21，单套）**：
+
+| 指标 | 阈值 |
+|---|---|
+| \|IC\| | > 0.03 |
+| 年化 ICIR | > 0.8 |
+| t-stat | > 2.5 |
+| 正 IC 占比 | > 65% |
+
+**任一指标不达标 → reject**。日频两套指标按 1D 与 5D 分别评估，对应高频与中频因子，任一通过即可。
+
+### A.4 step4：分 10 组单调性
+
+**测度**：Spearman corr(组号 1~10, 各组年化收益率)。
+
+**通过标准**：单调性 > 0.7。
+
+不通过 → reject。
+
+### A.5 step5：策略组装
+
+**默认配置**：
+
+```yaml
+selection:
+  method: topk
+  top_pct: 0.10       # top 10%
+decay: 5              # 日频因子；月频因子可设 None
+universe:
+  index_members: null # 默认全 A；可选 000300/000905/000852/932000
+rebalance_freq: 1D    # 日频；月频因子用 1M
+delay: 1
+```
+
+**月频因子例外**：`rebalance_freq=1M`，`decay=None`。
+
+### A.6 step6：简单回测（向量化）+ 必检阈值
+
+| 指标 | 阈值（日频） | 阈值（月频） |
+|---|---|---|
+| Sharpe | > 0.8 | > 1.0 |
+| 年化收益 | > 10% | > 10% |
+| 最大回撤 | < 30% | < 30% |
+| Calmar | > 0.5 | > 0.5 |
+| 年化双边换手率 | < 20 倍 | < 20 倍 |
+
+**全部通过 → step7**；任一不通过 → 回 step5。
+
+**重试机制（最多 3 次）**：
+1. agent 读取本次失败指标（哪些通过、哪些差多少）
+2. agent 决策：调整 `decay` ∈ {1, 3, 5, 10} / `universe` ∈ {全A, 000300, 000905, 000852} / `top_pct` ∈ {0.05, 0.10, 0.20} 中的某一项
+3. 重跑 step5 → step6
+4. 第 3 次仍不通过 → reject
+
+### A.7 step7：详细回测（含分红、摩擦成本）+ 必检阈值
+
+| 指标 | 阈值（日频） | 阈值（月频） |
+|---|---|---|
+| Sharpe | > 0.4 | > 0.6 |
+| 年化收益 | > 8% | > 8% |
+| 最大回撤 | < 30% | < 30% |
+| Calmar | > 0.5 | > 0.5 |
+| 年化双边换手率 | < 20 倍 | < 20 倍 |
+
+**全部通过 → step8**；任一不通过 → 同 step6 重试机制（独立计数，最多 3 次）。
+
+### A.8 step8：Ridge Regression 入库分流
+
+**回归设置**：
+
+- 因变量：候选因子（`neutral` variant 时序值）
+- 自变量：剩余 6 个一级 Barra 因子（**不含** Size 和 Industry，二者已在 step2 中性化中扣除），即 Beta / Momentum / Value / Quality / Liquidity / Growth 的 `raw` variant
+- 时序长度：候选因子可用全部交易日
+- 正则化：Ridge，α 用默认 1.0（或 CV 选）
+
+**R² 分层规则**：
+
+| R² 区间 | 分类 | 入库 |
+|---|---|---|
+| `R² < 0.10` | **pure_alpha** | 直接入库 |
+| `0.10 ≤ R² < 0.50` | **smart_beta** | 直接入库 |
+| `0.50 ≤ R² < 0.80` | **edge_smart_beta** | 需对 Ridge 残差再算 ICIR（日频 > 1.0 / 月频 > 0.8）才入库 |
+| `R² ≥ 0.80` | **reject** | 视为现有风格因子复制品，丢弃 |
+
+**因子库按频率分库**：日频因子库 / 月频因子库（在 `registry.json` 的 meta 中加 `frequency` 字段区分）。
+
+### A.9 step9：操作入库 + 生成报告
+
+**入库**：
+1. 把候选因子从 work DB 迁移到 library DB（同现有 `admit()` 机制）
+2. 在 `registry.json` 中写入 meta：
+   - `tier` ∈ {pure_alpha, smart_beta, edge_smart_beta}
+   - `r2_vs_barra`：Ridge R²
+   - `frequency` ∈ {daily, monthly}
+   - `pipeline_config`：step5~step7 最终通过时的策略配置（含重试历史中的 decay / universe / top_pct）
+   - `detailed_metrics`：每一阶段的完整指标字典
+   - `pass_history`：step1~step8 每步的输入指标 + 通过情况
+
+**自动生成 markdown 报告** `results/<factor_id>/pipeline_report_v2.md`，包含：
+
+```
+# 因子报告：f_xxx
+
+## 1. 因子设计思路
+- 表达式：...
+- 数据源：...
+- 设计动机：...
+
+## 2. 入库判定
+- 分类：smart_beta
+- Ridge R²：0.34（vs 6 Barra 一级因子）
+- 频率：daily
+
+## 3. 各 step 通过情况
+| step | 指标 | 阈值 | 实际 | 通过 |
+|---|---|---|---|---|
+| 1 | 缺失率 | < 10% | 4.2% | ✓ |
+| 2 | 与 size corr | < 0.05 | 0.02 | ✓ |
+| 2 | 与 library max corr | < 0.5 | 0.31 | ✓ |
+| 3 | ICIR 1D | > 1.0 | 1.24 | ✓ |
+| ...
+
+## 4. 简单回测
+- 最终配置：top 10%, decay 5, universe 全A
+- 重试次数：1
+- Sharpe / 年化 / MDD / Calmar / 换手：...
+
+## 5. 详细回测
+- 同上...
+
+## 6. Ridge 暴露分析
+- 与 6 个 Barra 因子的回归系数 + R²
+```
+
+报告与现有 `pipeline_report.md`（手动模式产出）并存：手动模式产 v1，自动 pipeline 产 v2。
+
+### A.10 拒绝处理
+
+任一 step 不通过 → 自动 reject 操作：
+1. 清空 work DB 中该因子的全部 variant 数据
+2. 删除 `results/<factor_id>/` 目录下本次产生的所有文件，保持目录与因子库整洁
+3. `registry.json` 更新 `status="rejected"`，meta 中记录 `reject_reason`（哪个 step 哪个指标失败）
+
+### A.11 阈值调整原则
+
+PLAN.md §4 备注 2：「对于每一步的阈值，有意见可以商量重定。」本附录的阈值定稿后写入 `backtest/factor/admission.py` 的常量 `P1_PIPELINE_THRESHOLDS`，调整需走 PR。
+
+### A.12 未来扩展（不在本期 P1 范围）
+
+- **OOS / IS 切分**：IS 70% + OOS 30%，要求 OOS IC 衰减 < 30% 才能入 step8。已记入 TODO P3「因子挖掘 pipeline 第二阶段」。
+- **多 universe 稳健性**：step7 同时跑全A / 沪深300 / 中证500，至少 2 个通过阈值。同样在 P3。
+
+---
+
+## 附录 B：与第 1~8 章手动流程的关系
+
+| 当前手动流程 | P1 自动化对应 |
+|---|---|
+| 第 1 章 构建因子 | step1（自动跑 + 缺失率检查） |
+| 第 2 章 回填 | step1 内部完成 |
+| 第 3 章 离线评测 + RECOMMENDED_THRESHOLDS | step2（中性化 + corr）+ step3（IC/ICIR） |
+| 第 3.4 节 十段分层回测 | step4 |
+| 第 4 章 策略组装 | step5（默认配置 + agent 重试中可改） |
+| 第 5 章 简单回测 | step6（+ 必检阈值 gate） |
+| 第 6 章 详细回测 | step7（+ 必检阈值 gate） |
+| 第 7 章 回测评测 | 内嵌在 step6/step7 中 |
+| 第 8 章 人工 admit/reject | step8（Ridge R² 自动分流）+ step9（自动 admit + 报告） |
+
+P1 落地后，手动模式仍保留作为 fallback（调试新算子时手动跑各阶段比走完整 pipeline 快）。`admit()` / `reject()` CLI 不删除，但日常入库走自动 pipeline。
