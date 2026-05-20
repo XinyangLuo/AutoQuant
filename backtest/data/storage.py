@@ -286,6 +286,26 @@ CREATE TABLE IF NOT EXISTS index_members (
 )
 """
 
+# ---------------------------------------------------------------------------
+# Schema: trade_calendar (交易日历,含周/月首末预计算标志)
+# ---------------------------------------------------------------------------
+
+TRADE_CALENDAR_SCHEMA = """
+CREATE TABLE IF NOT EXISTS trade_calendar (
+    cal_date       DATE PRIMARY KEY,
+    is_open        BOOLEAN NOT NULL,
+    is_week_first  BOOLEAN NOT NULL,
+    is_week_last   BOOLEAN NOT NULL,
+    is_month_first BOOLEAN NOT NULL,
+    is_month_last  BOOLEAN NOT NULL
+)
+"""
+
+TRADE_CALENDAR_COLUMNS = [
+    "cal_date", "is_open", "is_week_first",
+    "is_week_last", "is_month_first", "is_month_last",
+]
+
 
 class MarketStorage:
     """DuckDB storage for market_daily, fundamental tables, and dividends."""
@@ -305,6 +325,7 @@ class MarketStorage:
         self.conn.execute(INDEX_DAILY_SCHEMA)
         self.conn.execute(SW_INDUSTRY_SCHEMA)
         self.conn.execute(INDEX_MEMBERS_SCHEMA)
+        self.conn.execute(TRADE_CALENDAR_SCHEMA)
         self._add_double_columns("market_daily", DAILY_COLUMNS[2:])
         self._add_double_columns("income_q", INCOME_NUMERIC)
         self._add_double_columns("balancesheet_q", BALANCESHEET_NUMERIC)
@@ -888,6 +909,99 @@ class MarketStorage:
             "MIN(trade_date) AS min_date, MAX(trade_date) AS max_date "
             "FROM index_members GROUP BY index_code ORDER BY index_code"
         ).fetchdf()
+
+    # -- trade_calendar -------------------------------------------------------
+
+    def get_max_cal_date(self) -> str | None:
+        """Return max cal_date in trade_calendar as YYYYMMDD, or None if empty."""
+        result = self.conn.execute(
+            "SELECT MAX(cal_date) FROM trade_calendar"
+        ).fetchone()
+        if result[0]:
+            return result[0].strftime("%Y%m%d")
+        return None
+
+    def get_trade_dates_from_db(self, start: str, end: str) -> list[str]:
+        """Return open trade dates in [start, end] from trade_calendar."""
+        rows = self.conn.execute(
+            "SELECT cal_date FROM trade_calendar "
+            "WHERE is_open = true "
+            "  AND cal_date >= strptime(?, '%Y%m%d')::DATE "
+            "  AND cal_date <= strptime(?, '%Y%m%d')::DATE "
+            "ORDER BY cal_date",
+            [start, end],
+        ).fetchall()
+        return [r[0].strftime("%Y%m%d") for r in rows]
+
+    def get_rebalance_dates_from_db(self, start: str, end: str, freq: str) -> list[str]:
+        """Return rebalancing dates in [start, end] for given frequency.
+
+        Parameters
+        ----------
+        start, end : str
+            YYYYMMDD bounds.
+        freq : str
+            ``"1D"``, ``"5D"``, ``"1W"``, ``"2W"``, ``"1M"``, ``"EOM"``.
+        """
+        if freq == "1D":
+            return self.get_trade_dates_from_db(start, end)
+
+        if freq == "5D":
+            dates = self.get_trade_dates_from_db(start, end)
+            return dates[::5]
+
+        if freq == "1W":
+            sql = (
+                "SELECT cal_date FROM trade_calendar "
+                "WHERE is_open = true AND is_week_first = true "
+                "  AND cal_date >= strptime(?, '%Y%m%d')::DATE "
+                "  AND cal_date <= strptime(?, '%Y%m%d')::DATE "
+                "ORDER BY cal_date"
+            )
+        elif freq == "2W":
+            sql = (
+                "SELECT cal_date FROM trade_calendar "
+                "WHERE is_open = true AND is_week_first = true "
+                "  AND cal_date >= strptime(?, '%Y%m%d')::DATE "
+                "  AND cal_date <= strptime(?, '%Y%m%d')::DATE "
+                "ORDER BY cal_date"
+            )
+        elif freq == "1M":
+            sql = (
+                "SELECT cal_date FROM trade_calendar "
+                "WHERE is_open = true AND is_month_first = true "
+                "  AND cal_date >= strptime(?, '%Y%m%d')::DATE "
+                "  AND cal_date <= strptime(?, '%Y%m%d')::DATE "
+                "ORDER BY cal_date"
+            )
+        elif freq == "EOM":
+            sql = (
+                "SELECT cal_date FROM trade_calendar "
+                "WHERE is_open = true AND is_month_last = true "
+                "  AND cal_date >= strptime(?, '%Y%m%d')::DATE "
+                "  AND cal_date <= strptime(?, '%Y%m%d')::DATE "
+                "ORDER BY cal_date"
+            )
+        else:
+            raise ValueError(f"Unknown rebalance frequency: {freq}")
+
+        rows = self.conn.execute(sql, [start, end]).fetchall()
+        dates = [r[0] for r in rows]
+
+        if freq == "2W":
+            # 取 ISO 周号为偶数的周
+            return [d.strftime("%Y%m%d") for d in dates if d.isocalendar()[1] % 2 == 0]
+
+        return [d.strftime("%Y%m%d") for d in dates]
+
+    def insert_trade_calendar(self, df: pd.DataFrame):
+        """UPSERT trade calendar rows."""
+        self._upsert(
+            df,
+            table="trade_calendar",
+            pk_cols=("cal_date",),
+            schema_cols=TRADE_CALENDAR_COLUMNS,
+        )
 
     def get_trade_dates_in_db(self, start: str, end: str) -> list:
         """市场实际交易日(``market_daily.date``)在 [start, end] 内的升序列表。

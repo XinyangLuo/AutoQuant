@@ -29,6 +29,7 @@ from backtest.data.fundamentals_fetcher import (
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
+from backtest.data.backfill_trade_calendar import backfill_trade_calendar
 
 
 def _next_day(yyyymmdd: str) -> str:
@@ -108,6 +109,19 @@ def main():
     print(f"Stock list: {len(stock_list)} stocks")
 
     with MarketStorage() as storage:
+        print("\n=== Phase 0: trade_calendar ===")
+        max_cal = storage.get_max_cal_date()
+        today = datetime.now().strftime("%Y%m%d")
+        if max_cal:
+            cal_start = _next_day(max_cal)
+        else:
+            cal_start = stock_list["list_date"].min()
+        if cal_start <= today:
+            n_cal = backfill_trade_calendar(start_date=cal_start, end_date=today)
+            print(f"  trade_calendar: updated {n_cal:,} rows ({cal_start} ~ {today})")
+        else:
+            print("  trade_calendar: already up to date.")
+
         print("\n=== Phase 1: market_daily ===")
         update_market_daily(storage, stock_list=stock_list)
 

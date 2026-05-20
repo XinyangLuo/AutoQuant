@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 
 from backtest.data.storage import MarketStorage
-from backtest.data.trade_calendar import get_trade_dates
+from backtest.data.trade_calendar import get_rebalance_dates, get_trade_dates
 from backtest.factor.storage import FactorStorage
 from backtest.strategy.config import StrategyConfig
 from backtest.strategy.universe import UniverseFilter
@@ -17,92 +17,6 @@ from backtest.strategy.weight import WeightAllocator
 
 if TYPE_CHECKING:
     pass
-
-
-def _get_rebalance_dates(
-    start_date: str,
-    end_date: str,
-    freq: str,
-) -> list[str]:
-    """Generate rebalancing trade dates from a frequency code.
-
-    Parameters
-    ----------
-    start_date, end_date : str
-        YYYYMMDD bounds.
-    freq : str
-        ``"1D"``, ``"5D"``, ``"1W"``, ``"2W"``, ``"1M"``, ``"EOM"``.
-
-    Returns
-    -------
-    list[str]
-        Sorted list of YYYYMMDD rebalancing dates.
-    """
-    trade_dates = get_trade_dates(start_date, end_date)
-    if not trade_dates:
-        return []
-
-    if freq == "1D":
-        return trade_dates
-
-    rebalance_dates: list[str] = []
-
-    if freq == "5D":
-        rebalance_dates = trade_dates[::5]
-
-    elif freq == "1W":
-        # First trade day of each week
-        for i, d in enumerate(trade_dates):
-            if i == 0:
-                rebalance_dates.append(d)
-            else:
-                prev_dt = pd.Timestamp(trade_dates[i - 1])
-                curr_dt = pd.Timestamp(d)
-                if curr_dt.isocalendar()[1] != prev_dt.isocalendar()[1]:
-                    rebalance_dates.append(d)
-
-    elif freq == "2W":
-        # Every other week's first trade day
-        week_groups: list[list[str]] = []
-        current_week: list[str] = [trade_dates[0]]
-        for d in trade_dates[1:]:
-            curr_dt = pd.Timestamp(d)
-            prev_dt = pd.Timestamp(current_week[-1])
-            if curr_dt.isocalendar()[1] != prev_dt.isocalendar()[1]:
-                week_groups.append(current_week)
-                current_week = [d]
-            else:
-                current_week.append(d)
-        if current_week:
-            week_groups.append(current_week)
-        rebalance_dates = [g[0] for g in week_groups[::2]]
-
-    elif freq == "1M":
-        # First trade day of each month
-        for i, d in enumerate(trade_dates):
-            if i == 0:
-                rebalance_dates.append(d)
-            else:
-                prev_dt = pd.Timestamp(trade_dates[i - 1])
-                curr_dt = pd.Timestamp(d)
-                if curr_dt.month != prev_dt.month:
-                    rebalance_dates.append(d)
-
-    elif freq == "EOM":
-        # Last trade day of each month
-        for i, d in enumerate(trade_dates):
-            if i == len(trade_dates) - 1:
-                rebalance_dates.append(d)
-            else:
-                next_dt = pd.Timestamp(trade_dates[i + 1])
-                curr_dt = pd.Timestamp(d)
-                if next_dt.month != curr_dt.month:
-                    rebalance_dates.append(d)
-
-    else:
-        raise ValueError(f"Unknown rebalance frequency: {freq}")
-
-    return rebalance_dates
 
 
 class StrategyBase(ABC):
@@ -189,7 +103,7 @@ class StrategyBase(ABC):
                          "is_st", "list_date", "limit_up", "limit_down"],
             )
 
-            rebalance_dates = _get_rebalance_dates(
+            rebalance_dates = get_rebalance_dates(
                 start_date, end_date, self.config.rebalance_freq
             )
 

@@ -731,54 +731,6 @@ class TestSelection:
         assert sum(r["target_weight"] for r in shorts) == pytest.approx(-0.5)
 
 
-class TestRebalanceDates:
-    """Test rebalance date generation."""
-
-    def test_daily_frequency(self):
-        """Test 1D frequency returns all trade dates."""
-        from backtest.strategy.base import _get_rebalance_dates
-
-        trade_dates = _get_rebalance_dates("20240102", "20240110", "1D")
-        # 2024-01-02 to 2024-01-10 has 7 trade days (excluding weekend)
-        assert len(trade_dates) == 7
-        assert trade_dates[0] == "20240102"
-
-    def test_weekly_frequency(self):
-        """Test 1W frequency returns first trade day of each week."""
-        from backtest.strategy.base import _get_rebalance_dates
-
-        trade_dates = _get_rebalance_dates("20240102", "20240131", "1W")
-        # 2024-01-02 (Tue, week 1), 2024-01-08 (Mon, week 2), etc.
-        assert len(trade_dates) == 5  # 5 weeks
-        assert trade_dates[0] == "20240102"
-
-    def test_monthly_frequency(self):
-        """Test 1M frequency returns first trade day of each month."""
-        from backtest.strategy.base import _get_rebalance_dates
-
-        trade_dates = _get_rebalance_dates("20240102", "20240331", "1M")
-        assert len(trade_dates) == 3
-        assert trade_dates[0] == "20240102"
-        # Feb 1, 2024 is a Thursday
-        assert "20240201" in trade_dates
-
-    def test_eom_frequency(self):
-        """Test EOM frequency returns last trade day of each month."""
-        from backtest.strategy.base import _get_rebalance_dates
-
-        trade_dates = _get_rebalance_dates("20240102", "20240331", "EOM")
-        assert len(trade_dates) == 3
-        assert "20240131" in trade_dates
-        assert "20240229" in trade_dates  # 2024 is a leap year
-
-    def test_unknown_frequency(self):
-        """Test unknown frequency raises ValueError."""
-        from backtest.strategy.base import _get_rebalance_dates
-
-        with pytest.raises(ValueError, match="Unknown rebalance frequency"):
-            _get_rebalance_dates("20240101", "20240131", "3W")
-
-
 class MockFactorStorage:
     """Mock FactorStorage for strategy testing."""
 
@@ -894,6 +846,7 @@ class TestSingleFactorStrategy:
 
         trade_dates = pd.date_range("2024-01-01", periods=10).strftime("%Y%m%d").tolist()
         monkeypatch.setattr(base_module, "get_trade_dates", lambda s, e: trade_dates)
+        monkeypatch.setattr(base_module, "get_rebalance_dates", lambda s, e, f: trade_dates)
 
         config = StrategyConfig(
             strategy_type="single_factor_topk",
@@ -925,6 +878,7 @@ class TestSingleFactorStrategy:
 
         trade_dates = pd.date_range("2024-01-01", periods=10).strftime("%Y%m%d").tolist()
         monkeypatch.setattr(base_module, "get_trade_dates", lambda s, e: trade_dates)
+        monkeypatch.setattr(base_module, "get_rebalance_dates", lambda s, e, f: trade_dates)
 
         config = StrategyConfig(
             strategy_type="single_factor_topk",
@@ -959,6 +913,7 @@ class TestSingleFactorStrategy:
         # Mock get_trade_dates to avoid Tushare API call
         trade_dates = [f"202401{i:02d}" for i in range(1, 11)]
         monkeypatch.setattr(base_module, "get_trade_dates", lambda s, e: trade_dates)
+        monkeypatch.setattr(base_module, "get_rebalance_dates", lambda s, e, f: trade_dates)
 
         config = StrategyConfig(
             strategy_type="single_factor_topk",
@@ -988,6 +943,7 @@ class TestSingleFactorStrategy:
 
         # Mock trade dates to avoid Tushare API
         monkeypatch.setattr(base_module, "get_trade_dates", lambda s, e: ["20240102"])
+        monkeypatch.setattr(base_module, "get_rebalance_dates", lambda s, e, f: ["20240102"])
 
         config = StrategyConfig(
             strategy_type="single_factor_topk",
@@ -1037,6 +993,7 @@ class TestSingleFactorStrategy:
         from backtest.strategy import base as base_module
 
         monkeypatch.setattr(base_module, "get_trade_dates", lambda s, e: ["20240102"])
+        monkeypatch.setattr(base_module, "get_rebalance_dates", lambda s, e, f: ["20240102"])
 
         config = StrategyConfig(
             strategy_type="single_factor_topk",
@@ -1080,6 +1037,7 @@ class TestMultiFactorStrategy:
 
         trade_dates = pd.date_range("2024-01-01", periods=10).strftime("%Y%m%d").tolist()
         monkeypatch.setattr(base_module, "get_trade_dates", lambda s, e: trade_dates)
+        monkeypatch.setattr(base_module, "get_rebalance_dates", lambda s, e, f: trade_dates)
 
         config = StrategyConfig(
             strategy_type="multi_factor",

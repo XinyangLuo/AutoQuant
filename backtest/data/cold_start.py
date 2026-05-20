@@ -24,6 +24,7 @@ from tqdm import tqdm
 from backtest.data._pipeline import print_stats
 from backtest.data.backfill_dividends import backfill_dividends
 from backtest.data.backfill_fundamentals import backfill_fundamentals
+from backtest.data.backfill_trade_calendar import backfill_trade_calendar
 from backtest.data.daily_fetcher import build_list_date_map, process_trade_date
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
@@ -88,6 +89,15 @@ def main():
     stock_list = fetch_stock_list()
 
     with MarketStorage() as storage:
+        print("\n=== Phase 0: trade_calendar ===")
+        today = datetime.now().strftime("%Y%m%d")
+        earliest_list_date = stock_list["list_date"].min()
+        n_cal = backfill_trade_calendar(
+            start_date=earliest_list_date,
+            end_date=today,
+        )
+        print(f"  trade_calendar: {n_cal:,} rows ({earliest_list_date} ~ {today})")
+
         print("\n=== Phase 1: market_daily ===")
         cold_start_market_daily(storage, stock_list=stock_list, recent_days=args.recent_days)
 

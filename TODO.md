@@ -21,10 +21,6 @@
 - [ ] 因子中性化：因子 ~ 行业哑变量 + Size_z 截面 OLS，取残差再标准化，替代原分层中性化（PLAN.md §2.2）
 - [ ] 入库检查：与剩余 6 个一级因子 Ridge Regression，按 R² 判 pure alpha / smart beta（PLAN.md §2.3）
 
-### 交易日历（`backtest/data` + `backtest/strategy` + `backtest/simulation`）
-
-- [ ] 表记下周/月第一个交易日，支撑周频/月频因子策略调仓。详见 PLAN.md §3。
-
 ## P1
 
 ### 因子挖掘流程优化（依赖 P0，配合 rd agent）
