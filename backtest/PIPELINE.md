@@ -62,7 +62,7 @@ data/duckdb/factor_library.duckdb  ← 稳定库 (FactorLibrary)
 conda activate AutoQuant
 
 # 1. 写因子代码（手工） + 装饰器注册
-$EDITOR backtest/factor/user/my_factor.py
+$EDITOR alphas/my_factor.py
 
 # 2. 回填因子值到 work DB
 python -m backtest.factor.backfill f_xxx                 # 全历史
@@ -106,7 +106,7 @@ python -m backtest.factor.update                         # 增量更新 library 
 ### 1.1 注册装饰器
 
 ```python
-# backtest/factor/user/my_factor.py
+# alphas/my_factor.py
 from backtest.factor.registry import register
 from backtest.factor.transforms import rank, z_score
 
@@ -714,7 +714,7 @@ python -m backtest.factor.update      # 把所有 admitted 因子追平到最新
 
 "高反转 + 高换手 → 可能超买、未来跑输。负向因子。"
 
-### Step 1：写代码（`backtest/factor/user/reversal.py` 已有 `f_rev_05`）
+### Step 1：写代码（`alphas/reversal.py` 已有 `f_rev_05`）
 
 ```python
 @register("f_rev_05", name="reversal_zscore_combo", category="reversal",

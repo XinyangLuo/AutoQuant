@@ -253,3 +253,32 @@ signals_df = strategy.run(start, end)
 
 - [ ] 指数成分股过滤：待 `index_members` 表落地后，在 `universe.py` 中接入
 - [ ] CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`
+
+---
+
+# P0 实施计划
+
+## P0-3: 交易日历表（策略模块部分）
+
+### 目标
+把 `base.py:_get_rebalance_dates`（22~105 行）运行时算的 ISO 周 / month 边界逻辑，下沉到 data 模块的 `trade_calendar` 表 + 预计算布尔列。
+
+### 现状
+`base.py:22-105` 函数 `_get_rebalance_dates(start, end, freq)` 实现 `1D / 5D / 1W / 2W / 1M / EOM`，每次调 `get_trade_dates()` 拿全交易日后用 `pd.Timestamp(d).isocalendar()[1]` / `.month` 判定边界。
+
+### 改造
+1. 删除 `base.py:22-105` 的本地实现
+2. 改为 `from backtest.data.trade_calendar import get_rebalance_dates`
+3. `StrategyBase.run()` 内部一行调用：`rebalance_dates = get_rebalance_dates(start, end, self.config.rebalance_freq)`
+
+### 接口契约（不变）
+- 输入：`StrategyConfig.rebalance_freq` ∈ {`1D`, `5D`, `1W`, `2W`, `1M`, `EOM`}
+- 返回 `list[str]`（`YYYYMMDD` 格式）
+- 信号 DataFrame schema 完全不变，下游 simulation 引擎无感知
+
+### 完成标准
+- [ ] `base.py:_get_rebalance_dates` 删除
+- [ ] 测试场景：2024 全年 + `freq='1M'` → 12 个日期，且每个都是当月首个交易日（人工对 1 月 / 2 月春节假后那段做 sanity check）
+- [ ] 现有 single_factor / multi_factor 策略不需要任何改动（接口不变）
+
+依赖：data 模块的 P0-3 部分先落地（`trade_calendar` 表 + `get_rebalance_dates` 函数）。

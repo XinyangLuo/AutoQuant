@@ -65,9 +65,14 @@ from backtest.factor.storage import (
 )
 from backtest.factor.transforms import cap_neutralize, industry_neutralize, rank, ts_mean, ts_rank, ts_std, z_score
 
-# Import user-defined factors so their @register decorators run on package
-# load — keeps the registry populated for backfill / evaluate / pipeline.
-from backtest.factor import user  # noqa: F401, E402
+# Import top-level alphas package (private, gitignored) so its
+# @register decorators run on package load — keeps the registry
+# populated for backfill / evaluate / pipeline. If alphas/ is
+# missing (e.g. fresh clone before user adds factors), skip silently.
+try:
+    import alphas  # noqa: F401, E402
+except ImportError:
+    pass
 
 __all__ = [
     "register",

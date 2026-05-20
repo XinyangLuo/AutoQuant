@@ -175,3 +175,33 @@ result.save("results/<factor_id>/<variant>/<tag>/detailed/")
 - [ ] T+1 交割制度（当前假设当日可完成全部调仓）
 - [ ] Benchmark 支持（数据模块需先支持指数行情）
 - [ ] 详细评测（归因、分层等）留给 analysis 模块
+
+---
+
+# P0 实施计划
+
+## P0-3: 交易日历表（simulation 模块部分）
+
+### 结论：**引擎无需改动**
+
+`detailed.py:194-277` 已按"信号即真相"驱动：
+
+```python
+dates = sorted(set(bar_by_date.keys()))   # 遍历所有交易日
+for date_str in dates:
+    sig_df = signal_by_date.get(date_str)
+    if sig_df is not None:                # 仅当当天有信号时调仓
+        _rebalance(...)
+```
+
+策略层把 `rebalance_freq='1M'` 转换为「仅在每月首个交易日有 target_weight 行」的 signals DataFrame，引擎自动只在那些日期触发 `_rebalance`，其余交易日只跑分红 + 净值更新。SimpleSimulator 同理。
+
+### 契约（文档化即可，无代码变更）
+- **策略产出的 signals.date 列**是真相：哪天没行就不调仓
+- **引擎不感知 rebalance_freq**：无论日频/周频/月频，引擎逻辑完全一致
+- 7d13ad8 commit 修过的 prior-day NAV 计算（rebalance 前用上一日收盘市值定 size，rebalance 后再用今日收盘更新）在所有频率下都成立
+
+### 完成标准
+- [ ] 跑一个 `freq='1M'` 的回测，确认 `trades.parquet` 仅在每月首个交易日有行
+- [ ] 同因子同 universe，对比 `freq='1D'` vs `freq='1M'`，确认换手率显著下降（应该 ~1/20）
+- [ ] 把上述「契约」一段并入正文「关键设计原则」节，删除本 P0 节
