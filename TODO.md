@@ -21,6 +21,7 @@ python -m backtest.factor.pipeline run-all f_001 --start 20160101 --end 20251231
 
 **已完成**：
 - [x] 单元测试 30 个（config/state/helpers/step1/step5/thresholds）
+- [x] Code review 修复（`c6fd0f0`）：删除重复函数、step3/4 eval 缓存、step6/7 提取共享 helper、step1 N+1 批量查询、硬编码阈值常量化、cleanup 顺序
 
 **待完成**：
 - [ ] 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
