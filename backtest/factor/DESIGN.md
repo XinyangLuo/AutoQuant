@@ -25,13 +25,6 @@ backtest/factor/
 ├── evaluation.py            # 离线评测: IC/RankIC/ICIR/turnover/decay/corr
 ├── admission.py             # admit / reject / status —— 看完报告后人工触发
 ├── cleanup.py               # 清 work DB 临时数据
-├── pipeline/                # 因子挖掘流水线 step1~step9（详见 pipeline/DESIGN.md）
-│   ├── config.py
-│   ├── state.py
-│   ├── steps.py
-│   ├── _report.py
-│   ├── _cleanup.py
-│   └── __main__.py
 └── builtin/                 # 引擎自带的结构性因子（Barra 风险模型）
     ├── __init__.py
     └── barra/               # Barra 风格因子
@@ -231,10 +224,10 @@ corr 比较在 **同 variant 内** 进行（候选与 library 因子都各自读
 ### 3. Pipeline driver（推荐，step1~step9 带淘汰门控）
 
 ```bash
-python -m backtest.factor.pipeline init f_001 \
+python -m backtest.pipeline init f_001 \
     --start 20210101 --end 20241231 --frequency D
 
-python -m backtest.factor.pipeline run-all f_001
+python -m backtest.pipeline run-all f_001
 ```
 
 逐 step 执行，任一 step 失败即停并清理产物。详见 `pipeline/DESIGN.md`。

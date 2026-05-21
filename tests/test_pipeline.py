@@ -11,10 +11,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from backtest.factor.pipeline.config import PipelineConfig, StepThresholds
-from backtest.factor.pipeline.state import PipelineState, StepResult
+from backtest.pipeline.config import PipelineConfig, StepThresholds
+from backtest.pipeline.state import PipelineState, StepResult
 from backtest.factor.evaluation import _ic_series, _rank_ic_series
-from backtest.factor.pipeline.steps import (
+from backtest.pipeline.steps import (
     _build_tag,
     step1_coverage_check,
     step5_build_strategy,
@@ -256,7 +256,7 @@ class TestStep1Coverage:
 
         # Mock get_factor_meta — price/volume factor
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.get_factor_meta",
+            "backtest.pipeline.steps.get_factor_meta",
             lambda _: {"data_sources": ["market_daily"]},
         )
 
@@ -267,7 +267,7 @@ class TestStep1Coverage:
         mock_fs.__enter__.return_value = mock_fs
         mock_fs.__exit__.return_value = False
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.FactorStorage",
+            "backtest.pipeline.steps.FactorStorage",
             lambda: mock_fs,
         )
 
@@ -283,7 +283,7 @@ class TestStep1Coverage:
         mock_ms.__enter__.return_value = mock_ms
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.MarketStorage",
+            "backtest.pipeline.steps.MarketStorage",
             lambda: mock_ms,
         )
 
@@ -300,7 +300,7 @@ class TestStep1Coverage:
         state = PipelineState(factor_id="f_test", config=cfg)
 
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.get_factor_meta",
+            "backtest.pipeline.steps.get_factor_meta",
             lambda _: {"data_sources": ["market_daily"]},
         )
 
@@ -310,7 +310,7 @@ class TestStep1Coverage:
         mock_fs.__enter__.return_value = mock_fs
         mock_fs.__exit__.return_value = False
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.FactorStorage",
+            "backtest.pipeline.steps.FactorStorage",
             lambda: mock_fs,
         )
 
@@ -325,7 +325,7 @@ class TestStep1Coverage:
         mock_ms.__enter__.return_value = mock_ms
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.MarketStorage",
+            "backtest.pipeline.steps.MarketStorage",
             lambda: mock_ms,
         )
 
@@ -342,7 +342,7 @@ class TestStep1Coverage:
         state = PipelineState(factor_id="f_test", config=cfg)
 
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.get_factor_meta",
+            "backtest.pipeline.steps.get_factor_meta",
             lambda _: {"data_sources": ["income_q"]},
         )
 
@@ -353,7 +353,7 @@ class TestStep1Coverage:
         mock_fs.__enter__.return_value = mock_fs
         mock_fs.__exit__.return_value = False
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.FactorStorage",
+            "backtest.pipeline.steps.FactorStorage",
             lambda: mock_fs,
         )
 
@@ -368,7 +368,7 @@ class TestStep1Coverage:
         mock_ms.__enter__.return_value = mock_ms
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(
-            "backtest.factor.pipeline.steps.MarketStorage",
+            "backtest.pipeline.steps.MarketStorage",
             lambda: mock_ms,
         )
 

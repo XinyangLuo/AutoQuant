@@ -10,7 +10,7 @@
 
 ## 设计原则
 
-1. **每步独立 CLI**：`python -m backtest.factor.pipeline step3 f_001`
+1. **每步独立 CLI**：`python -m backtest.pipeline step3 f_001`
 2. **State 落盘共享**：`results/<fid>/pipeline_state.json` 是全流程状态文件
 3. **统一返回码**：0=通过, 1=淘汰, 2=基础设施错误
 4. **stdout 输出 JSON**：方便 Agent 解析
@@ -33,29 +33,29 @@ backtest/factor/pipeline/
 
 ```bash
 # 初始化 state
-python -m backtest.factor.pipeline init f_001 \
+python -m backtest.pipeline init f_001 \
     --start 20160101 --end 20251231 --frequency D
 
 # 逐 step 执行
-python -m backtest.factor.pipeline step1 f_001   # coverage check
-python -m backtest.factor.pipeline step2 f_001   # neutralization verify
-python -m backtest.factor.pipeline step3 f_001   # ICIR gate
-python -m backtest.factor.pipeline step4 f_001   # monotonicity
-python -m backtest.factor.pipeline step5 f_001   # build strategy config
-python -m backtest.factor.pipeline step6 f_001   # simple backtest
-python -m backtest.factor.pipeline step7 f_001   # detailed backtest
-python -m backtest.factor.pipeline step8 f_001   # ridge r2
-python -m backtest.factor.pipeline step9 f_001   # report + admit
+python -m backtest.pipeline step1 f_001   # coverage check
+python -m backtest.pipeline step2 f_001   # neutralization verify
+python -m backtest.pipeline step3 f_001   # ICIR gate
+python -m backtest.pipeline step4 f_001   # monotonicity
+python -m backtest.pipeline step5 f_001   # build strategy config
+python -m backtest.pipeline step6 f_001   # simple backtest
+python -m backtest.pipeline step7 f_001   # detailed backtest
+python -m backtest.pipeline step8 f_001   # ridge r2
+python -m backtest.pipeline step9 f_001   # report + admit
 
 # 一键全跑
-python -m backtest.factor.pipeline run-all f_001 \
+python -m backtest.pipeline run-all f_001 \
     --start 20160101 --end 20251231 --frequency D
 
 # 从某 step 重跑
-python -m backtest.factor.pipeline run-all f_001 --from-step 5
+python -m backtest.pipeline run-all f_001 --from-step 5
 
 # step5 支持覆盖参数（retry 场景）
-python -m backtest.factor.pipeline step5 f_001 \
+python -m backtest.pipeline step5 f_001 \
     --top-pct 0.05 --decay 10 --universe 000300.SH
 ```
 
@@ -143,7 +143,7 @@ StepThresholds(
 
 仅 step6/step7 支持 retry。当 backtest 不通过时：
 1. Agent 分析失败原因，建议新参数（decay/universe/top_pct）
-2. 通过 `python -m backtest.factor.pipeline step5 f_001 --top-pct 0.05 --decay 10` 覆盖
+2. 通过 `python -m backtest.pipeline step5 f_001 --top-pct 0.05 --decay 10` 覆盖
 3. 重新跑 step6（最多 3 次）
 
 当前 `run-all` 中 retry 为 stub（确定性 fallback 规则），未来替换为 Agent 调用。
@@ -174,13 +174,13 @@ StepThresholds(
 ```python
 # Agent 伪代码
 for step in ["step1", "step2", ..., "step9"]:
-    result = run_cli(f"python -m backtest.factor.pipeline {step} {factor_id}")
+    result = run_cli(f"python -m backtest.pipeline {step} {factor_id}")
     state = json.load(f"results/{factor_id}/pipeline_state.json")
 
     if result.returncode == 1:  # rejected
         if step in ("step6", "step7") and state["retry_count"] < 3:
             suggestion = agent_analyze_and_suggest(state)
-            run_cli(f"python -m backtest.factor.pipeline step5 {factor_id} "
+            run_cli(f"python -m backtest.pipeline step5 {factor_id} "
                     f"--top-pct {suggestion['top_pct']} --decay {suggestion['decay']}")
             continue  # 重跑 step6
         else:

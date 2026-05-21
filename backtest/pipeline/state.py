@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from backtest.factor.pipeline.config import PipelineConfig, StepThresholds
+from backtest.pipeline.config import PipelineConfig, StepThresholds
 
 
 StepName = Literal[

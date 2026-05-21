@@ -732,7 +732,7 @@ def step9_report_and_admit(state: PipelineState) -> PipelineState:
     config = state.config
 
     # Generate report
-    from backtest.factor.pipeline._report import generate_pipeline_report
+    from backtest.pipeline._report import generate_pipeline_report
 
     report_path = generate_pipeline_report(state)
     state.artifacts["report"] = str(report_path)

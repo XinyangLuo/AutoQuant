@@ -2,20 +2,20 @@
 
 Usage::
 
-    python -m backtest.factor.pipeline init f_001 --start 20160101 --end 20251231
-    python -m backtest.factor.pipeline step1 f_001
-    python -m backtest.factor.pipeline step2 f_001
+    python -m backtest.pipeline init f_001 --start 20160101 --end 20251231
+    python -m backtest.pipeline step1 f_001
+    python -m backtest.pipeline step2 f_001
     ...
-    python -m backtest.factor.pipeline step9 f_001
+    python -m backtest.pipeline step9 f_001
 
 Or run all steps at once::
 
-    python -m backtest.factor.pipeline run-all f_001 --start 20160101 --end 20251231
+    python -m backtest.pipeline run-all f_001 --start 20160101 --end 20251231
 """
 
-from backtest.factor.pipeline.config import PipelineConfig, StepThresholds
-from backtest.factor.pipeline.state import PipelineState, StepResult
-from backtest.factor.pipeline.steps import (
+from backtest.pipeline.config import PipelineConfig, StepThresholds
+from backtest.pipeline.state import PipelineState, StepResult
+from backtest.pipeline.steps import (
     step1_coverage_check,
     step2_neutralization_check,
     step3_icir_check,

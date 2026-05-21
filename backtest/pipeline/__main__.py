@@ -2,13 +2,13 @@
 
 Usage::
 
-    python -m backtest.factor.pipeline init f_001 --start 20160101 --end 20251231
-    python -m backtest.factor.pipeline step1 f_001
-    python -m backtest.factor.pipeline step2 f_001
+    python -m backtest.pipeline init f_001 --start 20160101 --end 20251231
+    python -m backtest.pipeline step1 f_001
+    python -m backtest.pipeline step2 f_001
     ...
-    python -m backtest.factor.pipeline step9 f_001
+    python -m backtest.pipeline step9 f_001
 
-    python -m backtest.factor.pipeline run-all f_001 --start 20160101 --end 20251231
+    python -m backtest.pipeline run-all f_001 --start 20160101 --end 20251231
 """
 
 from __future__ import annotations
@@ -18,10 +18,10 @@ import json
 import sys
 from pathlib import Path
 
-from backtest.factor.pipeline._cleanup import cleanup_on_rejection
-from backtest.factor.pipeline.config import PipelineConfig
-from backtest.factor.pipeline.state import PipelineState
-from backtest.factor.pipeline.steps import (
+from backtest.pipeline._cleanup import cleanup_on_rejection
+from backtest.pipeline.config import PipelineConfig
+from backtest.pipeline.state import PipelineState
+from backtest.pipeline.steps import (
     step1_coverage_check,
     step2_neutralization_check,
     step3_icir_check,
