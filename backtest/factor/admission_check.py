@@ -30,7 +30,7 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from backtest.factor.evaluation import _compute_ic_stats, _load_market_data
+from backtest.factor.evaluation import _compute_ic_stats, _ic_series, _load_market_data
 from backtest.factor.registry import get_factor_meta
 from backtest.factor.storage import FactorLibrary, FactorStorage
 
@@ -44,6 +44,11 @@ BARRA_L1_REGRESSORS: tuple[str, ...] = (
     "f_barra_growth",
 )
 
+TIER_PURE_ALPHA: str = "pure_alpha"
+TIER_SMART_BETA: str = "smart_beta"
+TIER_EDGE_SMART_BETA: str = "edge_smart_beta"
+TIER_REJECT: str = "reject"
+
 Tier = Literal["pure_alpha", "smart_beta", "edge_smart_beta", "reject"]
 
 R2_PURE_ALPHA_MAX: float = 0.10
@@ -53,6 +58,38 @@ R2_EDGE_SMART_BETA_MAX: float = 0.80
 # Residual ICIR floors for the edge_smart_beta tier (PLAN.md §4 step 8).
 RESIDUAL_ICIR_FLOOR_DAILY: float = 1.0
 RESIDUAL_ICIR_FLOOR_MONTHLY: float = 0.8
+
+# Extra calendar days to pad on the right when loading market data to ensure
+# we have enough rows for the H-day forward-return shift. Matches the
+# convention used by evaluation._load_factor_and_returns.
+_RETURN_LOAD_BUFFER_DAYS: int = 5
+
+
+class RidgeCheckError(ValueError):
+    """Base class for ridge-check failures.
+
+    Subclassed so admit()'s CLI / callers can distinguish *infrastructure*
+    problems (library not bootstrapped, candidate not backfilled, not
+    enough overlap) from the *verdict-driven* style-clone rejection.
+    Stays a ``ValueError`` for backwards compatibility with existing
+    ``except ValueError`` paths.
+    """
+
+
+class LibraryNotBootstrappedError(RidgeCheckError):
+    """A Barra L1 regressor is missing from the library DB."""
+
+
+class CandidateNotBackfilledError(RidgeCheckError):
+    """The candidate factor has no rows in the work DB."""
+
+
+class InsufficientOverlapError(RidgeCheckError):
+    """Candidate and regressors don't share enough rows for the fit."""
+
+
+class StyleCloneRejectedError(RidgeCheckError):
+    """The candidate's R² landed in the reject tier (≥ 0.80)."""
 
 
 @dataclass(frozen=True)
@@ -77,12 +114,12 @@ class RidgeCheckResult:
 
 def _classify(r2: float) -> Tier:
     if r2 < R2_PURE_ALPHA_MAX:
-        return "pure_alpha"
+        return TIER_PURE_ALPHA
     if r2 < R2_SMART_BETA_MAX:
-        return "smart_beta"
+        return TIER_SMART_BETA
     if r2 < R2_EDGE_SMART_BETA_MAX:
-        return "edge_smart_beta"
-    return "reject"
+        return TIER_EDGE_SMART_BETA
+    return TIER_REJECT
 
 
 def _ridge_fit(X: np.ndarray, y: np.ndarray, alpha: float) -> tuple[np.ndarray, float]:
@@ -118,8 +155,10 @@ def _pooled_r2(
     merged = candidate.merge(regressors, on=["date", "symbol"], how="inner")
     reg_cols = [c for c in regressors.columns if c not in ("date", "symbol")]
     merged = merged.dropna(subset=["value", *reg_cols])
+    # Need at least p+2 rows so the centered design has more rows than
+    # parameters AND the SS_tot denominator has > 1 degree of freedom.
     if len(merged) < len(reg_cols) + 2:
-        raise ValueError(
+        raise InsufficientOverlapError(
             f"Too few overlapping rows for ridge fit: got {len(merged)}, "
             f"need >= {len(reg_cols) + 2} for {len(reg_cols)} regressors."
         )
@@ -159,7 +198,8 @@ def _residual_icir(
         return None
 
     start = df["date"].min().strftime("%Y%m%d")
-    end = (df["date"].max() + pd.Timedelta(days=horizon + 5)).strftime("%Y%m%d")
+    end = (df["date"].max()
+           + pd.Timedelta(days=horizon + _RETURN_LOAD_BUFFER_DAYS)).strftime("%Y%m%d")
     _, returns_df, _ = _load_market_data(
         symbols=df["symbol"].unique().tolist(),
         start=start, end=end, horizons=[horizon], ret_type="close",
@@ -170,15 +210,11 @@ def _residual_icir(
     if merged.empty:
         return None
 
-    def _day_ic(g: pd.DataFrame) -> float:
-        mask = g["resid"].notna() & g[ret_col].notna()
-        if mask.sum() < 3:
-            return np.nan
-        return float(np.corrcoef(g.loc[mask, "resid"], g.loc[mask, ret_col])[0, 1])
-
-    ic_per_day = merged.groupby("date").apply(_day_ic)
-    stats = _compute_ic_stats(ic_per_day)
-    icir = stats["icir"]
+    ic_per_day = merged.groupby("date", group_keys=False).apply(
+        lambda g: _ic_series(g["resid"], g[ret_col]),
+        include_groups=False,
+    )
+    icir = _compute_ic_stats(ic_per_day)["icir"]
     return None if (icir is None or np.isnan(icir)) else float(icir)
 
 
@@ -228,7 +264,7 @@ def ridge_r2_check(
 
         candidate = factor_storage.get_factor(factor_id, start=start, end=end)
         if candidate.empty:
-            raise ValueError(
+            raise CandidateNotBackfilledError(
                 f"Candidate {factor_id} has no rows in the work DB for "
                 f"range {start}~{end}. Backfill first."
             )
@@ -237,7 +273,7 @@ def ridge_r2_check(
         for reg_id in regressors:
             sub = library.get_factor(reg_id, start=start, end=end)
             if sub.empty:
-                raise ValueError(
+                raise LibraryNotBootstrappedError(
                     f"Regressor {reg_id} missing from library. Admit the "
                     f"Barra L1 composites first."
                 )
@@ -251,14 +287,14 @@ def ridge_r2_check(
         tier = _classify(r2)
 
         residual_icir: float | None = None
-        if tier == "edge_smart_beta":
+        if tier == TIER_EDGE_SMART_BETA:
             meta = get_factor_meta(factor_id)
             frequency = str(meta.get("frequency", "D"))
             residual_icir = _residual_icir(residual, keys, frequency=frequency)
             floor = (RESIDUAL_ICIR_FLOOR_MONTHLY if frequency == "M"
                      else RESIDUAL_ICIR_FLOOR_DAILY)
             if residual_icir is None or abs(residual_icir) < floor:
-                tier = "reject"
+                tier = TIER_REJECT
 
         return RidgeCheckResult(
             factor_id=factor_id,
@@ -277,12 +313,21 @@ def ridge_r2_check(
 
 __all__ = [
     "BARRA_L1_REGRESSORS",
-    "RESIDUAL_ICIR_FLOOR_DAILY",
-    "RESIDUAL_ICIR_FLOOR_MONTHLY",
+    "CandidateNotBackfilledError",
+    "InsufficientOverlapError",
+    "LibraryNotBootstrappedError",
     "R2_EDGE_SMART_BETA_MAX",
     "R2_PURE_ALPHA_MAX",
     "R2_SMART_BETA_MAX",
+    "RESIDUAL_ICIR_FLOOR_DAILY",
+    "RESIDUAL_ICIR_FLOOR_MONTHLY",
+    "RidgeCheckError",
     "RidgeCheckResult",
+    "StyleCloneRejectedError",
+    "TIER_EDGE_SMART_BETA",
+    "TIER_PURE_ALPHA",
+    "TIER_REJECT",
+    "TIER_SMART_BETA",
     "Tier",
     "ridge_r2_check",
 ]

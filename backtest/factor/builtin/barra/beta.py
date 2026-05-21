@@ -22,7 +22,7 @@ from backtest.factor.builtin.barra._common import (
     to_panel_series,
 )
 from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT
+from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 BETA_WINDOW = 252
 BETA_HALFLIFE = 63
@@ -78,7 +78,7 @@ def _vectorized_wls_beta(
 @register(
     "f_barra_beta_beta",
     name="Barra Beta — BETA",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily"],
     description=(
         "WLS slope of daily log-returns on CSI 300 daily log-returns. "

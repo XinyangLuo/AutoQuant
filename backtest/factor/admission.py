@@ -39,7 +39,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
-from backtest.factor.admission_check import RidgeCheckResult, ridge_r2_check
+from backtest.factor.admission_check import (
+    RidgeCheckResult,
+    StyleCloneRejectedError,
+    TIER_REJECT,
+    ridge_r2_check,
+)
 from backtest.factor.registry import (
     _load_registry,
     _save_registry,
@@ -47,6 +52,7 @@ from backtest.factor.registry import (
     sync_registry,
 )
 from backtest.factor.storage import FactorLibrary, FactorStorage
+from backtest.factor.variants import CATEGORY_BARRA_L1, CATEGORY_BARRA_L3
 
 # Reference thresholds — purely informational. ``evaluation`` may print
 # "passes / does not pass" relative to these to help a human decide, but
@@ -93,7 +99,9 @@ def _now_iso() -> str:
 # Categories that bootstrap the library — they ARE the regressors used by
 # the ridge R² check, so they're admitted before the check exists for anything
 # else. Always-skip these from the gate.
-_BOOTSTRAP_CATEGORIES: frozenset[str] = frozenset({"barra_l3", "barra_l1"})
+_BOOTSTRAP_CATEGORIES: frozenset[str] = frozenset({
+    CATEGORY_BARRA_L3, CATEGORY_BARRA_L1,
+})
 
 
 def _finalize_action(
@@ -192,8 +200,8 @@ def admit(
     ridge_result: RidgeCheckResult | None = None
     if should_check:
         ridge_result = ridge_r2_check(factor_id)
-        if ridge_result.tier == "reject" and not force:
-            raise ValueError(
+        if ridge_result.tier == TIER_REJECT and not force:
+            raise StyleCloneRejectedError(
                 f"{factor_id} blocked by ridge_r2_check: R²={ridge_result.r2:.3f} "
                 f"-> tier=reject. Override with force=True if you really want "
                 f"this style-clone in the library."
@@ -466,6 +474,8 @@ def main():
                     args.factor_id, notes=args.notes,
                     strategy_config=strategy_config,
                 )
+        except StyleCloneRejectedError as exc:
+            parser.exit(3, f"{args.cmd} rejected by gate: {exc}\n")
         except (KeyError, ValueError) as exc:
             parser.exit(2, f"{args.cmd} failed: {exc}\n")
         print_action(action)

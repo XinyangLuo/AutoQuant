@@ -13,13 +13,13 @@ import pandas as pd
 
 from backtest.factor.builtin.barra._common import pit_quarterly_slope, to_panel_series
 from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT
+from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 
 @register(
     "f_barra_growth_egro",
     name="Barra Growth — EGRO",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "income_q"],
     description=(
         "Slope of last 20 quarterly basic_eps on time, divided by |mean(EPS)|. "

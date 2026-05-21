@@ -14,7 +14,7 @@ import pandas as pd
 
 from backtest.factor.builtin.barra._common import to_panel_series
 from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT
+from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 STOM_WINDOW = 21
 
@@ -22,7 +22,7 @@ STOM_WINDOW = 21
 @register(
     "f_barra_liquidity_stom",
     name="Barra Liquidity — STOM",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily"],
     description=f"ln(rolling-{STOM_WINDOW}d sum of amount/circ_mv).",
     variant=BARRA_L3_VARIANT,

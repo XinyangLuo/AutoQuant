@@ -52,6 +52,13 @@ VALID_VARIANTS: tuple[str, ...] = (
 #: neutralization unless they explicitly pass ``variant="none"``.
 DEFAULT_VARIANT: str = BARRA_IND_SIZE_VARIANT
 
+#: Factor category strings. Bootstrap categories (the 11 L3 + 7 L1 Barra
+#: factors) are the regressors used by ridge admission check, so they
+#: themselves bypass the gate. Kept here so admission and the builtin Barra
+#: registrations share one source of truth.
+CATEGORY_BARRA_L3: str = "barra_l3"
+CATEGORY_BARRA_L1: str = "barra_l1"
+
 
 def validate_variant(variant: str) -> str:
     """Return ``variant`` unchanged if valid, else raise ``ValueError``."""
@@ -68,5 +75,7 @@ __all__ = [
     "BARRA_IND_SIZE_VARIANT",
     "DEFAULT_VARIANT",
     "VALID_VARIANTS",
+    "CATEGORY_BARRA_L3",
+    "CATEGORY_BARRA_L1",
     "validate_variant",
 ]

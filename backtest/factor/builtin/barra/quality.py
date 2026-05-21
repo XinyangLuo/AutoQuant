@@ -21,13 +21,13 @@ from backtest.factor.builtin.barra._common import (
     to_panel_series,
 )
 from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT
+from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 
 @register(
     "f_barra_quality_roa",
     name="Barra Quality — ROA",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "income_q", "balancesheet_q"],
     description="Annualized-YTD net income / latest total assets.",
     variant=BARRA_L3_VARIANT,
@@ -46,7 +46,7 @@ def barra_quality_roa(panel: pd.DataFrame) -> pd.Series:
 @register(
     "f_barra_quality_gp",
     name="Barra Quality — GP",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "income_q", "balancesheet_q"],
     description="(Annualized-YTD revenue - Annualized-YTD oper_cost) / total assets.",
     variant=BARRA_L3_VARIANT,
@@ -68,7 +68,7 @@ def barra_quality_gp(panel: pd.DataFrame) -> pd.Series:
 @register(
     "f_barra_quality_agro",
     name="Barra Quality — AGRO",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "balancesheet_q"],
     description=(
         "-1 × (slope of last 20 quarterly total_assets on time) / |mean(total_assets)|. "

@@ -20,7 +20,7 @@ import pandas as pd
 
 from backtest.factor.registry import register
 from backtest.factor.storage import FactorStorage
-from backtest.factor.variants import NONE_VARIANT
+from backtest.factor.variants import CATEGORY_BARRA_L1, NONE_VARIANT
 
 
 def _composite_from_l3(
@@ -49,7 +49,7 @@ def _register_composite(
     @register(
         factor_id,
         name=name,
-        category="barra_l1",
+        category=CATEGORY_BARRA_L1,
         data_sources=["factors_daily"],
         description=description,
         variant=NONE_VARIANT,

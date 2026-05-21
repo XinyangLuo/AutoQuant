@@ -18,7 +18,7 @@ from backtest.factor.builtin.barra._common import (
     to_panel_series,
 )
 from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT
+from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 RSTR_WINDOW = 252
 RSTR_HALFLIFE = 126
@@ -53,7 +53,7 @@ def _ewm_log_return_sum(log_ret: pd.Series, window: int, halflife: int) -> pd.Se
 @register(
     "f_barra_momentum_rstr",
     name="Barra Momentum — RSTR",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily"],
     description=(
         f"EWMA(window={RSTR_WINDOW}, half-life={RSTR_HALFLIFE}) of ln(1+r_t), "

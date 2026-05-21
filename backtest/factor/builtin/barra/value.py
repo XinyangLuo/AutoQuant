@@ -21,7 +21,7 @@ from backtest.factor.builtin.barra._common import (
     to_panel_series,
 )
 from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT
+from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 DIVIDEND_LOOKBACK_DAYS = 400
 
@@ -29,7 +29,7 @@ DIVIDEND_LOOKBACK_DAYS = 400
 @register(
     "f_barra_value_btop",
     name="Barra Value — BTOP",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "balancesheet_q"],
     description="Book equity (incl. minority interest) / floating market cap.",
     variant=BARRA_L3_VARIANT,
@@ -49,7 +49,7 @@ def barra_value_btop(panel: pd.DataFrame) -> pd.Series:
 @register(
     "f_barra_value_etop",
     name="Barra Value — ETOP",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "income_q"],
     description=(
         "Annualized-YTD net income attributable to parent / floating market cap. "
@@ -71,7 +71,7 @@ def barra_value_etop(panel: pd.DataFrame) -> pd.Series:
 @register(
     "f_barra_value_dtop",
     name="Barra Value — DTOP",
-    category="barra_l3",
+    category=CATEGORY_BARRA_L3,
     data_sources=["market_daily"],
     description=(
         "Trailing-12m cash dividend / pre_close. Reads dividends event table "
