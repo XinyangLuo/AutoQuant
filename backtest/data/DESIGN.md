@@ -51,7 +51,7 @@
 - **数据源**：Tushare `pro.index_daily`
 - **Schema**：`(date DATE, symbol VARCHAR, open / high / low / close / pre_close / change / pct_chg / volume / amount DOUBLE)`
 - **主键**：`(date, symbol)`
-- **默认 4 大宽基**（`DEFAULT_INDICES` in `backfill_indices.py`,从各自基日起回填):
+- **默认 4 大宽基**（`DEFAULT_INDICES` in `backfill/indices.py`,从各自基日起回填):
   - `000300.SH`(沪深 300, 基日 2004-12-31)
   - `000905.SH`(中证 500, 基日 2004-12-31)
   - `000852.SH`(中证 1000, 基日 2004-12-31)
@@ -69,7 +69,7 @@
 - **level 取值**：`'L1'`(申万一级,31 个行业) / `'L2'`(申万二级,约 125 个行业,SW2021 体系下有 9 个 L2 行业暂无成分股)
 - **out_date 语义**：`NULL` = 截至最新数据日仍在该行业;否则为剔除日
 - **典型样本**:`000034.SZ` 历史上 2007-07-03 ~ 2009-06-01 在农林牧渔(L1),2015-07-01 ~ 2017-06-30 又回到农林牧渔(L1) —— 表里保留两行
-- **入库脚本**:`python -m backtest.data.backfill_sw_industry`(默认 L1+L2,全量重拉。行业变更不频繁,可周/月频跑)
+- **入库脚本**:`python -m backtest.data.backfill.sw_industry`(默认 L1+L2,全量重拉。行业变更不频繁,可周/月频跑)
 - **查询路径**：
   - `get_industry_panel(date, level='L1')` —— D 日横截面 `[symbol, industry_code, industry_name]`(按 `in_date <= D AND (out_date IS NULL OR out_date > D)` 过滤)
   - `get_industry_history(symbol, level=None)` —— 某股票的全历史归属
