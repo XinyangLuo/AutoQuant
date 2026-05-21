@@ -19,8 +19,11 @@ python -m backtest.factor.pipeline step1 f_001   # ... step9 f_001
 python -m backtest.factor.pipeline run-all f_001 --start 20160101 --end 20251231
 ```
 
+**已完成**：
+- [x] 单元测试 30 个（config/state/helpers/step1/step5/thresholds）
+
 **待完成**：
-- [ ] 单元测试 + 集成测试（mock state + synthetic data）
+- [ ] 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
 - [ ] 端到端验证：用已有 Barra L1 因子跑通全链路
 - [ ] retry 逻辑在 `run-all` 中落地（step6/7 失败后自动调参重试）
 - [ ] Agent stub (`_agent_stub.py`) 从确定性 fallback 替换为实际 Agent 调用接口
