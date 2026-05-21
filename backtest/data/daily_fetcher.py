@@ -40,6 +40,16 @@ def fetch_daily_basic(trade_date: str) -> pd.DataFrame:
     return _fetch_by_date(pro.daily_basic, trade_date)
 
 
+def fetch_margin_detail(trade_date: str) -> pd.DataFrame:
+    """Fetch all stocks' margin trading detail for a single trade date."""
+    return _fetch_by_date(pro.margin_detail, trade_date)
+
+
+def fetch_moneyflow(trade_date: str) -> pd.DataFrame:
+    """Fetch all stocks' capital flow data for a single trade date."""
+    return _fetch_by_date(pro.moneyflow, trade_date)
+
+
 # ---------------------------------------------------------------------------
 # Transform & merge helpers
 # ---------------------------------------------------------------------------
@@ -143,6 +153,125 @@ def merge_daily_basic(daily_df: pd.DataFrame, basic_df: pd.DataFrame) -> pd.Data
     return daily_df.merge(basic, on=["date", "symbol"], how="left")
 
 
+# -- margin_detail ----------------------------------------------------------
+
+_MARGIN_COLS = [
+    "margin_rzye", "margin_rqye", "margin_rzmre", "margin_rqyl",
+    "margin_rzche", "margin_rqchl", "margin_rqmcl", "margin_rzrqye",
+]
+
+
+def merge_margin_detail(daily_df: pd.DataFrame, margin_df: pd.DataFrame) -> pd.DataFrame:
+    """Left-merge margin trading detail into daily DataFrame on (date, symbol)."""
+    if daily_df.empty:
+        return daily_df
+
+    if margin_df.empty:
+        for col in _MARGIN_COLS:
+            daily_df[col] = None
+        return daily_df
+
+    _rename = {
+        "trade_date": "date",
+        "ts_code": "symbol",
+        "rzye": "margin_rzye",
+        "rqye": "margin_rqye",
+        "rzmre": "margin_rzmre",
+        "rqyl": "margin_rqyl",
+        "rzche": "margin_rzche",
+        "rqchl": "margin_rqchl",
+        "rqmcl": "margin_rqmcl",
+        "rzrqye": "margin_rzrqye",
+    }
+    margin = margin_df.rename(columns=_rename)
+    margin["date"] = pd.to_datetime(margin["date"], format="%Y%m%d").dt.date
+    cols = ["date", "symbol"] + [c for c in _MARGIN_COLS if c in margin.columns]
+    margin = margin[[c for c in cols if c in margin.columns]]
+
+    return daily_df.merge(margin, on=["date", "symbol"], how="left")
+
+
+# -- moneyflow --------------------------------------------------------------
+
+_MONEYFLOW_COLS = [
+    "mf_buy_sm_vol", "mf_buy_sm_amount", "mf_sell_sm_vol", "mf_sell_sm_amount",
+    "mf_buy_md_vol", "mf_buy_md_amount", "mf_sell_md_vol", "mf_sell_md_amount",
+    "mf_buy_lg_vol", "mf_buy_lg_amount", "mf_sell_lg_vol", "mf_sell_lg_amount",
+    "mf_buy_elg_vol", "mf_buy_elg_amount", "mf_sell_elg_vol", "mf_sell_elg_amount",
+    "mf_net_mf_vol", "mf_net_mf_amount",
+]
+
+_MONEYFLOW_VOL_COLS = [
+    "mf_buy_sm_vol", "mf_sell_sm_vol",
+    "mf_buy_md_vol", "mf_sell_md_vol",
+    "mf_buy_lg_vol", "mf_sell_lg_vol",
+    "mf_buy_elg_vol", "mf_sell_elg_vol",
+    "mf_net_mf_vol",
+]
+
+_MONEYFLOW_AMOUNT_COLS = [
+    "mf_buy_sm_amount", "mf_sell_sm_amount",
+    "mf_buy_md_amount", "mf_sell_md_amount",
+    "mf_buy_lg_amount", "mf_sell_lg_amount",
+    "mf_buy_elg_amount", "mf_sell_elg_amount",
+    "mf_net_mf_amount",
+]
+
+
+def merge_moneyflow(daily_df: pd.DataFrame, mf_df: pd.DataFrame) -> pd.DataFrame:
+    """Left-merge capital flow data into daily DataFrame on (date, symbol).
+
+    Converts *vol columns from hands (手) to shares (×100) and
+    *amount columns from 万元 to yuan (×10000) to stay consistent
+    with market_daily.volume / market_daily.amount.
+    """
+    if daily_df.empty:
+        return daily_df
+
+    if mf_df.empty:
+        for col in _MONEYFLOW_COLS:
+            daily_df[col] = None
+        return daily_df
+
+    _rename = {
+        "trade_date": "date",
+        "ts_code": "symbol",
+        "buy_sm_vol": "mf_buy_sm_vol",
+        "buy_sm_amount": "mf_buy_sm_amount",
+        "sell_sm_vol": "mf_sell_sm_vol",
+        "sell_sm_amount": "mf_sell_sm_amount",
+        "buy_md_vol": "mf_buy_md_vol",
+        "buy_md_amount": "mf_buy_md_amount",
+        "sell_md_vol": "mf_sell_md_vol",
+        "sell_md_amount": "mf_sell_md_amount",
+        "buy_lg_vol": "mf_buy_lg_vol",
+        "buy_lg_amount": "mf_buy_lg_amount",
+        "sell_lg_vol": "mf_sell_lg_vol",
+        "sell_lg_amount": "mf_sell_lg_amount",
+        "buy_elg_vol": "mf_buy_elg_vol",
+        "buy_elg_amount": "mf_buy_elg_amount",
+        "sell_elg_vol": "mf_sell_elg_vol",
+        "sell_elg_amount": "mf_sell_elg_amount",
+        "net_mf_vol": "mf_net_mf_vol",
+        "net_mf_amount": "mf_net_mf_amount",
+    }
+    mf = mf_df.rename(columns=_rename)
+    mf["date"] = pd.to_datetime(mf["date"], format="%Y%m%d").dt.date
+
+    # Unit conversion: vol 手→股, amount 万元→元
+    for col in _MONEYFLOW_VOL_COLS:
+        if col in mf.columns:
+            mf[col] = (mf[col] * 100).round().astype("int64")
+    for col in _MONEYFLOW_AMOUNT_COLS:
+        if col in mf.columns:
+            mf[col] = (mf[col] * 10000).round(3)
+
+    cols = ["date", "symbol"] + [c for c in _MONEYFLOW_COLS if c in mf.columns]
+    mf = mf[[c for c in cols if c in mf.columns]]
+
+    return daily_df.merge(mf, on=["date", "symbol"], how="left")
+
+
 # ---------------------------------------------------------------------------
 # Stock-list metadata helpers
 # ---------------------------------------------------------------------------
@@ -179,11 +308,15 @@ def process_trade_date(trade_date: str, list_date_map: dict) -> pd.DataFrame:
     st_df = fetch_st_status(trade_date)
     limit_df = fetch_limit_prices(trade_date)
     basic_df = fetch_daily_basic(trade_date)
+    margin_df = fetch_margin_detail(trade_date)
+    mf_df = fetch_moneyflow(trade_date)
 
     daily_df = transform_daily(daily_df)
     daily_df = merge_adj_factor(daily_df, adj_df)
     daily_df = merge_st_status(daily_df, st_df)
     daily_df = merge_limit_prices(daily_df, limit_df)
     daily_df = merge_daily_basic(daily_df, basic_df)
+    daily_df = merge_margin_detail(daily_df, margin_df)
+    daily_df = merge_moneyflow(daily_df, mf_df)
     daily_df = merge_stock_info(daily_df, list_date_map)
     return daily_df
