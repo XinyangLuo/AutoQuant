@@ -155,10 +155,23 @@ def merge_daily_basic(daily_df: pd.DataFrame, basic_df: pd.DataFrame) -> pd.Data
 
 # -- margin_detail ----------------------------------------------------------
 
-_MARGIN_COLS = [
+MARGIN_COLS = [
     "margin_rzye", "margin_rqye", "margin_rzmre", "margin_rqyl",
     "margin_rzche", "margin_rqchl", "margin_rqmcl", "margin_rzrqye",
 ]
+
+MARGIN_RENAME_MAP = {
+    "trade_date": "date",
+    "ts_code": "symbol",
+    "rzye": "margin_rzye",
+    "rqye": "margin_rqye",
+    "rzmre": "margin_rzmre",
+    "rqyl": "margin_rqyl",
+    "rzche": "margin_rzche",
+    "rqchl": "margin_rqchl",
+    "rqmcl": "margin_rqmcl",
+    "rzrqye": "margin_rzrqye",
+}
 
 
 def merge_margin_detail(daily_df: pd.DataFrame, margin_df: pd.DataFrame) -> pd.DataFrame:
@@ -167,33 +180,21 @@ def merge_margin_detail(daily_df: pd.DataFrame, margin_df: pd.DataFrame) -> pd.D
         return daily_df
 
     if margin_df.empty:
-        for col in _MARGIN_COLS:
+        for col in MARGIN_COLS:
             daily_df[col] = None
         return daily_df
 
-    _rename = {
-        "trade_date": "date",
-        "ts_code": "symbol",
-        "rzye": "margin_rzye",
-        "rqye": "margin_rqye",
-        "rzmre": "margin_rzmre",
-        "rqyl": "margin_rqyl",
-        "rzche": "margin_rzche",
-        "rqchl": "margin_rqchl",
-        "rqmcl": "margin_rqmcl",
-        "rzrqye": "margin_rzrqye",
-    }
-    margin = margin_df.rename(columns=_rename)
+    margin = margin_df.rename(columns=MARGIN_RENAME_MAP)
     margin["date"] = pd.to_datetime(margin["date"], format="%Y%m%d").dt.date
-    cols = ["date", "symbol"] + [c for c in _MARGIN_COLS if c in margin.columns]
-    margin = margin[[c for c in cols if c in margin.columns]]
+    cols = ["date", "symbol"] + [c for c in MARGIN_COLS if c in margin.columns]
+    margin = margin[cols]
 
     return daily_df.merge(margin, on=["date", "symbol"], how="left")
 
 
 # -- moneyflow --------------------------------------------------------------
 
-_MONEYFLOW_COLS = [
+MONEYFLOW_COLS = [
     "mf_buy_sm_vol", "mf_buy_sm_amount", "mf_sell_sm_vol", "mf_sell_sm_amount",
     "mf_buy_md_vol", "mf_buy_md_amount", "mf_sell_md_vol", "mf_sell_md_amount",
     "mf_buy_lg_vol", "mf_buy_lg_amount", "mf_sell_lg_vol", "mf_sell_lg_amount",
@@ -201,7 +202,7 @@ _MONEYFLOW_COLS = [
     "mf_net_mf_vol", "mf_net_mf_amount",
 ]
 
-_MONEYFLOW_VOL_COLS = [
+MONEYFLOW_VOL_COLS = [
     "mf_buy_sm_vol", "mf_sell_sm_vol",
     "mf_buy_md_vol", "mf_sell_md_vol",
     "mf_buy_lg_vol", "mf_sell_lg_vol",
@@ -209,13 +210,47 @@ _MONEYFLOW_VOL_COLS = [
     "mf_net_mf_vol",
 ]
 
-_MONEYFLOW_AMOUNT_COLS = [
+MONEYFLOW_AMOUNT_COLS = [
     "mf_buy_sm_amount", "mf_sell_sm_amount",
     "mf_buy_md_amount", "mf_sell_md_amount",
     "mf_buy_lg_amount", "mf_sell_lg_amount",
     "mf_buy_elg_amount", "mf_sell_elg_amount",
     "mf_net_mf_amount",
 ]
+
+MONEYFLOW_RENAME_MAP = {
+    "trade_date": "date",
+    "ts_code": "symbol",
+    "buy_sm_vol": "mf_buy_sm_vol",
+    "buy_sm_amount": "mf_buy_sm_amount",
+    "sell_sm_vol": "mf_sell_sm_vol",
+    "sell_sm_amount": "mf_sell_sm_amount",
+    "buy_md_vol": "mf_buy_md_vol",
+    "buy_md_amount": "mf_buy_md_amount",
+    "sell_md_vol": "mf_sell_md_vol",
+    "sell_md_amount": "mf_sell_md_amount",
+    "buy_lg_vol": "mf_buy_lg_vol",
+    "buy_lg_amount": "mf_buy_lg_amount",
+    "sell_lg_vol": "mf_sell_lg_vol",
+    "sell_lg_amount": "mf_sell_lg_amount",
+    "buy_elg_vol": "mf_buy_elg_vol",
+    "buy_elg_amount": "mf_buy_elg_amount",
+    "sell_elg_vol": "mf_sell_elg_vol",
+    "sell_elg_amount": "mf_sell_elg_amount",
+    "net_mf_vol": "mf_net_mf_vol",
+    "net_mf_amount": "mf_net_mf_amount",
+}
+
+
+def convert_moneyflow_units(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert moneyflow vol (手→股) and amount (万元→元) in place."""
+    for col in MONEYFLOW_VOL_COLS:
+        if col in df.columns:
+            df[col] = (df[col] * 100).round().astype("int64")
+    for col in MONEYFLOW_AMOUNT_COLS:
+        if col in df.columns:
+            df[col] = (df[col] * 10000).round(3)
+    return df
 
 
 def merge_moneyflow(daily_df: pd.DataFrame, mf_df: pd.DataFrame) -> pd.DataFrame:
@@ -229,45 +264,16 @@ def merge_moneyflow(daily_df: pd.DataFrame, mf_df: pd.DataFrame) -> pd.DataFrame
         return daily_df
 
     if mf_df.empty:
-        for col in _MONEYFLOW_COLS:
+        for col in MONEYFLOW_COLS:
             daily_df[col] = None
         return daily_df
 
-    _rename = {
-        "trade_date": "date",
-        "ts_code": "symbol",
-        "buy_sm_vol": "mf_buy_sm_vol",
-        "buy_sm_amount": "mf_buy_sm_amount",
-        "sell_sm_vol": "mf_sell_sm_vol",
-        "sell_sm_amount": "mf_sell_sm_amount",
-        "buy_md_vol": "mf_buy_md_vol",
-        "buy_md_amount": "mf_buy_md_amount",
-        "sell_md_vol": "mf_sell_md_vol",
-        "sell_md_amount": "mf_sell_md_amount",
-        "buy_lg_vol": "mf_buy_lg_vol",
-        "buy_lg_amount": "mf_buy_lg_amount",
-        "sell_lg_vol": "mf_sell_lg_vol",
-        "sell_lg_amount": "mf_sell_lg_amount",
-        "buy_elg_vol": "mf_buy_elg_vol",
-        "buy_elg_amount": "mf_buy_elg_amount",
-        "sell_elg_vol": "mf_sell_elg_vol",
-        "sell_elg_amount": "mf_sell_elg_amount",
-        "net_mf_vol": "mf_net_mf_vol",
-        "net_mf_amount": "mf_net_mf_amount",
-    }
-    mf = mf_df.rename(columns=_rename)
+    mf = mf_df.rename(columns=MONEYFLOW_RENAME_MAP)
     mf["date"] = pd.to_datetime(mf["date"], format="%Y%m%d").dt.date
+    convert_moneyflow_units(mf)
 
-    # Unit conversion: vol 手→股, amount 万元→元
-    for col in _MONEYFLOW_VOL_COLS:
-        if col in mf.columns:
-            mf[col] = (mf[col] * 100).round().astype("int64")
-    for col in _MONEYFLOW_AMOUNT_COLS:
-        if col in mf.columns:
-            mf[col] = (mf[col] * 10000).round(3)
-
-    cols = ["date", "symbol"] + [c for c in _MONEYFLOW_COLS if c in mf.columns]
-    mf = mf[[c for c in cols if c in mf.columns]]
+    cols = ["date", "symbol"] + [c for c in MONEYFLOW_COLS if c in mf.columns]
+    mf = mf[cols]
 
     return daily_df.merge(mf, on=["date", "symbol"], how="left")
 

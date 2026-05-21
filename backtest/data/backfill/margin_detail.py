@@ -4,18 +4,13 @@ Backfill margin trading detail (margin_detail) for existing market_daily rows.
 Uses SQL temporary-table + UPDATE FROM pattern.
 
 Usage:
-    python -m backtest.data.backfill_margin_detail
+    python -m backtest.data.backfill.margin_detail
 """
 
 from tqdm import tqdm
 
-from backtest.data.daily_fetcher import fetch_margin_detail
+from backtest.data.daily_fetcher import MARGIN_COLS, MARGIN_RENAME_MAP, fetch_margin_detail
 from backtest.data.storage import MarketStorage
-
-_MARGIN_COLS = [
-    "margin_rzye", "margin_rqye", "margin_rzmre", "margin_rqyl",
-    "margin_rzche", "margin_rqchl", "margin_rqmcl", "margin_rzrqye",
-]
 
 
 def main():
@@ -43,23 +38,12 @@ def main():
                 if margin_df.empty:
                     continue
 
-                # Rename Tushare raw columns to market_daily schema
-                _rename_map = {
-                    "rzye": "margin_rzye",
-                    "rqye": "margin_rqye",
-                    "rzmre": "margin_rzmre",
-                    "rqyl": "margin_rqyl",
-                    "rzche": "margin_rzche",
-                    "rqchl": "margin_rqchl",
-                    "rqmcl": "margin_rqmcl",
-                    "rzrqye": "margin_rzrqye",
-                }
-                margin_df = margin_df.rename(columns=_rename_map)
+                margin_df = margin_df.rename(columns=MARGIN_RENAME_MAP)
 
                 storage.conn.register("tmp_margin", margin_df)
                 try:
                     set_clause = ", ".join(
-                        f'"{c}" = t."{c}"' for c in _MARGIN_COLS if c in margin_df.columns
+                        f'"{c}" = t."{c}"' for c in MARGIN_COLS if c in margin_df.columns
                     )
                     result = storage.conn.execute(f"""
                         UPDATE market_daily m

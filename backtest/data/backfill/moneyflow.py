@@ -4,58 +4,18 @@ Backfill capital flow (moneyflow) for existing market_daily rows.
 Uses SQL temporary-table + UPDATE FROM pattern.
 
 Usage:
-    python -m backtest.data.backfill_moneyflow
+    python -m backtest.data.backfill.moneyflow
 """
 
 from tqdm import tqdm
 
-from backtest.data.daily_fetcher import fetch_moneyflow
+from backtest.data.daily_fetcher import (
+    MONEYFLOW_COLS,
+    MONEYFLOW_RENAME_MAP,
+    convert_moneyflow_units,
+    fetch_moneyflow,
+)
 from backtest.data.storage import MarketStorage
-
-_MONEYFLOW_COLS = [
-    "mf_buy_sm_vol", "mf_buy_sm_amount", "mf_sell_sm_vol", "mf_sell_sm_amount",
-    "mf_buy_md_vol", "mf_buy_md_amount", "mf_sell_md_vol", "mf_sell_md_amount",
-    "mf_buy_lg_vol", "mf_buy_lg_amount", "mf_sell_lg_vol", "mf_sell_lg_amount",
-    "mf_buy_elg_vol", "mf_buy_elg_amount", "mf_sell_elg_vol", "mf_sell_elg_amount",
-    "mf_net_mf_vol", "mf_net_mf_amount",
-]
-
-_MONEYFLOW_VOL_COLS = [
-    "mf_buy_sm_vol", "mf_sell_sm_vol",
-    "mf_buy_md_vol", "mf_sell_md_vol",
-    "mf_buy_lg_vol", "mf_sell_lg_vol",
-    "mf_buy_elg_vol", "mf_sell_elg_vol",
-    "mf_net_mf_vol",
-]
-
-_MONEYFLOW_AMOUNT_COLS = [
-    "mf_buy_sm_amount", "mf_sell_sm_amount",
-    "mf_buy_md_amount", "mf_sell_md_amount",
-    "mf_buy_lg_amount", "mf_sell_lg_amount",
-    "mf_buy_elg_amount", "mf_sell_elg_amount",
-    "mf_net_mf_amount",
-]
-
-_RENAME_MAP = {
-    "buy_sm_vol": "mf_buy_sm_vol",
-    "buy_sm_amount": "mf_buy_sm_amount",
-    "sell_sm_vol": "mf_sell_sm_vol",
-    "sell_sm_amount": "mf_sell_sm_amount",
-    "buy_md_vol": "mf_buy_md_vol",
-    "buy_md_amount": "mf_buy_md_amount",
-    "sell_md_vol": "mf_sell_md_vol",
-    "sell_md_amount": "mf_sell_md_amount",
-    "buy_lg_vol": "mf_buy_lg_vol",
-    "buy_lg_amount": "mf_buy_lg_amount",
-    "sell_lg_vol": "mf_sell_lg_vol",
-    "sell_lg_amount": "mf_sell_lg_amount",
-    "buy_elg_vol": "mf_buy_elg_vol",
-    "buy_elg_amount": "mf_buy_elg_amount",
-    "sell_elg_vol": "mf_sell_elg_vol",
-    "sell_elg_amount": "mf_sell_elg_amount",
-    "net_mf_vol": "mf_net_mf_vol",
-    "net_mf_amount": "mf_net_mf_amount",
-}
 
 
 def main():
@@ -83,21 +43,13 @@ def main():
                 if mf_df.empty:
                     continue
 
-                # Rename Tushare raw columns to market_daily schema
-                mf_df = mf_df.rename(columns=_RENAME_MAP)
-
-                # Unit conversion: vol 手→股, amount 万元→元
-                for col in _MONEYFLOW_VOL_COLS:
-                    if col in mf_df.columns:
-                        mf_df[col] = (mf_df[col] * 100).round().astype("int64")
-                for col in _MONEYFLOW_AMOUNT_COLS:
-                    if col in mf_df.columns:
-                        mf_df[col] = (mf_df[col] * 10000).round(3)
+                mf_df = mf_df.rename(columns=MONEYFLOW_RENAME_MAP)
+                convert_moneyflow_units(mf_df)
 
                 storage.conn.register("tmp_mf", mf_df)
                 try:
                     set_clause = ", ".join(
-                        f'"{c}" = t."{c}"' for c in _MONEYFLOW_COLS if c in mf_df.columns
+                        f'"{c}" = t."{c}"' for c in MONEYFLOW_COLS if c in mf_df.columns
                     )
                     result = storage.conn.execute(f"""
                         UPDATE market_daily m
