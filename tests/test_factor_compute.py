@@ -134,3 +134,123 @@ class MockMarketStorage:
 
     def close(self):
         pass
+
+
+class TestApplyVariantPipeline:
+    """Verify barra_ind_size pipeline strips industry and Size_z exposure."""
+
+    def test_barra_ind_size_residualizes(self, tmp_path):
+        from backtest.factor.compute import apply_variant_pipeline
+        from backtest.factor.registry import register
+        from backtest.factor.storage import FactorStorage
+        from backtest.factor.variants import BARRA_IND_SIZE_VARIANT
+
+        @register(
+            "f_alpha_test",
+            name="alpha test", category="test",
+            data_sources=["market_daily"],
+            variant=BARRA_IND_SIZE_VARIANT, frequency="D",
+        )
+        def _alpha(panel):
+            return panel.set_index(["date", "symbol"])["close"]
+
+        import numpy as np
+        rng = np.random.default_rng(11)
+        dates = pd.date_range("2024-01-01", periods=20, freq="B")
+        symbols = [f"S{i:03d}" for i in range(60)]
+        industries = {sym: f"I{i % 5}" for i, sym in enumerate(symbols)}
+        ind_effect = {f"I{i}": rng.standard_normal() * 2 for i in range(5)}
+
+        # Build raw alpha = industry effect + size_z * coef + noise.
+        raw_rows = []
+        size_rows = []
+        ind_rows = []
+        size_z_per_day = {}
+        for d in dates:
+            sz = {sym: rng.standard_normal() for sym in symbols}
+            sz_arr = np.array(list(sz.values()))
+            sz_z = (sz_arr - sz_arr.mean()) / sz_arr.std()
+            for sym, z in zip(symbols, sz_z):
+                sz[sym] = z
+            size_z_per_day[d] = sz
+            for sym in symbols:
+                y = ind_effect[industries[sym]] + 1.2 * sz[sym] + 0.4 * rng.standard_normal()
+                raw_rows.append({"date": d, "symbol": sym, "value": y, "factor_id": "f_alpha_test"})
+                size_rows.append({"date": d, "symbol": sym, "factor_id": "f_barra_size_lncap", "value": sz[sym]})
+                ind_rows.append({"date": d, "symbol": sym, "industry_code": industries[sym]})
+
+        raw_df = pd.DataFrame(raw_rows)
+        size_df = pd.DataFrame(size_rows)
+        ind_df = pd.DataFrame(ind_rows)
+
+        class _MS:
+            def get_industry_panel_range(self, start, end, level):
+                return ind_df.copy()
+            def close(self):
+                pass
+
+        fs_path = tmp_path / "factors.duckdb"
+        with FactorStorage(db_path=fs_path) as fs:
+            fs.insert_factors(size_df)
+            out = apply_variant_pipeline(
+                raw_df, "f_alpha_test",
+                market_storage=_MS(),
+                factor_storage=fs,
+            )
+
+        # Residualized values should be ~orthogonal to size_z and industry dummies.
+        merged = out.merge(
+            size_df.rename(columns={"value": "size_z"})[["date", "symbol", "size_z"]],
+            on=["date", "symbol"],
+        ).merge(ind_df, on=["date", "symbol"])
+        corrs = []
+        for _, sub in merged.groupby("date"):
+            if len(sub) < 10:
+                continue
+            corrs.append(abs(sub["value"].corr(sub["size_z"])))
+            for ind in sub["industry_code"].unique():
+                dummy = (sub["industry_code"] == ind).astype(float)
+                if dummy.std() > 0:
+                    corrs.append(abs(sub["value"].corr(dummy)))
+        max_corr = float(np.nanmax(corrs))
+        assert max_corr < 1e-6, f"residual max |corr| with design = {max_corr}"
+
+    def test_barra_l3_pipeline_zscores(self, tmp_path):
+        from backtest.factor.compute import apply_variant_pipeline
+        from backtest.factor.registry import register
+        from backtest.factor.variants import BARRA_L3_VARIANT
+
+        @register(
+            "f_l3_test",
+            name="l3 test", category="test",
+            data_sources=["market_daily"],
+            variant=BARRA_L3_VARIANT, frequency="D",
+        )
+        def _f(panel):
+            return panel.set_index(["date", "symbol"])["close"]
+
+        import numpy as np
+        rng = np.random.default_rng(3)
+        dates = pd.date_range("2024-01-01", periods=5, freq="B")
+        symbols = [f"S{i}" for i in range(30)]
+        raw = []
+        ind_rows = []
+        for d in dates:
+            for i, s in enumerate(symbols):
+                raw.append({"date": d, "symbol": s, "factor_id": "f_l3_test",
+                            "value": rng.standard_normal() * 5})
+                ind_rows.append({"date": d, "symbol": s, "industry_code": f"I{i % 3}"})
+
+        class _MS:
+            def get_industry_panel_range(self, start, end, level):
+                return pd.DataFrame(ind_rows)
+            def close(self):
+                pass
+
+        out = apply_variant_pipeline(
+            pd.DataFrame(raw), "f_l3_test", market_storage=_MS(),
+        )
+        # After barra_l3 pipeline output should be z-scored cross-sectionally.
+        for _, sub in out.groupby("date"):
+            assert abs(sub["value"].mean()) < 1e-9
+            assert abs(sub["value"].std(ddof=0) - 1.0) < 0.05

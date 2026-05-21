@@ -9,6 +9,7 @@ import pytest
 from backtest.factor.transforms import (
     abs_,
     cs_demean,
+    cs_ols_residualize,
     cs_winsorize,
     cs_zscore,
     if_else,
@@ -1382,3 +1383,117 @@ class TestIfElse:
         s = pd.Series([1.0, 2.0, 3.0])
         with pytest.raises(ValueError, match="MultiIndex"):
             if_else(s, s, s)
+
+
+class TestCsOlsResidualize:
+    """OLS residualization: regress on industry dummies + Size_z, return residual."""
+
+    @staticmethod
+    def _make_panel(n_dates: int, n_symbols: int, n_industries: int = 4, seed: int = 0):
+        rng = np.random.default_rng(seed)
+        dates = pd.date_range("2024-01-01", periods=n_dates, freq="B")
+        symbols = [f"S{i:03d}" for i in range(n_symbols)]
+        rows = []
+        for d in dates:
+            for j, sym in enumerate(symbols):
+                rows.append({
+                    "date": d, "symbol": sym,
+                    "industry_code": f"I{j % n_industries}",
+                    "size_z": rng.standard_normal(),
+                })
+        panel = pd.DataFrame(rows)
+        return panel, dates, symbols
+
+    def test_residual_uncorrelated_with_industry_and_size(self):
+        panel, dates, symbols = self._make_panel(40, 80, n_industries=5, seed=42)
+        rng = np.random.default_rng(7)
+        ind_effect = {f"I{i}": rng.standard_normal() for i in range(5)}
+
+        rows = []
+        for _, r in panel.iterrows():
+            y = (
+                ind_effect[r["industry_code"]]
+                + 0.8 * r["size_z"]
+                + 0.3 * rng.standard_normal()
+            )
+            rows.append(y)
+        idx = pd.MultiIndex.from_arrays(
+            [panel["date"], panel["symbol"]], names=["date", "symbol"]
+        )
+        y_series = pd.Series(rows, index=idx)
+
+        resid = cs_ols_residualize(
+            y_series, panel,
+            dummy_col="industry_code", numeric_cols=("size_z",),
+        )
+
+        # Cross-section corr per date should be ~0 across the time series.
+        merged = panel.merge(
+            resid.rename("r").reset_index(), on=["date", "symbol"], how="left",
+        )
+        corrs_size = []
+        # One-hot encode industry once for vectorized corr.
+        for d, sub in merged.groupby("date"):
+            if sub["r"].notna().sum() < 5:
+                continue
+            corrs_size.append(sub["size_z"].corr(sub["r"]))
+            for ind in sub["industry_code"].unique():
+                ind_dummy = (sub["industry_code"] == ind).astype(float)
+                # If dummy is constant within day, skip.
+                if ind_dummy.std() > 0 and sub["r"].std() > 0:
+                    corrs_size.append(ind_dummy.corr(sub["r"]))
+        # Within numeric tolerance — OLS residual is orthogonal to its design.
+        max_abs = float(np.nanmax(np.abs(corrs_size)))
+        assert max_abs < 1e-8, f"max |corr| = {max_abs}"
+
+    def test_skips_rank_deficient_days(self):
+        # Only 2 rows, 1 industry, 1 numeric → 3 regressors (intercept + size_z)
+        # after drop_first. Rank-deficient → all-NaN that day.
+        idx = _make_index([("2024-01-01", "A"), ("2024-01-01", "B")])
+        y = pd.Series([1.0, 2.0], index=idx)
+        panel = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-01", "2024-01-01"]),
+            "symbol": ["A", "B"],
+            "industry_code": ["I0", "I0"],
+            "size_z": [0.1, 0.2],
+        })
+        # X = [1, size_z] → 2 cols, 2 rows → equality → no DOF for residual.
+        resid = cs_ols_residualize(
+            y, panel, dummy_col="industry_code", numeric_cols=("size_z",),
+        )
+        # 2 rows, 2 cols → not strictly > → NaN.
+        assert resid.isna().all()
+
+    def test_no_dummy_only_numeric(self):
+        rng = np.random.default_rng(1)
+        dates = pd.date_range("2024-01-01", periods=10, freq="B")
+        symbols = [f"S{i}" for i in range(50)]
+        rows = []
+        for d in dates:
+            for s in symbols:
+                rows.append({"date": d, "symbol": s, "size_z": rng.standard_normal()})
+        panel = pd.DataFrame(rows)
+
+        idx = pd.MultiIndex.from_arrays(
+            [panel["date"], panel["symbol"]], names=["date", "symbol"]
+        )
+        y = pd.Series(0.5 * panel["size_z"].values + 0.2 * rng.standard_normal(len(panel)), index=idx)
+
+        resid = cs_ols_residualize(
+            y, panel, dummy_col=None, numeric_cols=("size_z",),
+        )
+
+        merged = panel.merge(resid.rename("r").reset_index(), on=["date", "symbol"])
+        max_corr = float(
+            np.nanmax(np.abs([sub["size_z"].corr(sub["r"]) for _, sub in merged.groupby("date")]))
+        )
+        assert max_corr < 1e-8
+
+    def test_missing_design_columns_raises(self):
+        idx = _make_index([("2024-01-01", "A")])
+        y = pd.Series([1.0], index=idx)
+        panel = pd.DataFrame({"date": ["2024-01-01"], "symbol": ["A"]})
+        with pytest.raises(ValueError, match="missing columns"):
+            cs_ols_residualize(
+                y, panel, dummy_col="industry_code", numeric_cols=("size_z",),
+            )

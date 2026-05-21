@@ -62,7 +62,9 @@ def backfill_factor(
             factor_storage = FactorStorage()
 
         df = apply_variant_pipeline(
-            raw_df, factor_id, market_storage=market_storage,
+            raw_df, factor_id,
+            market_storage=market_storage,
+            factor_storage=factor_storage,
         )
         if df.empty:
             return 0

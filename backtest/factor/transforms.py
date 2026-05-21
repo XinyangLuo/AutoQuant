@@ -145,6 +145,118 @@ def _group_zscore(s: pd.Series) -> pd.Series:
     return (s - mean) / std
 
 
+def cs_ols_residualize(
+    values: pd.Series,
+    design_panel: pd.DataFrame,
+    *,
+    dummy_col: str | None = "industry_code",
+    numeric_cols: tuple[str, ...] = (),
+) -> pd.Series:
+    """Cross-section OLS residual per date — regress ``values`` on the design.
+
+    For each date, build a design matrix of:
+
+    * an intercept column,
+    * (optional) one-hot encoding of ``dummy_col`` with **the first category
+      dropped** to avoid perfect collinearity with the intercept,
+    * each numeric column listed in ``numeric_cols``.
+
+    Then solve OLS via ``numpy.linalg.lstsq`` and return ``y - X @ beta``
+    (residuals). Symbols missing any regressor on a given day are NaN that
+    day; NaNs in ``values`` propagate. Days with fewer non-NaN rows than
+    regressors are returned as NaN (rank-deficient).
+
+    Used by the ``barra_ind_size`` variant pipeline (PLAN.md §2.2) to strip
+    industry and Size exposure from a candidate alpha.
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series — the factor to residualize.
+    design_panel : pd.DataFrame
+        Columns ``[date, symbol]`` plus ``dummy_col`` and every entry in
+        ``numeric_cols``. One row per ``(date, symbol)`` for the universe
+        used in the regression.
+    dummy_col : str | None
+        Categorical column name. Pass ``None`` to skip the dummy block
+        entirely (regress on intercept + numeric only).
+    numeric_cols : tuple[str, ...]
+        Names of numeric regressor columns in ``design_panel``.
+
+    Returns
+    -------
+    pd.Series
+        MultiIndex ``(date, symbol)`` residual series, reindexed to match
+        ``values.index``.
+    """
+    _check_panel_series(values)
+    cols = ["date", "symbol"]
+    if dummy_col is not None:
+        cols.append(dummy_col)
+    cols.extend(numeric_cols)
+    missing = set(cols) - set(design_panel.columns)
+    if missing:
+        raise ValueError(f"design_panel missing columns: {sorted(missing)}")
+
+    design = design_panel[cols].copy()
+    design["date"] = pd.to_datetime(design["date"])
+
+    df = values.rename("__y__").reset_index()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.merge(design, on=["date", "symbol"], how="left")
+
+    out_index = pd.MultiIndex.from_arrays(
+        [df["date"], df["symbol"]], names=["date", "symbol"]
+    )
+    out = pd.Series(np.nan, index=out_index, dtype=float)
+
+    # Pre-encode dummies once for the whole panel; categorical codes let us
+    # slice into a dense identity-style block per date without rebuilding
+    # the dummy frame in the loop.
+    if dummy_col is not None:
+        cat = df[dummy_col].astype("category")
+        codes_all = cat.cat.codes.to_numpy()
+        n_levels = len(cat.cat.categories)
+    else:
+        codes_all = None
+        n_levels = 0
+    y_all = df["__y__"].to_numpy(dtype=float)
+    numeric_block = (
+        df[list(numeric_cols)].to_numpy(dtype=float) if numeric_cols else None
+    )
+
+    for _, idx in df.groupby("date", sort=False).groups.items():
+        positions = np.asarray(idx, dtype=int)
+        valid = ~np.isnan(y_all[positions])
+        if numeric_block is not None:
+            valid &= ~np.isnan(numeric_block[positions]).any(axis=1)
+        if codes_all is not None:
+            valid &= codes_all[positions] >= 0
+        if valid.sum() < 2:
+            continue
+        sel = positions[valid]
+        y = y_all[sel]
+
+        x_parts: list[np.ndarray] = [np.ones((sel.size, 1))]
+        if codes_all is not None:
+            day_codes = codes_all[sel]
+            present = np.unique(day_codes)
+            if present.size > 1:
+                # one-hot, drop first to avoid collinearity with intercept
+                dummy_block = (day_codes[:, None] == present[None, 1:]).astype(float)
+                x_parts.append(dummy_block)
+        if numeric_block is not None:
+            x_parts.append(numeric_block[sel])
+        X = np.hstack(x_parts)
+
+        if X.shape[0] <= X.shape[1]:
+            continue
+        beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+        out.iloc[sel] = y - X @ beta
+
+    return out.reindex(values.index)
+
+
 def industry_neutralize(
     values: pd.Series,
     industry_panel: pd.DataFrame,
@@ -1325,6 +1437,9 @@ __all__ = [
     "cs_zscore",
     "cs_demean",
     "cs_winsorize",
+    "cs_mad_winsorize",
+    "cs_ols_residualize",
+    "industry_median_fill",
     "abs_",
     "sign",
     "log",

@@ -28,10 +28,13 @@
   - DTOP 修复：dividend fetch 加 400 天回看 buffer，早期 trade date 的 TTM 不再被截断
   - composite 改 `groupby.mean()` 避免 pivot 内存峰值；共享 helper 抽到 `_common.py`
 
-- [ ] **Commit 3: 中性化 pipeline 替换为 PLAN.md §2.2 OLS 版**
-  - `compute.apply_variant_pipeline` 中 `barra_ind_size` 分支当前仅做 SW-L1 industry-group cs_zscore（占位）；替换为完整 pipeline：MAD 去极值 → 行业中位数填充 → cs_zscore → 截面 OLS（因子 ~ 行业哑变量 + Size_z）→ 取残差 → re-cs_zscore
-  - Size_z 从 `f_barra_size_lncap`（Commit 2 落地后）读
-  - 验证：选 1~2 个候选 alpha 用新 pipeline 跑，与 Barra 7 个一级因子的截面 Pearson corr < 0.05
+- [x] **Commit 3: 中性化 pipeline 替换为 PLAN.md §2.2 OLS 版**（2026-05-22）
+  - `compute.apply_variant_pipeline` `barra_ind_size` 分支替换为完整 PLAN.md §2.2 pipeline：MAD 去极值 → SW-L1 行业中位数填充 → cs_zscore → 截面 OLS（intercept + 行业 dummies drop_first + Size_z）→ 取残差 → re-cs_zscore
+  - Size_z 直接读 `f_barra_size_lncap`（Commit 2 已落地，barra_l3 pipeline 后已是 z-score）
+  - 新增 `transforms.cs_ols_residualize(values, design_panel, dummy_col, numeric_cols)`：通用 OLS 残差算子，dummy 用 `Categorical` 在循环外一次性编码，循环内按 codes 切 identity-style block，避免 `pd.get_dummies` N+1 开销；`np.linalg.lstsq` 闭式解
+  - `apply_variant_pipeline` 增加 `factor_storage` 参数，`backfill.py` 透传
+  - 验证：synthetic alpha = industry_effect + 1.2·size_z + noise → 残差对 size_z 和所有行业 dummies 的截面 Pearson corr < 1e-6（OLS 保证精确正交）
+  - 测试：4 个 `cs_ols_residualize` 单元 + 2 个 pipeline 集成（barra_l3 / barra_ind_size），共 6 个新测试全部通过；全 factor 测试 206/206 通过
 
 - [ ] **Commit 4: Ridge 入库检查 + R² 分层**
   - 新增 `backtest/factor/admission_check.py::ridge_r2_check(factor_id) -> {r2, tier, residual_icir}`

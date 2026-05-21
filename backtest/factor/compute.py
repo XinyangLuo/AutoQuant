@@ -14,9 +14,9 @@ from backtest.factor.registry import get_factor_function, get_factor_meta
 from backtest.factor.storage import FactorStorage
 from backtest.factor.transforms import (
     cs_mad_winsorize,
+    cs_ols_residualize,
     cs_zscore,
     industry_median_fill,
-    industry_neutralize,
 )
 from backtest.factor.variants import (
     BARRA_IND_SIZE_VARIANT,
@@ -153,6 +153,7 @@ def apply_variant_pipeline(
     factor_id: str,
     *,
     market_storage: MarketStorage | None = None,
+    factor_storage: FactorStorage | None = None,
 ) -> pd.DataFrame:
     """Apply the factor's declared neutralization pipeline.
 
@@ -165,10 +166,12 @@ def apply_variant_pipeline(
       SW-L1 industry median fill → cs_zscore. Output is a z-scored style
       exposure, **not** a residual against other styles. Used by all 11
       Barra L3 factors (Size/Beta/Momentum/Value/Quality/Liquidity/Growth).
-    * ``"barra_ind_size"`` — SW-L1 industry-group cs_zscore (placeholder).
-      Will become the full PLAN.md §2.2 alpha-neutralization pipeline
-      (MAD winsorize → industry median fill → cs_zscore → OLS residual
-      on industry + Size_z → re-cs_zscore) in Commit 3.
+    * ``"barra_ind_size"`` — full PLAN.md §2.2 alpha-neutralization pipeline:
+      MAD winsorize → SW-L1 industry median fill → cs_zscore → cross-section
+      OLS residual against industry dummies + ``f_barra_size_lncap`` (already
+      z-scored under barra_l3) → re-cs_zscore. Strips industry and Size
+      exposure so what remains is pure alpha. Requires ``factor_storage`` to
+      read the Size_z column.
 
     Returns
     -------
@@ -189,6 +192,7 @@ def apply_variant_pipeline(
         series = raw_series
     elif variant in (BARRA_L3_VARIANT, BARRA_IND_SIZE_VARIANT):
         own_market = market_storage is None
+        own_factor = factor_storage is None
         try:
             if market_storage is None:
                 market_storage = MarketStorage()
@@ -197,16 +201,37 @@ def apply_variant_pipeline(
             industry_panel = market_storage.get_industry_panel_range(
                 start=start, end=end, level="L1",
             )
-            if variant == BARRA_L3_VARIANT:
-                series = cs_mad_winsorize(raw_series, k=3.0)
-                series = industry_median_fill(series, industry_panel)
+            series = cs_mad_winsorize(raw_series, k=3.0)
+            series = industry_median_fill(series, industry_panel)
+            series = cs_zscore(series)
+
+            if variant == BARRA_IND_SIZE_VARIANT:
+                if factor_storage is None:
+                    factor_storage = FactorStorage()
+                size_df = factor_storage.get_factor(
+                    "f_barra_size_lncap", start=start, end=end,
+                )
+                if size_df.empty:
+                    raise RuntimeError(
+                        "barra_ind_size pipeline requires f_barra_size_lncap to "
+                        "be backfilled first; got empty Size_z panel."
+                    )
+                size_df = size_df.rename(columns={"value": "size_z"})
+                design = industry_panel.merge(
+                    size_df, on=["date", "symbol"], how="outer",
+                )
+                series = cs_ols_residualize(
+                    series,
+                    design,
+                    dummy_col="industry_code",
+                    numeric_cols=("size_z",),
+                )
                 series = cs_zscore(series)
-            else:
-                # TODO Commit 3: replace with full OLS pipeline.
-                series = industry_neutralize(raw_series, industry_panel)
         finally:
             if own_market and market_storage is not None:
                 market_storage.close()
+            if own_factor and factor_storage is not None:
+                factor_storage.close()
     else:
         raise ValueError(f"Unknown variant {variant!r} for {factor_id}")
 

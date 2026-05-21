@@ -507,30 +507,32 @@ backtest/factor/builtin/
 
 二级 → 一级合成：等权平均所属三级因子的 z-score 值，再次 `cs_zscore` 标准化。落到 `factors_daily` 作为一级因子的 `raw` variant。
 
-### 统一中性化 pipeline（PLAN.md §2.2，替代旧 fan-out）
+### 统一中性化 pipeline（PLAN.md §2.2，已落地）
 
-**对非 Barra 候选 alpha**，`compute.py::apply_neutralizations` 改造为单一 pipeline：
+**对非 Barra 候选 alpha**，`compute.py::apply_variant_pipeline` 在 `variant="barra_ind_size"` 分支执行：
 
-```python
-def apply_neutralization(raw_df: pd.DataFrame, factor_id: str) -> pd.DataFrame:
-    """
-    Returns a long DataFrame with variant='neutral' rows.
-    Pipeline per cross-section:
-      1. MAD winsorize (cs_winsorize, k=3)
-      2. Industry-median fill (SW-L1)
-      3. cs_zscore
-      4. OLS regression: factor ~ industry_dummies + size_z (cross-section)
-         where size_z = cs_zscore(log(circ_mv)), industry_dummies = SW-L1 one-hot
-      5. Take residual, re-cs_zscore
-    """
+```
+1. MAD winsorize (cs_mad_winsorize, k=3)
+2. SW-L1 行业中位数填充
+3. cs_zscore
+4. 截面 OLS:  factor ~ intercept + 行业 dummies (drop_first) + Size_z
+   - Size_z 直接读 factor_storage 中已 barra_l3 流水线处理过的
+     f_barra_size_lncap(已 z-score)
+5. 取残差,再次 cs_zscore
 ```
 
 实施要点：
-- OLS 用 `statsmodels.OLS` 或 `numpy.linalg.lstsq`，按日 groupby 处理。Drop-na 后再回归
-- Size_z 从 Barra `f_barra_size_lncap`（`neutral` variant 不存在，所以读 `raw`）取
-- 行业哑变量从 `get_industry_panel_range(..., level='L1')` 取 31 个行业的 one-hot
-- 三级 Barra 因子（如 `f_barra_value_btop`）走自身的合成流程，**不**走这里；这里仅服务 user 注册的候选 alpha
-- 输出长表 `(date, symbol, factor_id, variant='neutral', value, ann_date, f_ann_date)`，写入 work DB
+- OLS 用 `cs_ols_residualize`（`transforms.py`）—— 单次 groupby('date') 循环，
+  行业 dummies 在循环外通过 `Categorical` 一次性编码，每日按 codes 切片做
+  identity-style block，避免 `pd.get_dummies` 的 N+1 开销
+- `np.linalg.lstsq` 闭式解；OLS 残差对设计矩阵的列**精确正交**（数值~1e-10）
+- Size_z 从 `factor_storage.get_factor("f_barra_size_lncap")` 直接读
+  —— Commit 2 已落地 11 个 L3 + 7 个 L1，所以这一列保证存在
+- 行业哑变量从 `get_industry_panel_range(..., level='L1')` 取（31 个行业 one-hot
+  → drop_first 共 30 列）
+- 三级 Barra 因子（`f_barra_value_btop` 等）使用 `variant="barra_l3"` 走自身
+  pipeline（无 OLS）—— 不在这里处理；这里只服务 user 注册的候选 alpha
+- 输出写入宽表 `factors_daily`，列名 = `factor_id`，覆盖更新
 
 ### 旧数据清理
 

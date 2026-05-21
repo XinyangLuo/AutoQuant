@@ -28,7 +28,8 @@ Valid variant names
 ``"barra_ind_size"``
     The PLAN.md §2.2 alpha-neutralization pipeline: MAD winsorize → SW-L1
     industry median fill → cs_zscore → cross-section OLS regression on
-    industry dummies + ``log(circ_mv)`` → residual → re-cs_zscore.
+    industry dummies + Size_z (read from ``f_barra_size_lncap``, already
+    z-scored by ``barra_l3``) → residual → re-cs_zscore.
     **Default** for user-registered alphas — strips industry and size
     style exposure so what remains is pure alpha. Future variants follow
     the same ``barra_<inputs>`` naming if more regressors are added.
