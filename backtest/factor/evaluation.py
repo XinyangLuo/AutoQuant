@@ -10,8 +10,9 @@ import numpy as np
 import pandas as pd
 
 from backtest.data.storage import MarketStorage
+from backtest.factor.registry import get_factor_meta
 from backtest.factor.storage import FactorLibrary, FactorStorage
-from backtest.factor.variants import BASELINE_VARIANT, RAW_VARIANT, canonicalize_variant
+from backtest.factor.variants import DEFAULT_VARIANT
 
 
 DEFAULT_HORIZONS = [1, 5, 10, 20, 60]
@@ -59,26 +60,24 @@ def _load_factor_and_returns(
     returns_df: pd.DataFrame | None = None,
     limit_df: pd.DataFrame | None = None,
     market_df: pd.DataFrame | None = None,
-    *,
-    variant: str = BASELINE_VARIANT,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load factor values, compute forward returns, and load limit prices for filtering.
 
-    ``variant`` 默认为 :data:`BASELINE_VARIANT`(``swl1_capq5``):评测口径统一在
-    中性化后的因子值上,IC/RankIC/turnover/corr 都按此口径算 —— 比较的是消除
-    行业/市值暴露后的真实 alpha,而不是被共同暴露污染的 raw 值。
-    raw 仅作为可选的"诊断口径"暴露给 CLI,默认不暴露。
+    Factor values are read at the registry-declared neutralization (stored
+    as the single ``variant`` per factor). The PIT-isolated values were
+    written by ``apply_variant_pipeline`` during backfill — evaluation
+    consumes them as-is.
 
     If ``returns_df``, ``limit_df``, and ``market_df`` are provided (from a
     prior :func:`_load_market_data` call), they are reused instead of
     re-querying the database.
     """
     with FactorStorage() as fs:
-        factor_df = fs.get_factor(factor_id, start, end, variant=variant)
+        factor_df = fs.get_factor(factor_id, start, end)
 
     if factor_df.empty:
         raise ValueError(
-            f"No factor data for {factor_id} (variant={variant}) in range {start}~{end}"
+            f"No factor data for {factor_id} in range {start}~{end}"
         )
 
     if returns_df is not None and limit_df is not None and market_df is not None:
@@ -204,14 +203,13 @@ def _corr_with_existing(
     factor_id: str,
     storage: FactorStorage,
     top_k: int = 5,
-    *,
-    variant: str = BASELINE_VARIANT,
 ) -> pd.DataFrame:
-    """同 variant 内的跨因子相关性(默认 baseline = ``swl2_capq5``)。
+    """Cross-factor correlation against the stable library.
 
-    ``variant`` 是因子的一部分 —— 入库的值已经是该 variant 下的"纯净因子值"。
-    所以对比时**双方**都拉相同 variant 的入库值,直接 daily cross-section RankIC
-    平均。不同 variant 之间不互比(它们是不同的因子)。
+    Each factor is stored under exactly one variant, so the comparison is
+    against whatever neutralization the library factors were admitted under.
+    Mixing factors stored under different variants would be meaningless —
+    enforce a uniform variant policy at registration time.
 
     ``storage`` is normally a :class:`~backtest.factor.storage.FactorLibrary`
     instance (passed in from :func:`evaluate`), so the comparison runs
@@ -226,7 +224,7 @@ def _corr_with_existing(
     start = factor_df["date"].min().strftime("%Y%m%d")
     end = factor_df["date"].max().strftime("%Y%m%d")
     others = storage.get_factors_long(
-        start=start, end=end, exclude=factor_id, variant=variant,
+        start=start, end=end, exclude=factor_id,
     )
     if others.empty:
         return pd.DataFrame(columns=_CORR_COLUMNS)
@@ -258,7 +256,6 @@ def _corr_with_existing(
 @dataclass
 class EvaluationResult:
     factor_id: str
-    variant: str
     ret_type: str
     horizons: list[int]
     start: str
@@ -269,6 +266,8 @@ class EvaluationResult:
     turnover: float
     group_returns: dict[int, pd.DataFrame]
     corr_with_existing: pd.DataFrame
+    # Variant label copied from the registry; used in plot titles / file names.
+    variant: str = DEFAULT_VARIANT
     ic_series: dict[int, pd.Series] = field(default_factory=dict)
     rank_ic_series: dict[int, pd.Series] = field(default_factory=dict)
     decile_result: "DecileBacktestResult | None" = None
@@ -375,7 +374,6 @@ def evaluate(
     start: str,
     end: str,
     *,
-    variant: str = BASELINE_VARIANT,
     horizons: list[int] | None = None,
     ret_type: str = "close",
     n_groups: int = 10,
@@ -386,22 +384,18 @@ def evaluate(
     _limit_df: pd.DataFrame | None = None,
     _market_df: pd.DataFrame | None = None,
 ) -> EvaluationResult:
-    """Evaluate a factor variant's predictive power.
+    """Evaluate a factor's predictive power.
 
-    Computes IC/RankIC across the requested horizons, turnover, grouped returns,
-    and the cross-sectional rank correlation against every other factor in
-    ``FactorLibrary`` **at the same variant** — sorted by ``|corr|`` descending
-    and truncated to ``corr_top_k`` rows. Pass ``corr_top_k=0`` to skip the
-    correlation step. Use :meth:`EvaluationResult.max_corr` to gate factor
-    admission against duplicates.
+    Reads the factor's values from the work DB at the variant declared in
+    its registry entry, then computes IC/RankIC across the requested horizons,
+    turnover, grouped returns, and the cross-sectional rank correlation
+    against every other factor in ``FactorLibrary`` — sorted by ``|corr|``
+    descending and truncated to ``corr_top_k`` rows. Pass ``corr_top_k=0`` to
+    skip the correlation step. Use :meth:`EvaluationResult.max_corr` to gate
+    factor admission against duplicates.
 
     Parameters
     ----------
-    variant : str
-        Neutralization variant to evaluate (default ``"swl2_capq5"``).
-        因子的 variant 是其本身的一部分 —— evaluation 直接用入库该 variant 的
-        因子值算 IC/RankIC,corr 比较也在**同 variant 内**做。如果你想看 raw
-        口径,传 ``variant="raw"``。
     exclude_limit_up : bool, default True
         For ``ret_type='close'``, drop rows where the signal-day close hits
         limit-up (unbuyable). For ``ret_type='open'``, drop rows where the
@@ -410,7 +404,8 @@ def evaluate(
         Pre-computed market data, forward returns, and limit prices (internal
         optimisation for batch evaluation — reuse market data across factors).
     """
-    variant = canonicalize_variant(variant)
+    meta = get_factor_meta(factor_id)
+    variant = meta.get("variant", DEFAULT_VARIANT)
 
     if horizons is None:
         horizons = DEFAULT_HORIZONS
@@ -418,7 +413,6 @@ def evaluate(
     factor_df, returns_df, limit_df, market_df = _load_factor_and_returns(
         factor_id, start, end, horizons, ret_type,
         returns_df=_returns_df, limit_df=_limit_df, market_df=_market_df,
-        variant=variant,
     )
 
     merged = factor_df.merge(returns_df, on=["date", "symbol"], how="inner")
@@ -462,8 +456,7 @@ def evaluate(
     if corr_top_k > 0:
         with FactorLibrary() as lib:
             corr_df = _corr_with_existing(
-                factor_df, factor_id, lib,
-                top_k=corr_top_k, variant=variant,
+                factor_df, factor_id, lib, top_k=corr_top_k,
             )
     else:
         corr_df = pd.DataFrame(columns=_CORR_COLUMNS)
@@ -764,15 +757,6 @@ def main():
         help="Return calculation type (default: open)",
     )
     parser.add_argument(
-        "--variant",
-        default=BASELINE_VARIANT,
-        help=(
-            f"Neutralization variant to evaluate (default: {BASELINE_VARIANT}). "
-            f"e.g. 'raw' / 'swl2_capq5' / 'swl1_capq10'. Must already be "
-            f"backfilled into the work DB."
-        ),
-    )
-    parser.add_argument(
         "--corr-top-k",
         type=int,
         default=5,
@@ -844,7 +828,6 @@ def main():
                 fid,
                 args.start,
                 args.end,
-                variant=args.variant,
                 horizons=horizons,
                 ret_type=args.ret_type,
                 corr_top_k=args.corr_top_k,

@@ -86,10 +86,9 @@ class StrategyBase(ABC):
             if not factor_ids:
                 raise ValueError("No factors configured")
 
-            # Load all factor data for the date range — uses each FactorConfig's
-            # variant (default BASELINE_VARIANT = swl2_capq5).
+            # Load all factor data for the date range.
             factor_panel = self._load_factor_panel(
-                self.config.factors, start_date, end_date, factor_storage
+                factor_ids, start_date, end_date, factor_storage
             )
             if factor_panel.empty:
                 raise ValueError("No factor data found for the given date range")
@@ -216,31 +215,20 @@ class StrategyBase(ABC):
 
     @staticmethod
     def _load_factor_panel(
-        factor_ids_or_configs: list[str] | list,
+        factor_ids: list[str],
         start_date: str,
         end_date: str,
         factor_storage: FactorStorage,
     ) -> pd.DataFrame:
         """Load and merge multiple factors into a wide panel.
 
-        Accepts either:
-        - ``list[str]`` of factor ids (uses :data:`BASELINE_VARIANT` per factor)
-        - ``list[FactorConfig]`` (uses each entry's ``variant``)
+        Each factor is read at whichever neutralization variant it was
+        registered with — variant is a property of the factor, not the
+        strategy.
         """
-        # Normalize to list of (factor_id, variant) tuples
-        from backtest.factor.variants import BASELINE_VARIANT
-        from backtest.strategy.config import FactorConfig
-
-        pairs: list[tuple[str, str]] = []
-        for item in factor_ids_or_configs:
-            if isinstance(item, FactorConfig):
-                pairs.append((item.id, item.variant))
-            else:
-                pairs.append((str(item), BASELINE_VARIANT))
-
         all_factors: list[pd.DataFrame] = []
-        for fid, variant in pairs:
-            df = factor_storage.get_factor(fid, start_date, end_date, variant=variant)
+        for fid in factor_ids:
+            df = factor_storage.get_factor(fid, start_date, end_date)
             if df.empty:
                 continue
             df = df.rename(columns={"value": fid})

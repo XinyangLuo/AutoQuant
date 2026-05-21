@@ -22,23 +22,22 @@ from backtest.factor.storage import FactorStorage
 
 
 def cleanup_factor(factor_id: str) -> int:
-    """Delete a factor's rows from the work DB. Returns rows deleted."""
+    """Drop a factor's column from the work DB. Returns 1 if dropped, 0 if absent."""
     with FactorStorage() as work:
         return work.delete_factor(factor_id)
 
 
 def cleanup_all() -> dict[str, int]:
-    """Wipe every factor from the work DB. Returns ``{factor_id: rows}``."""
+    """Drop every factor column from the work DB. Returns ``{factor_id: 0|1}``."""
     with FactorStorage() as work:
         return work.delete_factors(sorted(work.get_existing_factor_ids()))
 
 
 def cleanup_orphans() -> dict[str, int]:
-    """Drop work rows for factors that are already admitted.
+    """Drop work columns for factors already admitted to the library.
 
-    These rows are leftovers from a partial admit (e.g. crash between the
-    library write and the work clear). They're noise — admitted factors
-    should live only in the library.
+    These are leftovers from a partial admit (e.g. crash between the library
+    write and the work drop). Admitted factors should live only in the library.
     """
     admitted = set(get_admitted_factor_ids())
     if not admitted:
@@ -65,8 +64,8 @@ def main():
             print("(work DB already empty)")
             return
         for fid, n in cleared.items():
-            print(f"  {fid}: {n:,} rows")
-        print(f"\nCleared {len(cleared)} factor(s), {sum(cleared.values()):,} rows total.")
+            print(f"  {fid}: {'dropped' if n else 'not present'}")
+        print(f"\nDropped {sum(cleared.values())} of {len(cleared)} factor column(s).")
         return
 
     if args.orphans:
@@ -75,11 +74,11 @@ def main():
             print("(no orphan rows)")
             return
         for fid, n in cleared.items():
-            print(f"  {fid}: {n:,} rows")
+            print(f"  {fid}: {'dropped' if n else 'not present'}")
         return
 
     n = cleanup_factor(args.factor_id)
-    print(f"  {args.factor_id}: cleared {n:,} rows")
+    print(f"  {args.factor_id}: {'dropped' if n else 'not present'}")
 
 
 if __name__ == "__main__":

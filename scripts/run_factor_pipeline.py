@@ -12,18 +12,17 @@ Output layout:
             detailed/       # event-driven backtest with commission, dividends, etc.
 
 After this script finishes, look at the reports and run
-``python -m backtest.factor.admission admit <factor_id> --variant <variant> --tag <tag>``
+``python -m backtest.factor.admission admit <factor_id> --tag <tag>``
 to promote, or ``reject ...`` to discard. The admission CLI auto-reads
 ``pipeline.json`` and stamps the strategy config into the registry history.
 
 Usage:
-    python scripts/run_factor_pipeline.py f_rev_05 \\
-        --variant swl2_capq5 \\
+    python scripts/run_factor_pipeline.py f_001 \\
         --start 20160101 --end 20251231 \\
         --direction asc --benchmark 000300.SH
 
     # 显式指定绝对数量 + 周度换仓 (旧默认)
-    python scripts/run_factor_pipeline.py f_rev_05 \\
+    python scripts/run_factor_pipeline.py f_001 \\
         --top-n 50 --rebalance 1W --decay 5 \\
         --direction asc --benchmark 000300.SH
 
@@ -73,7 +72,8 @@ from backtest.simulation import (
     SimpleSimulator,
     SimulationConfig,
 )
-from backtest.factor.variants import BASELINE_VARIANT
+from backtest.factor.registry import get_factor_meta
+from backtest.factor.variants import DEFAULT_VARIANT
 from backtest.strategy import (
     BacktestConfig,
     FactorConfig,
@@ -162,7 +162,6 @@ def stage_factor_eval(args, out_dir: Path) -> dict:
     result = factor_evaluate(
         args.factor_id,
         args.start, args.end,
-        variant=args.variant,
         horizons=horizons,
         ret_type=args.ret_type,
         corr_top_k=5,
@@ -243,7 +242,7 @@ def _build_strategy_config(args) -> StrategyConfig:
             min_market_cap=args.min_market_cap,
             min_avg_amount=args.min_avg_amount,
         ),
-        factors=[FactorConfig(id=args.factor_id, variant=args.variant, direction=args.direction)],
+        factors=[FactorConfig(id=args.factor_id, direction=args.direction)],
         selection=SelectionConfig(
             method="topk",
             top_k=args.top_n,
@@ -584,10 +583,10 @@ def write_pipeline_markdown(
     lines.append("")
     lines.append("```bash")
     lines.append(f"# 通过并入库")
-    lines.append(f"python -m backtest.factor.admission admit {fid} --variant {args.variant} --tag {tag}")
+    lines.append(f"python -m backtest.factor.admission admit {fid} --tag {tag}")
     lines.append("")
     lines.append(f"# 或放弃")
-    lines.append(f"python -m backtest.factor.admission reject {fid} --variant {args.variant} --tag {tag}")
+    lines.append(f"python -m backtest.factor.admission reject {fid} --tag {tag}")
     lines.append("```")
     lines.append("")
 
@@ -654,10 +653,8 @@ def print_decision_hint(args, eval_summary: dict, simple: dict, detailed: dict |
     tag = _build_tag(args)
     fid = eval_summary['factor_id']
     print("下一步:")
-    print(f"  python -m backtest.factor.admission admit  {fid} "
-          f"--variant {args.variant} --tag {tag}")
-    print(f"  python -m backtest.factor.admission reject {fid} "
-          f"--variant {args.variant} --tag {tag}")
+    print(f"  python -m backtest.factor.admission admit  {fid} --tag {tag}")
+    print(f"  python -m backtest.factor.admission reject {fid} --tag {tag}")
     print("=" * 70)
 
 
@@ -669,9 +666,6 @@ def print_decision_hint(args, eval_summary: dict, simple: dict, detailed: dict |
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the factor screening pipeline")
     p.add_argument("factor_id")
-    p.add_argument("--variant", default=BASELINE_VARIANT,
-                   help=f"Neutralization variant (default: {BASELINE_VARIANT}). "
-                        "Common: 'raw' (no neutralization), 'swl2_capq5' (SW-L2 + circ_mv quintile).")
     p.add_argument("--start", default="20160101")
     p.add_argument("--end", default="20251231")
     p.add_argument("--horizons", default="1,5,10,20,60")
@@ -721,6 +715,14 @@ def main():
     # 默认行为:两者都没传 → top_pct=0.1(前10%),保持旧脚本兼容。
     if args.top_n is None and args.top_pct is None:
         args.top_pct = 0.1
+
+    # variant is a property of the factor (recorded at @register time);
+    # the pipeline reads it from the registry so reports, paths, and the
+    # admission stamp all stay in sync.
+    try:
+        args.variant = get_factor_meta(args.factor_id).get("variant", DEFAULT_VARIANT)
+    except KeyError:
+        args.variant = DEFAULT_VARIANT
 
     variant_root = Path(args.results_root) / args.factor_id / args.variant
     tag = _build_tag(args)

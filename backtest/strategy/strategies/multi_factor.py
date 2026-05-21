@@ -15,8 +15,7 @@ class MultiFactorStrategy(StrategyBase):
 
     Combines multiple factors into a single composite score, then applies
     the same selection logic as SingleFactorStrategy. 因子值已经在因子层
-    完成行业/市值中性化(由 :class:`backtest.strategy.config.FactorConfig`
-    的 ``variant`` 选定),所以策略层不再做中性化。
+    完成中性化(由 registry 的 ``variant`` 字段记录),所以策略层不再做中性化。
 
     Supported combination methods:
       - **zscore_equal**: Z-score each factor cross-sectionally, then equal-weight sum.

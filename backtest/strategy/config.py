@@ -7,8 +7,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from backtest.factor.variants import BASELINE_VARIANT
-
 
 @dataclass
 class UniverseConfig:
@@ -27,15 +25,12 @@ class UniverseConfig:
 class FactorConfig:
     """Single factor configuration within a strategy.
 
-    ``variant`` selects which neutralization variant of the factor to load
-    from the factor table — the value the strategy actually consumes.
-    Defaults to :data:`backtest.factor.variants.BASELINE_VARIANT`
-    (``"swl2_capq5"``), i.e. the SW-L2 + circ_mv-q5 neutralized version.
-    Pass ``"raw"`` to consume the un-neutralized factor.
+    The strategy reads the factor's values at whichever neutralization
+    variant the factor was registered with — variant is a property of the
+    factor (recorded in registry), not the strategy.
     """
 
     id: str
-    variant: str = BASELINE_VARIANT
     direction: str = "desc"  # "desc" = higher is better, "asc" = lower is better
     weight: float = 1.0
 

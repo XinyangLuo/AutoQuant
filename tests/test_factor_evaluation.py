@@ -201,8 +201,8 @@ def tmp_factor_storage(tmp_path):
 
 
 def _make_long_factor(factor_id: str, values_per_day: dict[str, list[float]],
-                      symbols: list[str], variant: str = "raw") -> pd.DataFrame:
-    """Build a long-form factor DataFrame: (date, symbol, factor_id, variant, value)."""
+                      symbols: list[str]) -> pd.DataFrame:
+    """Build a long-form factor DataFrame: (date, symbol, factor_id, value)."""
     rows = []
     for date, vals in values_per_day.items():
         for sym, val in zip(symbols, vals):
@@ -210,7 +210,6 @@ def _make_long_factor(factor_id: str, values_per_day: dict[str, list[float]],
                 "date": pd.Timestamp(date),
                 "symbol": sym,
                 "factor_id": factor_id,
-                "variant": variant,
                 "value": val,
             })
     return pd.DataFrame(rows)
@@ -223,7 +222,7 @@ class TestCorrWithExisting:
             "symbol": ["A", "B", "A", "B"],
             "value": [1.0, 2.0, 1.1, 2.1],
         })
-        result = _corr_with_existing(factor_df, "f_new", tmp_factor_storage, variant="raw")
+        result = _corr_with_existing(factor_df, "f_new", tmp_factor_storage)
         assert result.empty
         assert list(result.columns) == ["factor_id", "corr", "n_dates"]
 
@@ -237,7 +236,7 @@ class TestCorrWithExisting:
         new_df = _make_long_factor(
             "f_new", {"2024-01-01": list(range(5))}, symbols,
         )[["date", "symbol", "value"]]
-        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage, top_k=0, variant="raw")
+        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage, top_k=0)
         assert result.empty
 
     def test_excludes_self(self, tmp_factor_storage):
@@ -249,7 +248,7 @@ class TestCorrWithExisting:
         tmp_factor_storage.insert_factors(df_self)
 
         factor_only = df_self[["date", "symbol", "value"]].copy()
-        result = _corr_with_existing(factor_only, "f_001", tmp_factor_storage, variant="raw")
+        result = _corr_with_existing(factor_only, "f_001", tmp_factor_storage)
         assert result.empty
 
     def test_identical_factor_has_corr_one(self, tmp_factor_storage):
@@ -260,7 +259,7 @@ class TestCorrWithExisting:
         tmp_factor_storage.insert_factors(_make_long_factor("f_existing", vals, symbols))
 
         new_df = _make_long_factor("f_new", vals, symbols)[["date", "symbol", "value"]]
-        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage, variant="raw")
+        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage)
 
         assert len(result) == 1
         assert result.iloc[0]["factor_id"] == "f_existing"
@@ -276,7 +275,7 @@ class TestCorrWithExisting:
         tmp_factor_storage.insert_factors(_make_long_factor("f_existing", existing_vals, symbols))
         new_df = _make_long_factor("f_new", new_vals, symbols)[["date", "symbol", "value"]]
 
-        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage, variant="raw")
+        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage)
         assert result.iloc[0]["corr"] == pytest.approx(-1.0, abs=1e-6)
 
     def test_sorted_by_abs_corr(self, tmp_factor_storage):
@@ -291,7 +290,7 @@ class TestCorrWithExisting:
         tmp_factor_storage.insert_factors(_make_long_factor("f_far", f_far, symbols))
 
         new_df = _make_long_factor("f_new", f_new, symbols)[["date", "symbol", "value"]]
-        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage, variant="raw")
+        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage)
 
         assert len(result) == 2
         assert result.iloc[0]["factor_id"] == "f_close"
@@ -309,7 +308,7 @@ class TestCorrWithExisting:
             "f_new", {d: list(range(10)) for d in dates}, symbols
         )[["date", "symbol", "value"]]
 
-        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage, top_k=2, variant="raw")
+        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage, top_k=2)
         assert len(result) == 2
 
     def test_skips_factor_with_no_date_overlap(self, tmp_factor_storage):
@@ -322,7 +321,7 @@ class TestCorrWithExisting:
         new_df = _make_long_factor(
             "f_new", {"2024-01-01": list(range(5))}, symbols,
         )[["date", "symbol", "value"]]
-        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage, variant="raw")
+        result = _corr_with_existing(new_df, "f_new", tmp_factor_storage)
         assert result.empty
 
 
@@ -330,7 +329,7 @@ class TestMaxCorr:
     def test_returns_none_when_empty(self):
         result = EvaluationResult(
             factor_id="f_x",
-            variant="raw",
+        
             ret_type="close",
             horizons=[1],
             start="20240101",
@@ -351,7 +350,7 @@ class TestMaxCorr:
         ])
         result = EvaluationResult(
             factor_id="f_x",
-            variant="raw",
+        
             ret_type="close",
             horizons=[1],
             start="20240101",

@@ -65,3 +65,4 @@ alphas/
 
 # 因子注册元数据（含私有 alpha 名称/描述，不公开）
 data/factor_library/registry.json
+.claude/scheduled_tasks.lock

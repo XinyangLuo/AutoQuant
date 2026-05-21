@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 from backtest.data.tushare_client import _find_project_root
-from backtest.factor.variants import (
-    DEFAULT_NEUTRALIZATIONS,
-    expand_variant_names,
-    normalize_neutralizations,
-)
+from backtest.factor.variants import DEFAULT_VARIANT, validate_variant
 
 
 _PROJECT_ROOT = _find_project_root()
@@ -21,6 +17,9 @@ _REGISTRY_PATH.parent.mkdir(parents=True, exist_ok=True)
 # In-memory cache
 _REGISTRY_CACHE: dict | None = None
 _FACTOR_FUNCTIONS: dict[str, Callable] = {}
+
+Frequency = Literal["D", "W", "M"]
+_VALID_FREQUENCIES: tuple[Frequency, ...] = ("D", "W", "M")
 
 
 def _load_registry() -> dict:
@@ -49,24 +48,32 @@ def register(
     data_sources: list[str],
     description: str = "",
     parameters: dict | None = None,
-    neutralizations: list[dict] | None = None,
+    variant: str = DEFAULT_VARIANT,
+    frequency: Frequency = "D",
 ):
     """Decorator to register a factor compute function.
 
     Parameters
     ----------
     parameters : dict | None
-        Kwargs forwarded into the compute function. Stored in registry
-        under ``parameters``.
-    neutralizations : list[dict] | None
-        Declared neutralization variants. Each entry is a dict with keys
-        ``industry`` and ``cap`` (see :mod:`backtest.factor.variants`).
-        ``None`` (default) → :data:`DEFAULT_NEUTRALIZATIONS`
-        (``[raw, swl1_capq5]``). Stored as a sibling of ``parameters`` so
-        these meta entries never get forwarded into the compute function.
+        Kwargs forwarded into the compute function on each call.
+    variant : str
+        Which neutralization pipeline produces the stored values
+        (see :mod:`backtest.factor.variants`). Default ``"barra_ind_size"``
+        — the PLAN.md §2.2 unified pipeline. Pass ``"none"`` for Barra
+        builtin factors that are themselves regressors of the pipeline.
+    frequency : ``"D"`` | ``"W"`` | ``"M"``
+        Intended signal frequency. Used by evaluation/strategy to pick
+        the right IC horizons and rebalance cadence; the factor values
+        themselves are always stored at daily granularity.
 
     Registration is in-memory only. Call ``sync_registry()`` to persist to disk.
     """
+    validate_variant(variant)
+    if frequency not in _VALID_FREQUENCIES:
+        raise ValueError(
+            f"Invalid frequency {frequency!r}. Valid: {_VALID_FREQUENCIES}"
+        )
 
     def decorator(func: Callable):
         registry = _load_registry()
@@ -84,8 +91,7 @@ def register(
         # in-memory cache.
         preserved = {
             k: existing[k]
-            for k in ("status", "admission", "admission_history",
-                      "variant_status", "variant_admission_history")
+            for k in ("status", "admission", "admission_history")
             if k in existing
         }
 
@@ -95,7 +101,8 @@ def register(
             "data_sources": data_sources,
             "description": description,
             "parameters": parameters or {},
-            "neutralizations": normalize_neutralizations(neutralizations),
+            "variant": variant,
+            "frequency": frequency,
             "func_name": func.__name__,
             "func_module": func.__module__,
             **preserved,
@@ -143,12 +150,6 @@ def get_factor_meta(factor_id: str) -> dict:
     if factor_id not in registry:
         raise KeyError(f"factor_id '{factor_id}' not found in registry")
     return registry[factor_id].copy()
-
-
-def get_factor_variants(factor_id: str) -> list[str]:
-    """Return the declared variant names for a factor (default 2 if absent)."""
-    meta = get_factor_meta(factor_id)
-    return expand_variant_names(meta.get("neutralizations"))
 
 
 def list_factors(category: str | None = None) -> list[dict]:

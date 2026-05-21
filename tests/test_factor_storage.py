@@ -124,6 +124,7 @@ class TestFactorLibrary:
         tmp_storage.insert_factors(sample_factors)
         tmp_library.promote_from_work("f_001", tmp_storage)
         cleared = tmp_storage.delete_factor("f_001")
-        assert cleared == 4
+        # delete_factor drops the column; returns 1 on success (0 if absent).
+        assert cleared == 1
         assert tmp_storage.get_factor("f_001").empty
         assert len(tmp_library.get_factor("f_001")) == 4

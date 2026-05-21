@@ -12,7 +12,7 @@ from backtest.strategy.selection import build_signals
 class SingleFactorStrategy(StrategyBase):
     """Single-factor strategy: rank stocks by one factor and select.
 
-    因子值已经在因子层完成行业/市值中性化(由 FactorConfig.variant 选定),
+    因子值已经在因子层完成中性化(由 registry 的 ``variant`` 字段记录),
     策略层不再做中性化。
 
     Supports three selection modes:
