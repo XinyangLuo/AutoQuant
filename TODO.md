@@ -3,27 +3,14 @@
 > 临时工单池。每项完成后从本文件删除；全部完成后删除整份 TODO.md。
 > 分级：P0=立刻/阻塞，P1=依赖 P0，P2=有价值但不紧急，P3=维护/锦上添花，P4=远期/想法池
 > 创建时间: 2026-05-18
-> 上次整理: 2026-05-22（P0 Barra 四 commit 全部完成，已删除）
+> 上次整理: 2026-05-22
 
 ---
 
 ## P0
 
-### 因子挖掘流程优化（`backtest/factor` + `backtest/evaluation`）
+### 因子挖掘流程优化 — 剩余项
 
-**代码已落地** (`b7c2007`)：`backtest/factor/pipeline/` 包，CLI 子模块设计。
-
-```bash
-python -m backtest.factor.pipeline init f_001 --start 20160101 --end 20251231
-python -m backtest.factor.pipeline step1 f_001   # ... step9 f_001
-python -m backtest.factor.pipeline run-all f_001 --start 20160101 --end 20251231
-```
-
-**已完成**：
-- [x] 单元测试 30 个（config/state/helpers/step1/step5/thresholds）
-- [x] Code review 修复（`c6fd0f0`）：删除重复函数、step3/4 eval 缓存、step6/7 提取共享 helper、step1 N+1 批量查询、硬编码阈值常量化、cleanup 顺序
-
-**待完成**：
 - [ ] 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
 - [ ] 端到端验证：用已有 Barra L1 因子跑通全链路
 - [ ] retry 逻辑在 `run-all` 中落地（step6/7 失败后自动调参重试）

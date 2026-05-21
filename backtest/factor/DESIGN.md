@@ -25,9 +25,16 @@ backtest/factor/
 ├── evaluation.py            # 离线评测: IC/RankIC/ICIR/turnover/decay/corr
 ├── admission.py             # admit / reject / status —— 看完报告后人工触发
 ├── cleanup.py               # 清 work DB 临时数据
-└── builtin/                 # 引擎自带的结构性因子（如 Barra 风险模型）
+├── pipeline/                # 因子挖掘流水线 step1~step9（详见 pipeline/DESIGN.md）
+│   ├── config.py
+│   ├── state.py
+│   ├── steps.py
+│   ├── _report.py
+│   ├── _cleanup.py
+│   └── __main__.py
+└── builtin/                 # 引擎自带的结构性因子（Barra 风险模型）
     ├── __init__.py
-    └── barra/               # Barra 风格因子（详见 P0-2 实施计划）
+    └── barra/               # Barra 风格因子
 ```
 
 **私有 alpha 代码**位于仓库顶层 `/alphas/`（已 gitignored，不公开到远端）。`backtest/factor/__init__.py` 在末尾会 `try: import alphas` 触发 `@register` 注册。`alphas/` 与 `backtest/factor/builtin/` 的边界：
@@ -221,7 +228,18 @@ corr 比较在 **同 variant 内** 进行（候选与 library 因子都各自读
   → All reference thresholds met. Run a backtest and decide on `admit`.
 ```
 
-### 3. 完整 pipeline driver（推荐）
+### 3. Pipeline driver（推荐，step1~step9 带淘汰门控）
+
+```bash
+python -m backtest.factor.pipeline init f_001 \
+    --start 20210101 --end 20241231 --frequency D
+
+python -m backtest.factor.pipeline run-all f_001
+```
+
+逐 step 执行，任一 step 失败即停并清理产物。详见 `pipeline/DESIGN.md`。
+
+### 4. 旧版 pipeline driver（无淘汰门控）
 
 ```bash
 python scripts/run_factor_pipeline.py f_001 \
@@ -229,7 +247,7 @@ python scripts/run_factor_pipeline.py f_001 \
     --direction desc --benchmark 000300.SH
 ```
 
-输出到 `results/<factor_id>/<variant>/{factor_eval, <tag>/{simple, detailed}}/`。
+输出到 `results/<factor_id>/<variant>/{factor_eval, <tag>/{simple, detailed}}/`。新版 pipeline 已覆盖此场景，旧脚本保留兼容。
 
 ### 4. 入库 / 拒绝（人工触发）
 
@@ -382,212 +400,3 @@ RECOMMENDED_THRESHOLDS = {
             └────────┘ └──────────┘
 ```
 
----
-
-# P0 实施计划
-
-> 本节为待落地任务的执行说明。完成对应任务后从这里删除并把内容合并到上面正文。
-
-## P0-1: 常用因子算子库扩展
-
-### 目标
-按 [WorldQuant Operators](https://platform.worldquantbrain.com/learn/operators) 一线常用算子补全 `transforms.py`，避免每次写因子代码重复构造样板。
-
-### 落地位置
-- 主文件: `backtest/factor/transforms.py`（已有 `_ts_roll` 私有辅助、`rank/z_score/ts_rank/ts_mean/ts_std` 7 个算子 + `industry_neutralize/cap_neutralize`）
-- 公开 API 导出: `backtest/factor/__init__.py`
-- 测试: 新建 `tests/factor/test_transforms.py`（如不存在）
-
-### 接口约定
-**所有算子**：输入/输出均为 MultiIndex `(date, symbol)` 的 `pd.Series`；多变量算子（`ts_corr` / `ts_cov`）输入两个 Series；NaN 跳过；`min_periods` 默认 = `window`。
-
-### 待补算子（按类别）
-
-**时序滚动**（复用 `_ts_roll`）：
-
-| 算子 | 签名 | 说明 |
-|---|---|---|
-| `ts_sum(s, window, min_periods=None)` | 滚动和 | |
-| `ts_max(s, window, min_periods=None)` | 滚动最大 | |
-| `ts_min(s, window, min_periods=None)` | 滚动最小 | |
-| `ts_argmax(s, window, min_periods=None)` | 最大值距今天数（0=今天），归一化到 `[0,1]` | 用 `rolling.apply(lambda x: x.argmax()/(len(x)-1))` |
-| `ts_argmin(s, window, min_periods=None)` | 最小值距今天数 | 同上 |
-| `ts_corr(s1, s2, window, min_periods=None)` | 滚动 Pearson 相关 | 按 symbol 分组对齐两 Series 后 `rolling.corr` |
-| `ts_cov(s1, s2, window, min_periods=None)` | 滚动协方差 | |
-| `delay(s, d=1)` | 按 symbol 时序后移 `d` 期 | `groupby('symbol').shift(d)` |
-| `delta(s, d=1)` | `s - delay(s, d)` | |
-| `decay_linear(s, window)` | 线性递减加权滚动均值（权重 `window,window-1,...,1`） | |
-
-**截面**（按 date groupby + apply）：
-
-| 算子 | 签名 | 说明 |
-|---|---|---|
-| `cs_zscore(s)` | 每日截面 z-score（均值 0，方差 1） | **注意**：现有 `z_score(s, window)` 是**时序**滚动；新增 `cs_zscore` 是**截面**单日。Barra 中性化必用 |
-| `cs_winsorize(s, k=3, mad_const=1.4826)` | 每日截面 MAD 去极值，超出 `median ± k·mad_const·MAD` 的 clip 到边界 | Barra 三级因子标准预处理 |
-| `cs_scale(s)` | 每日截面 L1 归一化：`s / s.abs().sum()` | |
-
-**元素级**：
-
-| 算子 | 签名 | 说明 |
-|---|---|---|
-| `signed_power(s, e)` | `sign(s) * |s|**e` | |
-| `sign_log(s)` | `sign(s) * log(1 + |s|)` | 压缩长尾 |
-
-### 命名整理（背向兼容）
-- 现有 `z_score` 是时序滚动，名字与截面 z-score 冲突。**新增 `ts_zscore` 作为别名**（同实现），同时引入 `cs_zscore`。`z_score` 保留为 `ts_zscore` 别名，标 `DeprecationWarning`。
-- 现有 `industry_neutralize` 内部按 industry 分组做的就是 `cs_zscore`，可在实现后调用新算子做内部清理（不必本次完成）。
-
-### 完成标准
-- [ ] 算子全部实现，签名注释含示例
-- [ ] `__init__.py` 全部导出
-- [ ] 每个算子至少一条单元测试覆盖普通情况 + NaN 情况
-- [ ] 在 `alphas/reversal_extensions.py` 任选一个因子用新算子改写，确认值与原实现一致（dry run）
-
----
-
-## P0-2: Barra 风险模型
-
-### 目标
-1. 清空旧的实验性因子（`f_rev_*`、`f_*` 旧 alpha），重建正式 Barra 因子库
-2. 注册 11 个 Barra 三级因子 + 7 个一级合成
-3. 把 PLAN.md §2.2 的统一中性化 pipeline 取代当前的多 variant fan-out (`industry_neutralize` × `cap_neutralize`)
-4. 入库时新增 PLAN.md §2.3 的 Ridge 检查
-
-### Variant 体系重构
-
-| 旧 | 新 |
-|---|---|
-| 默认 2 variant: `raw` + `swl2_capq5`；可声明 15 种 | **简化为 2 variant**: `raw`（原始值）+ `neutral`（统一中性化残差） |
-| `BASELINE_VARIANT = "swl2_capq5"` | `BASELINE_VARIANT = "neutral"` |
-| `variants.py` 枚举 industry × cap | `variants.py` 只保留 `RAW = "raw"`、`NEUTRAL = "neutral"` |
-
-**Barra 因子例外**：Size 因子自身不被中性化（它是中性化的回归变量），Industry 也是回归变量。所以 11 个 Barra 三级因子默认只跑 `raw` variant；7 个一级 Barra 因子也只 `raw`（合成自三级 raw）。
-
-### 11 个三级因子（落地位置）
-
-新建目录 `backtest/factor/builtin/barra/`：
-
-```
-backtest/factor/builtin/
-├── __init__.py
-└── barra/
-    ├── __init__.py     # 导入各 .py 触发 @register
-    ├── size.py         # LNCAP
-    ├── beta.py         # BETA (WLS, 252日, 半衰期63日, vs 000300.SH)
-    ├── momentum.py     # RSTR (简化版: 过去252日累计log return, 滞后11日)
-    ├── value.py        # BTOP / ETOP / DTOP
-    ├── quality.py      # ROA / GP / AGRO
-    ├── liquidity.py    # STOM (过去21日 Σ amount/circ_mv 的 log)
-    ├── growth.py       # EGRO (5年 EPS 对时间回归斜率 / mean(|EPS|))
-    └── composite.py    # 7 个一级合成因子
-```
-
-注册命名规范：
-- 三级: `f_barra_{l1}_{l3}`，如 `f_barra_size_lncap` / `f_barra_value_btop` / `f_barra_quality_agro`
-- 一级合成: `f_barra_{l1}`，如 `f_barra_value`（= mean(`f_barra_value_btop`, `f_barra_value_etop`, `f_barra_value_dtop`)）
-- `category = "barra_{l1}"`
-
-**单 variant 实现要点**：
-- Size/Beta/Momentum/Liquidity/Growth: 一级 = 二级 = 三级，注册时直接把三级因子的 `factor_id` 复用为一级名（或额外注册一个等价 alias）
-- Value: 7 个 factor_id（3 三级 + 1 一级；二级层不必单独建 factor_id，合成时直接从三级跳到一级即可）
-- Quality: 7 个（3 三级 + 1 一级）
-- Beta: 用 `get_index_bars(['000300.SH'])` 取基准日收益 → 按 symbol 滚动 252 日 WLS，权重 `0.5^((T-t)/63)`。考虑用 `numpy.linalg.lstsq` + 权重对角矩阵；性能瓶颈在 `groupby('symbol').rolling(252).apply`
-- AGRO: `get_fina_snapshot(D)` 取 5 年内每个季度的 `bs_total_assets`，对 `end_date` 做线性回归取斜率
-- EGRO: 同上但用 `inc_basic_eps`
-
-### 三级因子合成流程（PLAN.md §2.1 计算规则）
-
-每个三级因子在 register 中显式声明 `compute_pipeline=["mad_winsorize", "industry_median_fill", "cs_zscore"]`，由 `compute.py` 统一应用：
-
-1. 算出 raw 三级因子值（symbol × date）
-2. `cs_winsorize(raw, k=3)` — MAD 去极值，超出 `median ± 3×1.4826×MAD` clip 到边界
-3. 申万一级行业截面中位数填充缺失值 — 依赖 `MarketStorage.get_industry_panel_range(start, end, level='L1')`
-4. `cs_zscore` — 截面 z-score
-5. 写入 `factors_daily` 作为该三级因子的 `raw` variant
-
-二级 → 一级合成：等权平均所属三级因子的 z-score 值，再次 `cs_zscore` 标准化。落到 `factors_daily` 作为一级因子的 `raw` variant。
-
-### 统一中性化 pipeline（PLAN.md §2.2，已落地）
-
-**对非 Barra 候选 alpha**，`compute.py::apply_variant_pipeline` 在 `variant="barra_ind_size"` 分支执行：
-
-```
-1. MAD winsorize (cs_mad_winsorize, k=3)
-2. SW-L1 行业中位数填充
-3. cs_zscore
-4. 截面 OLS:  factor ~ intercept + 行业 dummies (drop_first) + Size_z
-   - Size_z 直接读 factor_storage 中已 barra_l3 流水线处理过的
-     f_barra_size_lncap(已 z-score)
-5. 取残差,再次 cs_zscore
-```
-
-实施要点：
-- OLS 用 `cs_ols_residualize`（`transforms.py`）—— 单次 groupby('date') 循环，
-  行业 dummies 在循环外通过 `Categorical` 一次性编码，每日按 codes 切片做
-  identity-style block，避免 `pd.get_dummies` 的 N+1 开销
-- `np.linalg.lstsq` 闭式解；OLS 残差对设计矩阵的列**精确正交**（数值~1e-10）
-- Size_z 从 `factor_storage.get_factor("f_barra_size_lncap")` 直接读
-  —— Commit 2 已落地 11 个 L3 + 7 个 L1，所以这一列保证存在
-- 行业哑变量从 `get_industry_panel_range(..., level='L1')` 取（31 个行业 one-hot
-  → drop_first 共 30 列）
-- 三级 Barra 因子（`f_barra_value_btop` 等）使用 `variant="barra_l3"` 走自身
-  pipeline（无 OLS）—— 不在这里处理；这里只服务 user 注册的候选 alpha
-- 输出写入宽表 `factors_daily`，列名 = `factor_id`，覆盖更新
-
-### 旧数据清理
-
-执行顺序（任务开工第一步）：
-```bash
-# 1. work DB 全清
-python -m backtest.factor.cleanup --all
-# 2. library DB 中旧因子全清
-# 旧 factor_id 列表见 registry.json，主要是 f_rev_* 与 f_001~f_xxx 中的实验性条目
-python -m backtest.factor.admission reject <factor_id> --all-variants  # 或直接 SQL DELETE
-# 3. 旧 alpha 代码本地归档或删除（alphas/ 已 gitignored，仅本地操作）
-mv alphas/reversal_extensions.py alphas/_archive/  # 或直接 rm
-mv alphas/reversal_zscore_combo.py alphas/_archive/
-# 4. registry.json 中相应条目删除
-```
-注意 schema 不需要改动 —— `factors_daily` 表结构通用，新 Barra 因子直接 INSERT 即可。
-
-### Ridge 入库检查（PLAN.md §2.3，已落地）
-
-`backtest/factor/admission_check.py::ridge_r2_check(factor_id, *, alpha=1.0, ...)`:
-
-- 从 work DB 读 candidate 因子值,从 library DB 读 6 个一级 Barra 因子
-  (`f_barra_beta`/`momentum`/`value`/`quality`/`liquidity`/`growth`,Size 与
-  Industry 在中性化阶段已剥离故不参与)。
-- Inner-join 后做带截距的 Ridge regression: `candidate ~ 6 Barra`,闭式解
-  `(XᵀX + αI) β = Xᵀy`,中心化吸收截距。`alpha=1.0` 是温和默认,稳定 6 个
-  L1 之间的中度共线性而不显著缩 fit。
-- R² = 1 - SS_res / SS_tot,4 档分流(详见下文)。
-- 返回 `RidgeCheckResult(factor_id, r2, tier, residual_icir, n_obs, n_regressors)`。
-
-R² 分层(PLAN.md §4 step8):
-- `< 0.10`: pure_alpha
-- `[0.10, 0.50)`: smart_beta
-- `[0.50, 0.80)`: edge_smart_beta — 对残差按 `frequency` (`D`→1d/`M`→21d) 算
-  IC 序列再算 ICIR,阈值日频 > 1.0 / 月频 > 0.8 才保留;不通过则降级为 reject。
-- `>= 0.80`: reject
-
-接入 `admit()`:
-- `admit(factor_id, ..., force=False, skip_ridge_check=False)`:tier=='reject'
-  默认抛 `ValueError` 阻断入库;`force=True` 强行写入(meta 仍记录 tier=reject)。
-- `skip_ridge_check=True` 跳过检查(库内未先填 Barra L1 时调试用)。
-- 自动跳过:meta 中 `category` 属于 `{"barra_l3", "barra_l1"}` 的因子被视为
-  bootstrap regressors,不走 ridge gate。
-- `tier` 与 `r2` 同时写入 `registry.json` 的顶层 meta(快速查询)和
-  `admission_history[-1].ridge_check` 详细 entry。
-- CLI `python -m backtest.factor.admission admit <fid>` 打印 R²、tier、n_obs;
-  edge_smart_beta 额外打印 residual ICIR。
-
-### 完成标准
-- [ ] 11 个三级 + 7 个一级 Barra 因子注册并可回填
-- [ ] `backfill --pending` 跑通整组 Barra 因子，回填 work + admit 到 library
-- [ ] 新中性化 pipeline 替换旧 `apply_neutralizations`；旧 fan-out 代码移除（保留 `industry_neutralize`/`cap_neutralize` 算子，仅作为底层工具不再被默认 pipeline 调用）
-- [ ] `BASELINE_VARIANT = "neutral"`，evaluation/strategy 默认消费 neutral
-- [ ] Ridge R² 检查实现并接入 `admit` 流程
-- [ ] 一篇 sanity-check 笔记：选两只代表股票（如 600519.SH / 300750.SZ）打印 Barra 7 个一级因子近 1 年值，确认量级合理（z-score 后基本在 [-3, 3]）
-
-### 与 PLAN.md §4 因子挖掘 pipeline（P1）的衔接
-P0-2 落地后，PLAN.md §4 的 step2（"中性化后与 size/industry corr < 0.05"）才能验证。step8（Ridge R²）的实现就是本节的 `ridge_r2_check`，可直接复用。
