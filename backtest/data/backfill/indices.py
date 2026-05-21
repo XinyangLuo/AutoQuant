@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from tqdm import tqdm
 
-from backtest.data.index_fetcher import fetch_index_daily
+from backtest.data.fetcher.index_fetcher import fetch_index_daily
 from backtest.data.storage import MarketStorage
 
 

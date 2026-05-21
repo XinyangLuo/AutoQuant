@@ -19,9 +19,9 @@ import pandas as pd
 from tqdm import tqdm
 
 from backtest.data._pipeline import update_by_ann_date
-from backtest.data.daily_fetcher import build_list_date_map, process_trade_date
-from backtest.data.dividends_fetcher import fetch_dividend_by_ann_date
-from backtest.data.fundamentals_fetcher import (
+from backtest.data.fetcher.daily_fetcher import build_list_date_map, process_trade_date
+from backtest.data.fetcher.dividends_fetcher import fetch_dividend_by_ann_date
+from backtest.data.fetcher.fundamentals_fetcher import (
     fetch_balancesheet_by_f_ann_date,
     fetch_cashflow_by_f_ann_date,
     fetch_income_by_f_ann_date,

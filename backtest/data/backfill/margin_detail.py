@@ -9,7 +9,7 @@ Usage:
 
 from tqdm import tqdm
 
-from backtest.data.daily_fetcher import MARGIN_COLS, MARGIN_RENAME_MAP, fetch_margin_detail
+from backtest.data.fetcher.daily_fetcher import MARGIN_COLS, MARGIN_RENAME_MAP, fetch_margin_detail
 from backtest.data.storage import MarketStorage
 
 

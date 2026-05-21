@@ -9,7 +9,7 @@ Usage:
 
 from tqdm import tqdm
 
-from backtest.data.daily_fetcher import (
+from backtest.data.fetcher.daily_fetcher import (
     MONEYFLOW_COLS,
     MONEYFLOW_RENAME_MAP,
     convert_moneyflow_units,

@@ -13,7 +13,7 @@ Usage:
 import pandas as pd
 
 from backtest.data._pipeline import backfill_by_symbol, run_symbol_backfill_cli
-from backtest.data.dividends_fetcher import fetch_dividend_by_symbol
+from backtest.data.fetcher.dividends_fetcher import fetch_dividend_by_symbol
 from backtest.data.storage import MarketStorage
 
 

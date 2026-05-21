@@ -17,7 +17,7 @@ import argparse
 import pandas as pd
 from tqdm import tqdm
 
-from backtest.data.fundamentals_fetcher import (
+from backtest.data.fetcher.fundamentals_fetcher import (
     fetch_balancesheet_by_symbol,
     fetch_cashflow_by_symbol,
     fetch_income_by_symbol,

@@ -27,7 +27,7 @@ from datetime import date, datetime, timedelta
 
 from tqdm import tqdm
 
-from backtest.data.index_members_fetcher import (
+from backtest.data.fetcher.index_members_fetcher import (
     densify_to_trade_dates,
     fetch_index_weights,
 )

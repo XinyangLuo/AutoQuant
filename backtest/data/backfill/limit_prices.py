@@ -9,7 +9,7 @@ Usage:
 
 from tqdm import tqdm
 
-from backtest.data.daily_fetcher import fetch_limit_prices
+from backtest.data.fetcher.daily_fetcher import fetch_limit_prices
 from backtest.data.storage import MarketStorage
 from backtest.data.tushare_client import api_call
 

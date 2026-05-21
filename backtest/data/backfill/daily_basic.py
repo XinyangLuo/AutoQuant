@@ -9,7 +9,7 @@ Usage:
 
 from tqdm import tqdm
 
-from backtest.data.daily_fetcher import fetch_daily_basic
+from backtest.data.fetcher.daily_fetcher import fetch_daily_basic
 from backtest.data.storage import MarketStorage
 
 

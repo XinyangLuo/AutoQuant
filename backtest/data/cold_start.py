@@ -25,9 +25,7 @@ from backtest.data._pipeline import print_stats
 from backtest.data.backfill.dividends import backfill_dividends
 from backtest.data.backfill.fundamentals import backfill_fundamentals
 from backtest.data.backfill.trade_calendar import backfill_trade_calendar
-from backtest.data.backfill.dividends import backfill.dividends
-from backtest.data.backfill.fundamentals import backfill.fundamentals
-from backtest.data.daily_fetcher import build_list_date_map, process_trade_date
+from backtest.data.fetcher.daily_fetcher import build_list_date_map, process_trade_date
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates

@@ -19,7 +19,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from backtest.data.storage import MarketStorage
-from backtest.data.sw_industry_fetcher import (
+from backtest.data.fetcher.sw_industry_fetcher import (
     build_sw_industry_rows,
     fetch_industry_classify,
     fetch_industry_members,
