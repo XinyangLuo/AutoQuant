@@ -22,9 +22,11 @@ import pandas as pd
 from tqdm import tqdm
 
 from backtest.data._pipeline import print_stats
-from backtest.data.backfill_dividends import backfill_dividends
-from backtest.data.backfill_fundamentals import backfill_fundamentals
-from backtest.data.backfill_trade_calendar import backfill_trade_calendar
+from backtest.data.backfill.dividends import backfill_dividends
+from backtest.data.backfill.fundamentals import backfill_fundamentals
+from backtest.data.backfill.trade_calendar import backfill_trade_calendar
+from backtest.data.backfill.dividends import backfill.dividends
+from backtest.data.backfill.fundamentals import backfill.fundamentals
 from backtest.data.daily_fetcher import build_list_date_map, process_trade_date
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
@@ -92,7 +94,7 @@ def main():
         print("\n=== Phase 0: trade_calendar ===")
         today = datetime.now().strftime("%Y%m%d")
         earliest_list_date = stock_list["list_date"].min()
-        n_cal = backfill_trade_calendar(
+        n_cal = backfill.trade_calendar(
             start_date=earliest_list_date,
             end_date=today,
         )
@@ -106,12 +108,12 @@ def main():
             return
 
         print("\n=== Phase 2: income + balancesheet + cashflow ===")
-        backfill_fundamentals(storage, stock_list=stock_list)
+        backfill.fundamentals(storage, stock_list=stock_list)
         for name in ("income_q", "balancesheet_q", "cashflow_q"):
             print_stats(name, storage.get_fundamentals_stats(name), date_col="f_ann_date", prefix="f_ann ")
 
         print("\n=== Phase 3: dividends ===")
-        backfill_dividends(storage, stock_list=stock_list)
+        backfill.dividends(storage, stock_list=stock_list)
         print_stats("dividends", storage.get_dividend_stats(), prefix="ann ")
 
         print("\n" + "=" * 50)
