@@ -8,18 +8,43 @@
 
 ## P0
 
+### Barra 风险模型分 4 commit 串行（`backtest/factor`）
+
+进度：
+
+- [x] **Commit 1: wide-format schema + variant 元数据化**（`44da10c`，2026-05-21）
+  - `factors_daily` 从 long 改 wide：PK=(date, symbol)，每个因子一列
+  - 删因子由 6 分钟 DELETE 改为毫秒级 `ALTER TABLE DROP COLUMN`
+  - `@register(variant=..., frequency="D"|"W"|"M")` 新接口；variant 退化为 registry 元数据
+  - 旧 13 个 `f_rev_*` 因子清空（4.4G → 268K）；alphas/ 仅保留 `__init__.py`
+  - 下游 admission / strategy / evaluation / pipeline script / tests 全部迁移
+  - `_existing_columns` 加缓存消除 N+1；DRY admission 三态查询；76/76 因子测试通过
+
+- [ ] **Commit 2: Barra 三级因子注册（11 个）+ 一级合成（7 个）**
+  - 新建 `backtest/factor/builtin/barra/`：`size.py / beta.py / momentum.py / value.py / quality.py / liquidity.py / growth.py / composite.py`
+  - 11 个三级因子按 PLAN.md §2.1 公式实现，全部 `variant="none"`（自身是中性化回归变量）
+  - 严谨版实现：Beta WLS（窗口 252、半衰期 63）；Momentum EWMA（半衰期 126）+ 滞后 11 日 + 11 日等权平均；AGRO/EGRO 5 年季度对时间回归
+  - 7 个一级合成因子：Size=LNCAP、Beta=BETA、Momentum=RSTR、Value=(BTOP+ETOP+DTOP)/3、Quality=(ROA+GP+AGRO)/3、Liquidity=STOM、Growth=EGRO
+  - Sanity check 笔记：选 600519.SH / 300750.SZ 打印 7 个一级因子近 1 年值，确认 z-score 后基本在 [-3, 3]
+
+- [ ] **Commit 3: 中性化 pipeline 替换为 PLAN.md §2.2 OLS 版**
+  - `compute.apply_variant_pipeline` 中 `barra_ind_size` 分支当前仅做 SW-L1 industry-group cs_zscore（占位）；替换为完整 pipeline：MAD 去极值 → 行业中位数填充 → cs_zscore → 截面 OLS（因子 ~ 行业哑变量 + Size_z）→ 取残差 → re-cs_zscore
+  - Size_z 从 `f_barra_size_lncap`（Commit 2 落地后）读
+  - 验证：选 1~2 个候选 alpha 用新 pipeline 跑，与 Barra 7 个一级因子的截面 Pearson corr < 0.05
+
+- [ ] **Commit 4: Ridge 入库检查 + R² 分层**
+  - 新增 `backtest/factor/admission_check.py::ridge_r2_check(factor_id) -> {r2, tier, residual_icir}`
+  - 候选因子 vs 6 个一级 Barra（除 Size 和 Industry）做 Ridge regression
+  - R² 分层（PLAN.md §4 step8）：< 0.10 pure_alpha / 0.10-0.50 smart_beta / 0.50-0.80 edge_smart_beta（需残差 ICIR 日频 > 1.0 月频 > 0.8）/ ≥ 0.80 reject
+  - `admit()` 在写入 library 时把 `tier` 和 `r2` 写入 `registry.json` meta
+
 ### 因子算子库（`backtest/factor`）
 
-- [ ] 参考 https://platform.worldquantbrain.com/learn/operators 实现一线常用算子，避免每次因子代码重复构造样板。详见 PLAN.md §1。
+- [x] 已合并到 main（`c6700c2`）：23 个 ts/cs/math/conditional 算子 + 完整 test suite
 
-### Barra 风险模型（`backtest/factor`）
+### 交易日历（`backtest/data` + `strategy` + `simulation`）
 
-- [ ] 删除旧因子表，新建以 Barra 风格因子为底的正式因子表
-- [ ] 三级因子计算：Size(LNCAP) / Beta(BETA) / Momentum(RSTR) / Value(BTOP+ETOP+DTOP) / Quality(ROA+GP+AGRO) / Liquidity(STOM) / Growth(EGRO)，公式见 PLAN.md §2.1
-- [ ] 合成流程：MAD 去极值（median ± 3×1.4826×MAD clip）→ 申万一级行业中位数填充 → 截面 z-score → 等权合成二级/一级
-- [ ] 财务因子防穿越，缺失值处理
-- [ ] 因子中性化：因子 ~ 行业哑变量 + Size_z 截面 OLS，取残差再标准化，替代原分层中性化（PLAN.md §2.2）
-- [ ] 入库检查：与剩余 6 个一级因子 Ridge Regression，按 R² 判 pure alpha / smart beta（PLAN.md §2.3）
+- [x] 已合并到 main（`6d3dd9c`）：`trade_calendar` 表 + `is_week_first/is_month_first` 标志
 
 ## P1
 
@@ -32,6 +57,11 @@
 ### 因子库可视化
 
 - [ ] 所有因子报告整合成 web 浏览页面。详见 PLAN.md §5。
+
+### Storage 共用底座（从 Commit 1 的 /simplify review 延期）
+
+- [ ] `_quote_ident` / `_upsert` / `_registered` 抽到共享模块，让 `FactorStorage` 和 `backtest/data/storage.py:MarketStorage` 共用 DuckDB 底座，避免两套并行实现长期漂移
+- [ ] `get_factors_long` 把 melt 推到 SQL（`UNION ALL` per column with `WHERE col IS NOT NULL`），避免 25M 行 × N 列宽表全部 melt 到内存
 
 ## P3
 
