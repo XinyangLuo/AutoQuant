@@ -28,10 +28,11 @@
   - DTOP 修复：dividend fetch 加 400 天回看 buffer，早期 trade date 的 TTM 不再被截断
   - composite 改 `groupby.mean()` 避免 pivot 内存峰值；共享 helper 抽到 `_common.py`
 
-- [x] **Commit 3: 中性化 pipeline 替换为 PLAN.md §2.2 OLS 版**（2026-05-22）
+- [x] **Commit 3: 中性化 pipeline 替换为 PLAN.md §2.2 OLS 版**（2026-05-22，含 code-review 收尾 `d74b4c7`）
   - `compute.apply_variant_pipeline` `barra_ind_size` 分支替换为完整 PLAN.md §2.2 pipeline：MAD 去极值 → SW-L1 行业中位数填充 → cs_zscore → 截面 OLS（intercept + 行业 dummies drop_first + Size_z）→ 取残差 → re-cs_zscore
-  - Size_z 直接读 `f_barra_size_lncap`（Commit 2 已落地，barra_l3 pipeline 后已是 z-score）
-  - 新增 `transforms.cs_ols_residualize(values, design_panel, dummy_col, numeric_cols)`：通用 OLS 残差算子，dummy 用 `Categorical` 在循环外一次性编码，循环内按 codes 切 identity-style block，避免 `pd.get_dummies` N+1 开销；`np.linalg.lstsq` 闭式解
+  - Size_z 直接读 `f_barra_size_lncap`（Commit 2 已落地，barra_l3 pipeline 后已是 z-score）；factor_id 抽成 `SIZE_LNCAP_ID` 常量在 `barra/size.py` 注册端导出
+  - 新增 `transforms.cs_ols_residualize(values, design_panel, dummy_col, numeric_cols)`：通用 OLS 残差算子，dummy 用 `Categorical` 在循环外一次性编码，循环内按 codes 切 identity-style block 避免 `pd.get_dummies` N+1；正规方程 `np.linalg.solve(XᵀX, Xᵀy)` 替代 lstsq SVD（rank-deficient 自动 fallback），p≈30/N≈5k 下约 5-10× 加速；残差写入 `np.full` 数组，return 时再裹 Series，省掉 `iloc` 边界检查 + 提前 MultiIndex 分配
+  - 设计 merge 加 `validate="m:1"` 防 (date, symbol) 重复 fan-out 静默污染残差
   - `apply_variant_pipeline` 增加 `factor_storage` 参数，`backfill.py` 透传
   - 验证：synthetic alpha = industry_effect + 1.2·size_z + noise → 残差对 size_z 和所有行业 dummies 的截面 Pearson corr < 1e-6（OLS 保证精确正交）
   - 测试：4 个 `cs_ols_residualize` 单元 + 2 个 pipeline 集成（barra_l3 / barra_ind_size），共 6 个新测试全部通过；全 factor 测试 206/206 通过
