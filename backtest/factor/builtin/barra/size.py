@@ -13,9 +13,11 @@ from backtest.factor.builtin.barra._common import to_panel_series
 from backtest.factor.registry import register
 from backtest.factor.variants import BARRA_L3_VARIANT
 
+SIZE_LNCAP_ID = "f_barra_size_lncap"
+
 
 @register(
-    "f_barra_size_lncap",
+    SIZE_LNCAP_ID,
     name="Barra Size — LNCAP",
     category="barra_l3",
     data_sources=["market_daily"],

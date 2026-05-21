@@ -201,29 +201,24 @@ def cs_ols_residualize(
     design = design_panel[cols].copy()
     design["date"] = pd.to_datetime(design["date"])
 
-    df = values.rename("__y__").reset_index()
+    y_name = "_cs_ols_y_"
+    df = values.rename(y_name).reset_index()
     df["date"] = pd.to_datetime(df["date"])
-    df = df.merge(design, on=["date", "symbol"], how="left")
+    # validate="m:1" catches dup (date, symbol) rows in design that would
+    # silently fan-out the merge and corrupt residuals.
+    df = df.merge(design, on=["date", "symbol"], how="left", validate="m:1")
 
-    out_index = pd.MultiIndex.from_arrays(
-        [df["date"], df["symbol"]], names=["date", "symbol"]
-    )
-    out = pd.Series(np.nan, index=out_index, dtype=float)
-
-    # Pre-encode dummies once for the whole panel; categorical codes let us
-    # slice into a dense identity-style block per date without rebuilding
-    # the dummy frame in the loop.
+    # Pre-encode dummies once; per-date we slice categorical codes into a
+    # dense identity-style block, avoiding pd.get_dummies in the loop.
     if dummy_col is not None:
-        cat = df[dummy_col].astype("category")
-        codes_all = cat.cat.codes.to_numpy()
-        n_levels = len(cat.cat.categories)
+        codes_all = df[dummy_col].astype("category").cat.codes.to_numpy()
     else:
         codes_all = None
-        n_levels = 0
-    y_all = df["__y__"].to_numpy(dtype=float)
+    y_all = df[y_name].to_numpy(dtype=float)
     numeric_block = (
         df[list(numeric_cols)].to_numpy(dtype=float) if numeric_cols else None
     )
+    out_arr = np.full(len(df), np.nan)
 
     for _, idx in df.groupby("date", sort=False).groups.items():
         positions = np.asarray(idx, dtype=int)
@@ -242,7 +237,7 @@ def cs_ols_residualize(
             day_codes = codes_all[sel]
             present = np.unique(day_codes)
             if present.size > 1:
-                # one-hot, drop first to avoid collinearity with intercept
+                # drop first level to avoid collinearity with the intercept
                 dummy_block = (day_codes[:, None] == present[None, 1:]).astype(float)
                 x_parts.append(dummy_block)
         if numeric_block is not None:
@@ -251,9 +246,22 @@ def cs_ols_residualize(
 
         if X.shape[0] <= X.shape[1]:
             continue
-        beta, *_ = np.linalg.lstsq(X, y, rcond=None)
-        out.iloc[sel] = y - X @ beta
+        # Normal equations are ~5-10x faster than lstsq's SVD at p≈30, N≈5k.
+        # Fall back to lstsq on rank-deficient days.
+        XtX = X.T @ X
+        Xty = X.T @ y
+        try:
+            beta = np.linalg.solve(XtX, Xty)
+        except np.linalg.LinAlgError:
+            beta, *_ = np.linalg.lstsq(X, y, rcond=None)
+        out_arr[sel] = y - X @ beta
 
+    out = pd.Series(
+        out_arr,
+        index=pd.MultiIndex.from_arrays(
+            [df["date"], df["symbol"]], names=["date", "symbol"]
+        ),
+    )
     return out.reindex(values.index)
 
 

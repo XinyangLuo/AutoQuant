@@ -10,6 +10,7 @@ import pandas as pd
 
 from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
+from backtest.factor.builtin.barra.size import SIZE_LNCAP_ID
 from backtest.factor.registry import get_factor_function, get_factor_meta
 from backtest.factor.storage import FactorStorage
 from backtest.factor.transforms import (
@@ -209,11 +210,11 @@ def apply_variant_pipeline(
                 if factor_storage is None:
                     factor_storage = FactorStorage()
                 size_df = factor_storage.get_factor(
-                    "f_barra_size_lncap", start=start, end=end,
+                    SIZE_LNCAP_ID, start=start, end=end,
                 )
                 if size_df.empty:
                     raise RuntimeError(
-                        "barra_ind_size pipeline requires f_barra_size_lncap to "
+                        f"barra_ind_size pipeline requires {SIZE_LNCAP_ID} to "
                         "be backfilled first; got empty Size_z panel."
                     )
                 size_df = size_df.rename(columns={"value": "size_z"})

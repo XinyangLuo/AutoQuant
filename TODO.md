@@ -72,6 +72,7 @@
 - [ ] `compute.py` 财务因子 panel 拼接走流式：现在每个 trade_date 跑一次 `get_fina_snapshot` 再 `pd.concat` N 个 snapshot，最坏 ~14B 单元；改成按 trade_date 分块计算再拼小结果，或者在 storage 层加 `get_fina_snapshot_range(start, end)` 用区间 join 一次出长表
 - [ ] `momentum.py:_ewm_log_return_sum` 的 `rolling.apply` 用 `sliding_window_view` 向量化（与 beta 已做的对应），节省全市场 5000 股 × 1000 天 backfill 时间
 - [ ] backfill 多因子并行：现在 `compute_all` 串行循环 registry，可用 `ProcessPoolExecutor` 并发跑独立因子
+- [ ] `cs_mad_winsorize` / `cs_zscore` 等 `cs_*` 算子从 `groupby.apply(_one)` 改为 `groupby.transform('mean'/'std')` + numpy 直算；`barra_ind_size` pipeline 跑 5 次 `groupby(date)`，向量化后预计 3-5× 加速
 
 ## P3
 
