@@ -63,7 +63,8 @@ class TestAdmit:
             assert len(work.get_factor("f_test")) == 6
 
         registry = _seed_registry()
-        action = admit("f_test", notes="test", registry=registry)
+        action = admit("f_test", notes="test", registry=registry,
+                       skip_ridge_check=True)
 
         assert action.action == "admitted"
         assert action.rows_promoted == 6
@@ -85,11 +86,11 @@ class TestAdmit:
     def test_admit_without_work_data_raises(self, patched_storage):
         registry = _seed_registry()
         with pytest.raises(ValueError, match="No data in work DB"):
-            admit("f_test", registry=registry)
+            admit("f_test", registry=registry, skip_ridge_check=True)
 
     def test_admit_unknown_factor_raises(self, patched_storage):
         with pytest.raises(KeyError):
-            admit("f_unknown", registry={})
+            admit("f_unknown", registry={}, skip_ridge_check=True)
 
 
 class TestReject:
@@ -156,6 +157,7 @@ class TestStrategyConfigCapture:
         action = admit(
             "f_test", notes="test",
             registry=registry, strategy_config=cfg,
+            skip_ridge_check=True,
         )
 
         assert action.action == "admitted"
@@ -178,7 +180,7 @@ class TestStrategyConfigCapture:
             work.insert_factors(sample_rows)
 
         registry = _seed_registry()
-        admit("f_test", registry=registry)
+        admit("f_test", registry=registry, skip_ridge_check=True)
         entry = registry["f_test"]["admission_history"][-1]
         assert "strategy_config" not in entry
 
@@ -238,3 +240,123 @@ class TestDiscoverStrategyConfig:
         (tmp_path / "f_x" / "factor_eval").mkdir(parents=True)
         got = _discover_strategy_config("f_x", results_root=tmp_path)
         assert got is None
+
+
+class TestAdmitRidgeGate:
+    """admit() runs ridge_r2_check and blocks the reject tier (unless force)."""
+
+    @staticmethod
+    def _seed_library_with_barra_l1(rng, dates, symbols, scale=1.0):
+        """Insert all 6 Barra L1 regressor columns into the library DB."""
+        import numpy as np
+        from backtest.factor.admission_check import BARRA_L1_REGRESSORS
+        n = len(dates) * len(symbols)
+        rows = []
+        for fid in BARRA_L1_REGRESSORS:
+            rows.append(pd.DataFrame({
+                "date": np.repeat(dates, len(symbols)),
+                "symbol": np.tile(symbols, len(dates)),
+                "factor_id": fid,
+                "value": scale * rng.standard_normal(n),
+            }))
+        with FactorLibrary() as lib:
+            for sub in rows:
+                lib.insert_factors(sub)
+
+    def test_pure_alpha_stamps_tier_on_meta(self, patched_storage):
+        import numpy as np
+        rng = np.random.default_rng(0)
+        dates = pd.date_range("2024-01-01", periods=40, freq="B")
+        symbols = [f"S{i:03d}" for i in range(25)]
+        self._seed_library_with_barra_l1(rng, dates, symbols)
+
+        # Candidate is pure noise → R² near 0 → pure_alpha tier.
+        n = len(dates) * len(symbols)
+        with FactorStorage() as work:
+            work.insert_factors(pd.DataFrame({
+                "date": np.repeat(dates, len(symbols)),
+                "symbol": np.tile(symbols, len(dates)),
+                "factor_id": "f_test",
+                "value": rng.standard_normal(n),
+            }))
+
+        registry = _seed_registry()
+        action = admit("f_test", registry=registry)
+        assert action.action == "admitted"
+
+        meta = registry["f_test"]
+        assert meta["tier"] == "pure_alpha"
+        assert meta["r2"] < 0.10
+        rc = meta["admission"]["ridge_check"]
+        assert rc["tier"] == "pure_alpha"
+        assert rc["n_obs"] == n
+
+    def test_reject_tier_blocks_admit(self, patched_storage):
+        import numpy as np
+        from backtest.factor.admission_check import BARRA_L1_REGRESSORS
+        rng = np.random.default_rng(1)
+        dates = pd.date_range("2024-01-01", periods=40, freq="B")
+        symbols = [f"S{i:03d}" for i in range(25)]
+        self._seed_library_with_barra_l1(rng, dates, symbols)
+
+        # Build candidate as a near-perfect sum of the regressors.
+        n = len(dates) * len(symbols)
+        rng2 = np.random.default_rng(1)  # reseed to reproduce same regressors
+        regs = {fid: rng2.standard_normal(n) for fid in BARRA_L1_REGRESSORS}
+        candidate = sum(regs.values()) + 0.001 * rng.standard_normal(n)
+
+        with FactorStorage() as work:
+            work.insert_factors(pd.DataFrame({
+                "date": np.repeat(dates, len(symbols)),
+                "symbol": np.tile(symbols, len(dates)),
+                "factor_id": "f_test",
+                "value": candidate,
+            }))
+
+        registry = _seed_registry()
+        with pytest.raises(ValueError, match="blocked by ridge_r2_check"):
+            admit("f_test", registry=registry)
+        # Status untouched; factor still in work DB.
+        assert registry["f_test"].get("status") not in {"admitted"}
+        with FactorStorage() as work:
+            assert not work.get_factor("f_test").empty
+
+    def test_force_overrides_reject(self, patched_storage):
+        import numpy as np
+        from backtest.factor.admission_check import BARRA_L1_REGRESSORS
+        rng = np.random.default_rng(2)
+        dates = pd.date_range("2024-01-01", periods=40, freq="B")
+        symbols = [f"S{i:03d}" for i in range(25)]
+        self._seed_library_with_barra_l1(rng, dates, symbols)
+
+        n = len(dates) * len(symbols)
+        rng2 = np.random.default_rng(2)
+        regs = {fid: rng2.standard_normal(n) for fid in BARRA_L1_REGRESSORS}
+        candidate = sum(regs.values()) + 0.001 * rng.standard_normal(n)
+
+        with FactorStorage() as work:
+            work.insert_factors(pd.DataFrame({
+                "date": np.repeat(dates, len(symbols)),
+                "symbol": np.tile(symbols, len(dates)),
+                "factor_id": "f_test",
+                "value": candidate,
+            }))
+
+        registry = _seed_registry()
+        action = admit("f_test", registry=registry, force=True)
+        assert action.action == "admitted"
+        assert registry["f_test"]["tier"] == "reject"
+        # force still records the verdict — caller chose to override knowingly.
+
+    def test_bootstrap_categories_skip_ridge_check(self, patched_storage, sample_rows):
+        """barra_l3 / barra_l1 factors don't trigger the ridge gate."""
+        with FactorStorage() as work:
+            work.insert_factors(sample_rows)
+        registry = _seed_registry()
+        registry["f_test"]["category"] = "barra_l3"
+
+        action = admit("f_test", registry=registry)
+        assert action.action == "admitted"
+        # No ridge check ran → no tier / r2 stamped.
+        assert "tier" not in registry["f_test"]
+        assert "ridge_check" not in registry["f_test"]["admission"]

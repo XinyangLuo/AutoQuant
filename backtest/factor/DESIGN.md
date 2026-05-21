@@ -550,29 +550,36 @@ mv alphas/reversal_zscore_combo.py alphas/_archive/
 ```
 注意 schema 不需要改动 —— `factors_daily` 表结构通用，新 Barra 因子直接 INSERT 即可。
 
-### Ridge 入库检查（PLAN.md §2.3）
+### Ridge 入库检查（PLAN.md §2.3，已落地）
 
-新增 `backtest/factor/admission_check.py`（或并入 `admission.py`）：
+`backtest/factor/admission_check.py::ridge_r2_check(factor_id, *, alpha=1.0, ...)`:
 
-```python
-def ridge_r2_check(factor_id: str, variant: str = 'neutral',
-                   start: str | None = None, end: str | None = None) -> dict:
-    """
-    Pool candidate factor values + 6 个一级 Barra 因子（除 Size 和 Industry,
-    即 Beta / Momentum / Value / Quality / Liquidity / Growth）的 raw variant,
-    做 Ridge regression: candidate ~ 6 Barra.
-    Returns: {"r2": float, "tier": "pure_alpha"|"smart_beta"|"edge_smart_beta"|"reject",
-              "residual_icir": float | None}
-    """
-```
+- 从 work DB 读 candidate 因子值,从 library DB 读 6 个一级 Barra 因子
+  (`f_barra_beta`/`momentum`/`value`/`quality`/`liquidity`/`growth`,Size 与
+  Industry 在中性化阶段已剥离故不参与)。
+- Inner-join 后做带截距的 Ridge regression: `candidate ~ 6 Barra`,闭式解
+  `(XᵀX + αI) β = Xᵀy`,中心化吸收截距。`alpha=1.0` 是温和默认,稳定 6 个
+  L1 之间的中度共线性而不显著缩 fit。
+- R² = 1 - SS_res / SS_tot,4 档分流(详见下文)。
+- 返回 `RidgeCheckResult(factor_id, r2, tier, residual_icir, n_obs, n_regressors)`。
 
-R² 分层（PLAN.md §4 step8）：
+R² 分层(PLAN.md §4 step8):
 - `< 0.10`: pure_alpha
 - `[0.10, 0.50)`: smart_beta
-- `[0.50, 0.80)`: edge_smart_beta — 需对 Ridge 残差再算 ICIR，日频 > 1.0 / 月频 > 0.8 才保留
+- `[0.50, 0.80)`: edge_smart_beta — 对残差按 `frequency` (`D`→1d/`M`→21d) 算
+  IC 序列再算 ICIR,阈值日频 > 1.0 / 月频 > 0.8 才保留;不通过则降级为 reject。
 - `>= 0.80`: reject
 
-`admit()` 在写入 library 时同时把 `tier` 和 `r2` 写入 `registry.json` 的 meta。
+接入 `admit()`:
+- `admit(factor_id, ..., force=False, skip_ridge_check=False)`:tier=='reject'
+  默认抛 `ValueError` 阻断入库;`force=True` 强行写入(meta 仍记录 tier=reject)。
+- `skip_ridge_check=True` 跳过检查(库内未先填 Barra L1 时调试用)。
+- 自动跳过:meta 中 `category` 属于 `{"barra_l3", "barra_l1"}` 的因子被视为
+  bootstrap regressors,不走 ridge gate。
+- `tier` 与 `r2` 同时写入 `registry.json` 的顶层 meta(快速查询)和
+  `admission_history[-1].ridge_check` 详细 entry。
+- CLI `python -m backtest.factor.admission admit <fid>` 打印 R²、tier、n_obs;
+  edge_smart_beta 额外打印 residual ICIR。
 
 ### 完成标准
 - [ ] 11 个三级 + 7 个一级 Barra 因子注册并可回填

@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
+from backtest.factor.admission_check import RidgeCheckResult, ridge_r2_check
 from backtest.factor.registry import (
     _load_registry,
     _save_registry,
@@ -89,6 +90,12 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Categories that bootstrap the library — they ARE the regressors used by
+# the ridge R² check, so they're admitted before the check exists for anything
+# else. Always-skip these from the gate.
+_BOOTSTRAP_CATEGORIES: frozenset[str] = frozenset({"barra_l3", "barra_l1"})
+
+
 def _finalize_action(
     factor_id: str,
     status: Status,
@@ -99,6 +106,7 @@ def _finalize_action(
     registry: dict,
     persist: bool,
     strategy_config: dict | None = None,
+    ridge_check: RidgeCheckResult | None = None,
 ) -> AdmissionAction:
     """Stamp the action onto the registry."""
     entry = {
@@ -110,10 +118,15 @@ def _finalize_action(
     }
     if strategy_config is not None:
         entry["strategy_config"] = strategy_config
+    if ridge_check is not None:
+        entry["ridge_check"] = ridge_check.as_meta()
 
     meta = registry[factor_id]
     meta["status"] = status
     meta["admission"] = entry
+    if ridge_check is not None:
+        meta["tier"] = ridge_check.tier
+        meta["r2"] = float(ridge_check.r2)
     history = meta.setdefault("admission_history", [])
     history.append(entry)
     del history[:-20]
@@ -142,26 +155,49 @@ def admit(
     notes: str | None = None,
     registry: dict | None = None,
     strategy_config: dict | None = None,
+    force: bool = False,
+    skip_ridge_check: bool = False,
 ) -> AdmissionAction:
     """Promote a factor from the work DB into the stable library.
 
     Steps:
       1. Read factor column from ``FactorStorage`` (work DB).
-      2. Upsert into ``FactorLibrary`` (library DB).
-      3. Drop the column from the work DB.
-      4. Mark ``registry[factor_id]["status"] = "admitted"``.
+      2. Run :func:`ridge_r2_check` against the 6 Barra L1 styles in the
+         library (skipped for ``barra_l3`` / ``barra_l1`` categories — they
+         ARE the regressors). A ``reject`` tier blocks promotion unless
+         ``force=True``; the tier + R² are stamped onto meta either way.
+      3. Upsert into ``FactorLibrary`` (library DB).
+      4. Drop the column from the work DB.
+      5. Mark ``registry[factor_id]["status"] = "admitted"``.
 
     Raises
     ------
     KeyError
         If ``factor_id`` is not registered.
     ValueError
-        If the work DB has no data for this factor.
+        If the work DB has no data for this factor, or the ridge check
+        returned ``reject`` and ``force`` is False.
     """
     persist = registry is None
     target = registry if registry is not None else _load_registry()
     if factor_id not in target:
         raise KeyError(f"factor_id '{factor_id}' not found in registry")
+
+    meta = target[factor_id]
+    category = str(meta.get("category", ""))
+    should_check = (
+        not skip_ridge_check and category not in _BOOTSTRAP_CATEGORIES
+    )
+
+    ridge_result: RidgeCheckResult | None = None
+    if should_check:
+        ridge_result = ridge_r2_check(factor_id)
+        if ridge_result.tier == "reject" and not force:
+            raise ValueError(
+                f"{factor_id} blocked by ridge_r2_check: R²={ridge_result.r2:.3f} "
+                f"-> tier=reject. Override with force=True if you really want "
+                f"this style-clone in the library."
+            )
 
     with FactorStorage() as work, FactorLibrary() as lib:
         rows_promoted = lib.promote_from_work(factor_id, work)
@@ -177,6 +213,7 @@ def admit(
         rows_promoted=rows_promoted, rows_cleared=rows_cleared,
         notes=notes, registry=target, persist=persist,
         strategy_config=strategy_config,
+        ridge_check=ridge_result,
     )
 
 
@@ -383,6 +420,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_admit = sub.add_parser("admit", help="Promote factor from work DB to library DB")
     p_admit.add_argument("factor_id")
     p_admit.add_argument("--notes", default=None, help="Free-form note for history")
+    p_admit.add_argument("--force", action="store_true",
+                         help="Bypass the ridge R² reject gate. Use only when "
+                              "you really want a style-clone (R²>=0.80) in the library.")
+    p_admit.add_argument("--skip-ridge-check", action="store_true",
+                         help="Don't run the ridge check at all (e.g. when "
+                              "library doesn't yet contain the 6 Barra L1).")
     _add_meta_flags(p_admit)
 
     p_reject = sub.add_parser("reject", help="Discard factor — clear work DB, mark rejected")
@@ -411,16 +454,32 @@ def main():
             except (ValueError, FileNotFoundError) as exc:
                 parser.exit(2, f"{args.cmd} failed: {exc}\n")
         try:
-            fn = admit if args.cmd == "admit" else reject
-            action = fn(
-                args.factor_id, notes=args.notes,
-                strategy_config=strategy_config,
-            )
+            if args.cmd == "admit":
+                action = admit(
+                    args.factor_id, notes=args.notes,
+                    strategy_config=strategy_config,
+                    force=args.force,
+                    skip_ridge_check=args.skip_ridge_check,
+                )
+            else:
+                action = reject(
+                    args.factor_id, notes=args.notes,
+                    strategy_config=strategy_config,
+                )
         except (KeyError, ValueError) as exc:
             parser.exit(2, f"{args.cmd} failed: {exc}\n")
         print_action(action)
         if strategy_config:
-            print(f"  strategy_config recorded ({len(strategy_config)} fields)\n")
+            print(f"  strategy_config recorded ({len(strategy_config)} fields)")
+        if args.cmd == "admit":
+            entry = get_registry()[args.factor_id].get("admission", {})
+            rc = entry.get("ridge_check")
+            if rc is not None:
+                print(f"  ridge check          : R²={rc['r2']:.3f} "
+                      f"tier={rc['tier']} n_obs={rc['n_obs']:,}")
+                if rc.get("residual_icir") is not None:
+                    print(f"  residual ICIR        : {rc['residual_icir']:.3f}")
+        print()
         return
 
     if args.cmd == "status":

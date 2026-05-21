@@ -48,6 +48,11 @@ from backtest.factor.admission import (
     print_status,
     reject,
 )
+from backtest.factor.admission_check import (
+    BARRA_L1_REGRESSORS,
+    RidgeCheckResult,
+    ridge_r2_check,
+)
 from backtest.factor.compute import compute_factor, compute_all
 from backtest.factor.evaluation import evaluate, print_evaluation
 from backtest.factor.registry import (
@@ -124,6 +129,9 @@ __all__ = [
     "list_factors",
     "admit",
     "reject",
+    "ridge_r2_check",
+    "BARRA_L1_REGRESSORS",
+    "RidgeCheckResult",
     "AdmissionAction",
     "STATUS_ADMITTED",
     "STATUS_REJECTED",

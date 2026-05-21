@@ -37,11 +37,13 @@
   - 验证：synthetic alpha = industry_effect + 1.2·size_z + noise → 残差对 size_z 和所有行业 dummies 的截面 Pearson corr < 1e-6（OLS 保证精确正交）
   - 测试：4 个 `cs_ols_residualize` 单元 + 2 个 pipeline 集成（barra_l3 / barra_ind_size），共 6 个新测试全部通过；全 factor 测试 206/206 通过
 
-- [ ] **Commit 4: Ridge 入库检查 + R² 分层**
-  - 新增 `backtest/factor/admission_check.py::ridge_r2_check(factor_id) -> {r2, tier, residual_icir}`
-  - 候选因子 vs 6 个一级 Barra（除 Size 和 Industry）做 Ridge regression
-  - R² 分层（PLAN.md §4 step8）：< 0.10 pure_alpha / 0.10-0.50 smart_beta / 0.50-0.80 edge_smart_beta（需残差 ICIR 日频 > 1.0 月频 > 0.8）/ ≥ 0.80 reject
-  - `admit()` 在写入 library 时把 `tier` 和 `r2` 写入 `registry.json` meta
+- [x] **Commit 4: Ridge 入库检查 + R² 分层**（2026-05-22）
+  - 新增 `backtest/factor/admission_check.py::ridge_r2_check(factor_id) -> RidgeCheckResult(r2, tier, residual_icir, n_obs, n_regressors)`
+  - candidate 因子 vs 6 个一级 Barra（除 Size 和 Industry，即 Beta/Momentum/Value/Quality/Liquidity/Growth）做 Ridge regression（带截距 `(XᵀX + αI) β = Xᵀy` 闭式解，默认 α=1.0）
+  - R² 分层（PLAN.md §4 step8）：< 0.10 pure_alpha / 0.10-0.50 smart_beta / 0.50-0.80 edge_smart_beta（残差 ICIR 日频 > 1.0 月频 > 0.8 不通过则降为 reject）/ ≥ 0.80 reject
+  - `admit()` 新增 `force` / `skip_ridge_check` 参数；tier=='reject' 默认抛 `ValueError`，需要 `force=True` 才能强行入库；`barra_l3`/`barra_l1` 类目自动跳过（这些是 regressors 本身）；`tier` 和 `r2` 同时写入 `registry.json` 顶层 meta + `admission_history[-1].ridge_check` 详细 entry
+  - CLI `admit` 子命令新增 `--force` / `--skip-ridge-check`，打印 R²/tier/n_obs（edge_smart_beta 额外打印 residual ICIR）
+  - 测试：15 个新 `test_factor_admission_check.py`（分层 / Ridge / pooled R² / 集成）+ 4 个 `TestAdmitRidgeGate`（pure_alpha 标记 / reject 阻断 / force 覆盖 / bootstrap 跳过）；全 factor 测试 225/225 通过
 
 ### 因子算子库（`backtest/factor`）
 

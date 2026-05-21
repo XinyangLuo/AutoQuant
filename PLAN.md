@@ -56,8 +56,6 @@ Barra风格因子中性化，用于取代原有的分层中性化。
   * 截面缺失率：量价因子 < 10%，财务因子 < 30%
 * **step2: Barra风格中性化后计算与已有因子库的相关性**
   * 与 size、industry 的相关性 < 0.05（验中性化是否成功）
-  * 与已有因子的最大 corr < 0.5
-  * 相关性测度：取每日截面 **Pearson 相关系数**，再取时序均值，取绝对值
 * **step3: 离线 ICIR 计算**
   * 年化 ICIR 计算方式：$\frac{\mu(IC)}{\sigma(IC)} \cdot \sqrt{\frac{252}{h}}$，$h$ 为 ret 周期
   * 日频阈值：|IC| > 0.01；年化 ICIR > **1.0**；t > 2.0；正 IC 占比 > 55%
@@ -86,12 +84,14 @@ Barra风格因子中性化，用于取代原有的分层中性化。
   * 不通过返回 step5，agent 根据本次数据调整 decay/universe，**最多重试 3 次**
 * **step8: 对剩余 Barra 一级因子（除市值和行业）做 Ridge Regression，按 R² 分流**
   * 首先按日频/月频分库
+  * 与已有因子的最大 corr < 0.5
   * R² 分层：
     * R² < 0.10：**pure alpha**
     * 0.10 ≤ R² < 0.50：**smart beta**
     * 0.50 ≤ R² < 0.80：**边缘 smart beta**，需在残差上额外通过 ICIR 检验才保留
     * R² ≥ 0.80：丢弃（视为现有风格因子的复制品）
   * 边缘 smart beta 残差 ICIR 检验：对 Ridge 残差按 step3 阈值再算一遍 ICIR（日频残差 ICIR > 1.0，月频 > 0.8），通过则入边缘 smart beta 库，否则丢弃
+  * 严格版（记为TODO），看
 * **step9: 操作入库**
   * 在因子 meta 中记录回测细节（decay、universe）和详细指标（每一种测试方式的结果）
   * 生成完整的 markdown 报告，包含表达式、因子设计思路、回测结果
