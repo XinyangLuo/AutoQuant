@@ -34,6 +34,14 @@ class PipelineState:
     retry_params: dict = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
 
+    # Shared data populated during pipeline execution (not serialised)
+    strategy_config: "StrategyConfig | None" = None
+    signals: "pd.DataFrame | None" = None
+    simple_bt_metrics: dict | None = None
+    detailed_bt_metrics: dict | None = None
+    ridge_result: "RidgeCheckResult | None" = None
+    eval_result: "EvaluationResult | None" = None
+
     # ------------------------------------------------------------------
     # Serialization
     # ------------------------------------------------------------------
