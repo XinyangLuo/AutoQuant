@@ -21,12 +21,7 @@ def cleanup_on_rejection(state: PipelineState) -> None:
     factor_id = state.factor_id
     results_dir = Path(state.config.results_root) / factor_id
 
-    # 1. Delete results directory
-    if results_dir.exists():
-        shutil.rmtree(results_dir)
-        print(f"  Cleaned up results: {results_dir}")
-
-    # 2. Drop from work DB
+    # 1. Drop from work DB first (so file deletion is the last destructive step)
     try:
         with FactorStorage() as fs:
             fs.delete_factor(factor_id)
@@ -34,9 +29,14 @@ def cleanup_on_rejection(state: PipelineState) -> None:
     except Exception as exc:
         print(f"  Warning: could not drop from work DB: {exc}")
 
-    # 3. Mark rejected in registry
+    # 2. Mark rejected in registry
     try:
         reject(factor_id)
         print(f"  Marked rejected in registry: {factor_id}")
     except Exception as exc:
         print(f"  Warning: could not mark rejected: {exc}")
+
+    # 3. Delete results directory last
+    if results_dir.exists():
+        shutil.rmtree(results_dir)
+        print(f"  Cleaned up results: {results_dir}")

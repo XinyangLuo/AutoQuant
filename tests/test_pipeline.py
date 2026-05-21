@@ -13,10 +13,9 @@ import pytest
 
 from backtest.factor.pipeline.config import PipelineConfig, StepThresholds
 from backtest.factor.pipeline.state import PipelineState, StepResult
+from backtest.factor.evaluation import _ic_series, _rank_ic_series
 from backtest.factor.pipeline.steps import (
     _build_tag,
-    _pearson,
-    _spearman_corr,
     step1_coverage_check,
     step5_build_strategy,
 )
@@ -130,53 +129,53 @@ class TestPipelineState:
 # ---------------------------------------------------------------------------
 
 
-class TestPearson:
+class TestICSeries:
     def test_perfect_positive(self):
         a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
         b = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
-        assert _pearson(a, b) == pytest.approx(1.0, abs=1e-6)
+        assert _ic_series(a, b) == pytest.approx(1.0, abs=1e-6)
 
     def test_perfect_negative(self):
         a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
         b = pd.Series([5.0, 4.0, 3.0, 2.0, 1.0])
-        assert _pearson(a, b) == pytest.approx(-1.0, abs=1e-6)
+        assert _ic_series(a, b) == pytest.approx(-1.0, abs=1e-6)
 
     def test_no_correlation(self):
         a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
         b = pd.Series([1.0, 1.0, 1.0, 1.0, 1.0])
-        assert np.isnan(_pearson(a, b))
+        assert np.isnan(_ic_series(a, b))
 
     def test_with_nans(self):
         a = pd.Series([1.0, np.nan, 3.0, 4.0, 5.0])
         b = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
-        assert _pearson(a, b) == pytest.approx(1.0, abs=1e-6)
+        assert _ic_series(a, b) == pytest.approx(1.0, abs=1e-6)
 
     def test_insufficient_data(self):
         a = pd.Series([1.0, 2.0])
         b = pd.Series([1.0, 2.0])
-        assert np.isnan(_pearson(a, b))
+        assert np.isnan(_ic_series(a, b))
 
 
-class TestSpearmanCorr:
+class TestRankICSeries:
     def test_perfect_positive(self):
-        x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        y = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        assert _spearman_corr(x, y) == pytest.approx(1.0, abs=1e-6)
+        a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+        b = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+        assert _rank_ic_series(a, b) == pytest.approx(1.0, abs=1e-6)
 
     def test_perfect_negative(self):
-        x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        y = np.array([5.0, 4.0, 3.0, 2.0, 1.0])
-        assert _spearman_corr(x, y) == pytest.approx(-1.0, abs=1e-6)
+        a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+        b = pd.Series([5.0, 4.0, 3.0, 2.0, 1.0])
+        assert _rank_ic_series(a, b) == pytest.approx(-1.0, abs=1e-6)
 
     def test_monotonic_nonlinear(self):
-        x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-        y = np.array([1.0, 4.0, 9.0, 16.0, 25.0])
-        assert _spearman_corr(x, y) == pytest.approx(1.0, abs=1e-6)
+        a = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+        b = pd.Series([1.0, 4.0, 9.0, 16.0, 25.0])
+        assert _rank_ic_series(a, b) == pytest.approx(1.0, abs=1e-6)
 
     def test_constant_y(self):
-        x = np.array([1.0, 2.0, 3.0])
-        y = np.array([5.0, 5.0, 5.0])
-        assert np.isnan(_spearman_corr(x, y))
+        a = pd.Series([1.0, 2.0, 3.0])
+        b = pd.Series([5.0, 5.0, 5.0])
+        assert np.isnan(_rank_ic_series(a, b))
 
 
 class TestBuildTag:
@@ -272,11 +271,15 @@ class TestStep1Coverage:
             lambda: mock_fs,
         )
 
-        # Mock MarketStorage.get_panel
-        def mock_get_panel(date):
-            return pd.DataFrame({"symbol": [f"S{i:03d}" for i in range(100)]})
+        # Mock MarketStorage.get_bars
+        dates = pd.date_range("2024-01-01", periods=5, freq="B")
+        symbols = [f"S{i:03d}" for i in range(100)]
+        mock_bars = pd.DataFrame({
+            "date": np.repeat(dates, len(symbols)),
+            "symbol": np.tile(symbols, len(dates)),
+        })
         mock_ms = MagicMock()
-        mock_ms.get_panel = mock_get_panel
+        mock_ms.get_bars.return_value = mock_bars
         mock_ms.__enter__.return_value = mock_ms
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(
@@ -311,10 +314,14 @@ class TestStep1Coverage:
             lambda: mock_fs,
         )
 
-        def mock_get_panel(date):
-            return pd.DataFrame({"symbol": [f"S{i:03d}" for i in range(100)]})
+        dates = pd.date_range("2024-01-01", periods=5, freq="B")
+        symbols = [f"S{i:03d}" for i in range(100)]
+        mock_bars = pd.DataFrame({
+            "date": np.repeat(dates, len(symbols)),
+            "symbol": np.tile(symbols, len(dates)),
+        })
         mock_ms = MagicMock()
-        mock_ms.get_panel = mock_get_panel
+        mock_ms.get_bars.return_value = mock_bars
         mock_ms.__enter__.return_value = mock_ms
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(
@@ -350,10 +357,14 @@ class TestStep1Coverage:
             lambda: mock_fs,
         )
 
-        def mock_get_panel(date):
-            return pd.DataFrame({"symbol": [f"S{i:03d}" for i in range(100)]})
+        dates = pd.date_range("2024-01-01", periods=5, freq="B")
+        symbols = [f"S{i:03d}" for i in range(100)]
+        mock_bars = pd.DataFrame({
+            "date": np.repeat(dates, len(symbols)),
+            "symbol": np.tile(symbols, len(dates)),
+        })
         mock_ms = MagicMock()
-        mock_ms.get_panel = mock_get_panel
+        mock_ms.get_bars.return_value = mock_bars
         mock_ms.__enter__.return_value = mock_ms
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(

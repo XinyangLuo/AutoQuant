@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
 from pathlib import Path
 
 import numpy as np
@@ -16,8 +15,17 @@ import pandas as pd
 
 from backtest.data.storage import MarketStorage
 from backtest.factor.admission import admit
-from backtest.factor.admission_check import TIER_REJECT, ridge_r2_check
-from backtest.factor.evaluation import _corr_with_existing, evaluate
+from backtest.factor.admission_check import (
+    R2_EDGE_SMART_BETA_MAX,
+    TIER_REJECT,
+    ridge_r2_check,
+)
+from backtest.factor.evaluation import (
+    _corr_with_existing,
+    _ic_series,
+    _rank_ic_series,
+    evaluate,
+)
 from backtest.factor.registry import get_factor_meta
 from backtest.factor.storage import FactorLibrary, FactorStorage
 from backtest.simulation.config import SimulationConfig
@@ -99,24 +107,24 @@ def step1_coverage_check(state: PipelineState) -> PipelineState:
             "No factor data in work DB. Run backfill first.",
         )
 
-    # Compute per-date missing rate against market universe
-    missing_rates: list[float] = []
-    dates = factor_df["date"].unique()
+    # Compute per-date missing rate against market universe (batched)
     with MarketStorage() as ms:
-        for d in dates:
-            d_str = pd.Timestamp(d).strftime("%Y%m%d")
-            try:
-                panel = ms.get_panel(d_str)
-                universe_n = len(panel)
-            except Exception:
-                universe_n = 0
-            if universe_n == 0:
-                continue
-            non_null = factor_df[factor_df["date"] == d]["value"].notna().sum()
-            missing_rates.append(1.0 - non_null / universe_n)
+        market_df = ms.get_bars(
+            start=config.start_date,
+            end=config.end_date,
+            columns=["symbol"],
+        )
+    if market_df.empty:
+        return _reject(state, "step1", "No market data for coverage check.")
 
-    if not missing_rates:
-        return _reject(state, "step1", "Could not compute missing rates.")
+    universe_counts = market_df.groupby("date").size()
+    factor_counts = factor_df.groupby("date")["value"].agg(["count", "size"])
+    # Align: factor_counts may have fewer dates than universe_counts
+    aligned = factor_counts.join(universe_counts.rename("universe"), how="inner")
+    if aligned.empty:
+        return _reject(state, "step1", "No overlapping dates between factor and market data.")
+
+    missing_rates = 1.0 - aligned["count"] / aligned["universe"]
 
     max_missing = max(missing_rates)
     mean_missing = sum(missing_rates) / len(missing_rates)
@@ -126,7 +134,7 @@ def step1_coverage_check(state: PipelineState) -> PipelineState:
         "mean_missing_rate": float(mean_missing),
         "threshold": float(threshold),
         "is_financial": is_financial,
-        "n_dates": len(dates),
+        "n_dates": factor_df["date"].nunique(),
     }
 
     if max_missing > threshold:
@@ -177,7 +185,7 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
         )
         if not merged.empty:
             daily_corr = merged.groupby("date").apply(
-                lambda g: _pearson(g["value"], g["size_z"]),
+                lambda g: _ic_series(g["value"], g["size_z"]),
                 include_groups=False,
             )
             size_corr = float(daily_corr.abs().mean())
@@ -234,21 +242,13 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
     return _pass(state, "step2", metrics)
 
 
-def _pearson(a: pd.Series, b: pd.Series) -> float:
-    """Pearson correlation, NaN-aware."""
-    mask = a.notna() & b.notna()
-    if mask.sum() < 3:
-        return float("nan")
-    return float(np.corrcoef(a[mask].values, b[mask].values)[0, 1])
-
-
 def _max_industry_corr(merged: pd.DataFrame) -> float:
     """Max abs Pearson corr between factor value and any industry dummy."""
     max_corr = 0.0
     for date, group in merged.groupby("date"):
         dummies = pd.get_dummies(group["industry_code"], prefix="ind")
         for col in dummies.columns:
-            corr = _pearson(group["value"], dummies[col])
+            corr = _ic_series(group["value"], dummies[col])
             max_corr = max(max_corr, abs(corr))
     return max_corr
 
@@ -276,6 +276,7 @@ def step3_icir_check(state: PipelineState) -> PipelineState:
         exclude_limit_up=True,
         run_decile_backtest=False,
     )
+    state.eval_result = eval_result
 
     th = config.thresholds
     check_horizons = config.icir_check_horizons
@@ -394,17 +395,19 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
     """10-group quantile, Spearman corr(group_id, mean_return) > 0.7."""
     config = state.config
 
-    # Re-run evaluate to get group_returns (or load from step3 artifact)
-    eval_result = evaluate(
-        config.factor_id,
-        config.start_date,
-        config.end_date,
-        horizons=config.eval_horizons,
-        ret_type=config.ret_type,
-        corr_top_k=0,
-        exclude_limit_up=True,
-        run_decile_backtest=False,
-    )
+    # Reuse eval_result from step3 if available
+    eval_result = state.eval_result
+    if eval_result is None:
+        eval_result = evaluate(
+            config.factor_id,
+            config.start_date,
+            config.end_date,
+            horizons=config.eval_horizons,
+            ret_type=config.ret_type,
+            corr_top_k=0,
+            exclude_limit_up=True,
+            run_decile_backtest=False,
+        )
 
     primary_h = config.icir_check_horizons[0]
     group_rets = eval_result.group_returns.get(primary_h)
@@ -424,7 +427,7 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
             f"Only {len(groups)} groups available (need >= 3)",
         )
 
-    spearman = _spearman_corr(groups, mean_rets)
+    spearman = _rank_ic_series(pd.Series(groups), pd.Series(mean_rets))
     passed = spearman > config.thresholds.min_monotonicity
 
     metrics = {
@@ -444,18 +447,6 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
         f"Spearman={spearman:.3f} <= {config.thresholds.min_monotonicity}",
         metrics,
     )
-
-
-def _spearman_corr(x: np.ndarray, y: np.ndarray) -> float:
-    """Spearman correlation — pure numpy, no scipy."""
-    x_rank = pd.Series(x).rank().values
-    y_rank = pd.Series(y).rank().values
-    x_rank = x_rank - x_rank.mean()
-    y_rank = y_rank - y_rank.mean()
-    denom = math.sqrt((x_rank**2).sum() * (y_rank**2).sum())
-    if denom == 0:
-        return float("nan")
-    return float((x_rank * y_rank).sum() / denom)
 
 
 # ---------------------------------------------------------------------------
@@ -560,49 +551,17 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
     if signals.empty:
         return _reject(state, "step6", "Strategy produced no signals.")
 
-    # Load market data
-    market_end = (
-        pd.to_datetime(config.end_date)
-        + pd.Timedelta(days=_MARKET_BUFFER_DAYS)
-    ).strftime("%Y%m%d")
-    symbols = signals["symbol"].unique().tolist()
-    with MarketStorage() as ms:
-        market_data = ms.get_bars(
-            symbols=symbols, start=config.start_date, end=market_end,
-        )
-
+    market_data = _load_market_data(config, signals)
     sim = SimpleSimulator(SimulationConfig(initial_cash=1e8))
     result = sim.run(signals, market_data)
 
-    # Persist
-    tag = _build_tag(state)
-    out_dir = Path(config.results_root) / config.factor_id / tag / "simple"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    result.save(str(out_dir), metadata={
-        "strategy": {"name": state.strategy_config.name, "factor": config.factor_id},
-        "simulation": {"engine": "SimpleSimulator", "initial_cash": 1e8},
+    return _backtest_gate(state, result, "step6", "simple", {
+        "sharpe": "min_sharpe_simple",
+        "annual_return": "min_annual_return_simple",
+        "max_drawdown": "max_max_drawdown",
+        "calmar": "min_calmar_simple",
+        "annual_turnover": "max_annual_turnover",
     })
-    state.artifacts["simple_bt"] = str(out_dir)
-
-    # Metrics + threshold check
-    metrics = result.summary()
-    state.simple_bt_metrics = metrics
-
-    th = config.thresholds
-    checks = {
-        "sharpe": (metrics.get("sharpe") or float("-inf")) > th.min_sharpe_simple,
-        "annual_return": (metrics.get("annual_return") or float("-inf")) > th.min_annual_return_simple,
-        "max_drawdown": (metrics.get("max_drawdown") or float("-inf")) > -th.max_max_drawdown,
-        "calmar": (metrics.get("calmar") or float("-inf")) > th.min_calmar_simple,
-        "annual_turnover": (metrics.get("annual_turnover") or float("inf")) < th.max_annual_turnover,
-    }
-    passed = all(checks.values())
-
-    if passed:
-        return _pass(state, "step6", metrics)
-
-    violations = _bt_violations(metrics, checks, th, "simple")
-    return _reject(state, "step6", "; ".join(violations), metrics)
 
 
 # ---------------------------------------------------------------------------
@@ -617,20 +576,7 @@ def step7_detailed_backtest(state: PipelineState) -> PipelineState:
     if state.strategy_config is None or state.signals is None:
         return _reject(state, "step7", "No strategy/signals. Run step5-6 first.")
 
-    market_end = (
-        pd.to_datetime(config.end_date)
-        + pd.Timedelta(days=_MARKET_BUFFER_DAYS)
-    ).strftime("%Y%m%d")
-    symbols = state.signals["symbol"].unique().tolist()
-
-    with MarketStorage() as ms:
-        market_data = ms.get_bars(
-            symbols=symbols, start=config.start_date, end=market_end,
-        )
-        dividends = ms.get_dividends(
-            symbols=symbols, start=config.start_date, end=market_end,
-        )
-
+    market_data, dividends = _load_market_data(config, state.signals, with_dividends=True)
     sim = DetailedSimulator(SimulationConfig(
         initial_cash=1e8,
         commission_rate=0.0003,
@@ -639,40 +585,90 @@ def step7_detailed_backtest(state: PipelineState) -> PipelineState:
     ))
     result = sim.run(state.signals, market_data, dividends)
 
-    # Persist
-    tag = _build_tag(state)
-    out_dir = Path(config.results_root) / config.factor_id / tag / "detailed"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    result.save(str(out_dir), metadata={
-        "strategy": {"name": state.strategy_config.name, "factor": config.factor_id},
-        "simulation": {"engine": "DetailedSimulator", "initial_cash": 1e8},
+    return _backtest_gate(state, result, "step7", "detailed", {
+        "sharpe": "min_sharpe_detailed",
+        "annual_return": "min_annual_return_detailed",
+        "max_drawdown": "max_max_drawdown",
+        "calmar": "min_calmar_detailed",
+        "annual_turnover": "max_annual_turnover",
     })
-    state.artifacts["detailed_bt"] = str(out_dir)
-
-    # Metrics + threshold check
-    metrics = result.summary()
-    state.detailed_bt_metrics = metrics
-
-    th = config.thresholds
-    checks = {
-        "sharpe": (metrics.get("sharpe") or float("-inf")) > th.min_sharpe_detailed,
-        "annual_return": (metrics.get("annual_return") or float("-inf")) > th.min_annual_return_detailed,
-        "max_drawdown": (metrics.get("max_drawdown") or float("-inf")) > -th.max_max_drawdown,
-        "calmar": (metrics.get("calmar") or float("-inf")) > th.min_calmar_detailed,
-        "annual_turnover": (metrics.get("annual_turnover") or float("inf")) < th.max_annual_turnover,
-    }
-    passed = all(checks.values())
-
-    if passed:
-        return _pass(state, "step7", metrics)
-
-    violations = _bt_violations(metrics, checks, th, "detailed")
-    return _reject(state, "step7", "; ".join(violations), metrics)
 
 
 # ---------------------------------------------------------------------------
 # Shared backtest helpers
 # ---------------------------------------------------------------------------
+
+
+def _load_market_data(
+    config: PipelineConfig,
+    signals: pd.DataFrame,
+    *,
+    with_dividends: bool = False,
+) -> pd.DataFrame | tuple[pd.DataFrame, pd.DataFrame]:
+    """Load market bars (and optionally dividends) for backtest."""
+    market_end = (
+        pd.to_datetime(config.end_date)
+        + pd.Timedelta(days=_MARKET_BUFFER_DAYS)
+    ).strftime("%Y%m%d")
+    symbols = signals["symbol"].unique().tolist()
+    with MarketStorage() as ms:
+        market_data = ms.get_bars(
+            symbols=symbols, start=config.start_date, end=market_end,
+        )
+        if with_dividends:
+            dividends = ms.get_dividends(
+                symbols=symbols, start=config.start_date, end=market_end,
+            )
+            return market_data, dividends
+    return market_data
+
+
+def _backtest_gate(
+    state: PipelineState,
+    result: "BacktestResult",
+    step: str,
+    sub_dir: str,
+    threshold_map: dict[str, str],
+) -> PipelineState:
+    """Persist result, check thresholds, record pass/reject."""
+    config = state.config
+    tag = _build_tag(state)
+    out_dir = Path(config.results_root) / config.factor_id / tag / sub_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result.save(str(out_dir), metadata={
+        "strategy": {"name": state.strategy_config.name, "factor": config.factor_id},
+        "simulation": {"engine": sub_dir.capitalize(), "initial_cash": 1e8},
+    })
+    state.artifacts[sub_dir + "_bt"] = str(out_dir)
+
+    metrics = result.summary()
+    if step == "step6":
+        state.simple_bt_metrics = metrics
+    else:
+        state.detailed_bt_metrics = metrics
+
+    th = config.thresholds
+    checks: dict[str, bool] = {}
+    for metric_key, th_key in threshold_map.items():
+        threshold = getattr(th, th_key)
+        val = metrics.get(metric_key)
+        if metric_key in ("max_drawdown",):
+            checks[metric_key] = (val or float("-inf")) > -threshold
+        elif metric_key in ("annual_turnover",):
+            checks[metric_key] = (val or float("inf")) < threshold
+        else:
+            checks[metric_key] = (val or float("-inf")) > threshold
+
+    if all(checks.values()):
+        return _pass(state, step, metrics)
+
+    violations = []
+    for metric_key, passed in checks.items():
+        if not passed:
+            val = metrics.get(metric_key, 0)
+            label = metric_key.replace("_", " ").title()
+            violations.append(f"{label}={val:.3f} <= threshold")
+    return _reject(state, step, "; ".join(violations), metrics)
 
 
 def _build_tag(state: PipelineState) -> str:
@@ -683,33 +679,11 @@ def _build_tag(state: PipelineState) -> str:
     sel = cfg.selection
     if sel.top_pct is not None:
         tag = f"top{int(round(sel.top_pct * 100))}pct"
-    elif sel.top_k is not None:
-        tag = f"top{sel.top_k}"
     else:
-        tag = "top10pct"
+        tag = f"top{sel.top_k}"
     decay = cfg.decay or 0
     return f"{tag}_{cfg.rebalance_freq.lower()}_d{decay}"
 
-
-def _bt_violations(
-    metrics: dict,
-    checks: dict[str, bool],
-    th,
-    prefix: str,
-) -> list[str]:
-    """Build human-readable violation strings."""
-    violations = []
-    if not checks.get("sharpe"):
-        violations.append(f"Sharpe={metrics.get('sharpe', 0):.3f} <= threshold")
-    if not checks.get("annual_return"):
-        violations.append(f"ann_ret={metrics.get('annual_return', 0):.2%} <= threshold")
-    if not checks.get("max_drawdown"):
-        violations.append(f"max_dd={metrics.get('max_drawdown', 0):.2%} <= threshold")
-    if not checks.get("calmar"):
-        violations.append(f"Calmar={metrics.get('calmar', 0):.3f} <= threshold")
-    if not checks.get("annual_turnover"):
-        violations.append(f"turnover={metrics.get('annual_turnover', 0):.1f}x >= threshold")
-    return violations
 
 
 # ---------------------------------------------------------------------------
@@ -742,7 +716,8 @@ def step8_ridge_r2(state: PipelineState) -> PipelineState:
 
     return _reject(
         state, "step8",
-        f"R2={ridge_result.r2:.3f} >= 0.80, tier=reject (style clone)",
+        f"R2={ridge_result.r2:.3f} >= {R2_EDGE_SMART_BETA_MAX}, "
+        f"tier={TIER_REJECT} (style clone)",
         metrics,
     )
 
