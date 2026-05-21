@@ -14,27 +14,38 @@ Valid variant names
 -------------------
 
 ``"none"``
-    No neutralization. Raw factor values. Used by Barra builtin factors
-    that are themselves regressors of the neutralization pipeline
-    (Size, Industry, etc.) and by any custom factor that opts out via
-    ``@register(variant="none")``.
+    No post-processing. The stored value is whatever the compute function
+    returned. Used by Barra L1 composites (already z-scored inputs combined
+    equal-weight) and by any factor that opts out of the pipeline.
+
+``"barra_l3"``
+    The CNE6 L3 style-exposure pipeline: MAD winsorize → SW-L1 industry
+    median fill → cs_zscore. Used by all 11 Barra L3 factors. The output
+    is a z-scored *style exposure* — NOT a residual against other styles.
+    Style factors are themselves regressors elsewhere; they don't get
+    industry/size neutralized.
 
 ``"barra_ind_size"``
-    The PLAN.md §2.2 unified pipeline: MAD winsorize → SW-L1 industry
-    median fill → cs_zscore → cross-section OLS regression on industry
-    dummies + ``log(circ_mv)`` → residual → re-cs_zscore. **Default**
-    for user-registered alphas. Future variants will follow the same
-    ``barra_<inputs>`` naming if more regressors are added (e.g.
-    ``barra_ind_size_growth``).
+    The PLAN.md §2.2 alpha-neutralization pipeline: MAD winsorize → SW-L1
+    industry median fill → cs_zscore → cross-section OLS regression on
+    industry dummies + ``log(circ_mv)`` → residual → re-cs_zscore.
+    **Default** for user-registered alphas — strips industry and size
+    style exposure so what remains is pure alpha. Future variants follow
+    the same ``barra_<inputs>`` naming if more regressors are added.
 """
 
 from __future__ import annotations
 
 
 NONE_VARIANT: str = "none"
+BARRA_L3_VARIANT: str = "barra_l3"
 BARRA_IND_SIZE_VARIANT: str = "barra_ind_size"
 
-VALID_VARIANTS: tuple[str, ...] = (NONE_VARIANT, BARRA_IND_SIZE_VARIANT)
+VALID_VARIANTS: tuple[str, ...] = (
+    NONE_VARIANT,
+    BARRA_L3_VARIANT,
+    BARRA_IND_SIZE_VARIANT,
+)
 
 #: ``@register`` default variant — user alphas get the unified Barra-style
 #: neutralization unless they explicitly pass ``variant="none"``.
@@ -52,6 +63,7 @@ def validate_variant(variant: str) -> str:
 
 __all__ = [
     "NONE_VARIANT",
+    "BARRA_L3_VARIANT",
     "BARRA_IND_SIZE_VARIANT",
     "DEFAULT_VARIANT",
     "VALID_VARIANTS",

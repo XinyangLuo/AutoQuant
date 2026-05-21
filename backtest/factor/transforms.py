@@ -1064,6 +1064,88 @@ def cs_winsorize(
     return values.groupby(level=0, group_keys=False).apply(_one)
 
 
+def cs_mad_winsorize(values: pd.Series, *, k: float = 3.0) -> pd.Series:
+    """Cross-sectional MAD winsorization per date: clip to ``median ± k·1.4826·MAD``.
+
+    The 1.4826 scale factor makes ``1.4826·MAD`` a consistent estimator of σ
+    under the normal distribution, so ``k=3`` corresponds to a 3-σ clip.
+    For each date, non-NaN values outside the band are clipped to its edge;
+    NaNs are preserved. Used as the first step of the Barra L3 pipeline
+    (see PLAN.md §2.1 计算规则 step 2).
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    k : float, default 3.0
+        Number of scaled-MAD widths to keep on each side of the median.
+    """
+    _check_panel_series(values)
+    if k <= 0:
+        raise ValueError(f"k must be > 0, got {k}")
+
+    def _one(s: pd.Series) -> pd.Series:
+        valid = s.dropna()
+        if len(valid) < 2:
+            return s
+        med = valid.median()
+        mad = (valid - med).abs().median()
+        if mad == 0 or pd.isna(mad):
+            return s
+        delta = k * 1.4826 * mad
+        return s.clip(lower=med - delta, upper=med + delta)
+
+    return values.groupby(level=0, group_keys=False).apply(_one)
+
+
+def industry_median_fill(
+    values: pd.Series,
+    industry_panel: pd.DataFrame,
+) -> pd.Series:
+    """Fill NaNs with the same-day, same-industry median.
+
+    For each ``(date, industry_code)`` group, missing values are replaced
+    with the median of non-NaN peers in that group. Symbols with no
+    industry mapping that day are left untouched (still NaN). Used as
+    step 3 of the Barra L3 pipeline (PLAN.md §2.1).
+
+    Parameters
+    ----------
+    values : pd.Series
+        MultiIndex ``(date, symbol)`` Series.
+    industry_panel : pd.DataFrame
+        Columns ``[date, symbol, industry_code]``.
+    """
+    _check_panel_series(values)
+    if not {"date", "symbol", "industry_code"}.issubset(industry_panel.columns):
+        raise ValueError(
+            "industry_panel must have columns [date, symbol, industry_code]"
+        )
+
+    panel = industry_panel[["date", "symbol", "industry_code"]].copy()
+    panel["date"] = pd.to_datetime(panel["date"])
+
+    df = values.rename("value").reset_index()
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.merge(panel, on=["date", "symbol"], how="left")
+
+    has_ind = df["industry_code"].notna()
+    if has_ind.any():
+        med = df.loc[has_ind].groupby(
+            ["date", "industry_code"], group_keys=False,
+        )["value"].transform("median")
+        fill_mask = has_ind & df["value"].isna()
+        df.loc[fill_mask, "value"] = med[fill_mask]
+
+    out = pd.Series(
+        df["value"].values,
+        index=pd.MultiIndex.from_arrays(
+            [df["date"], df["symbol"]], names=["date", "symbol"]
+        ),
+    )
+    return out.reindex(values.index)
+
+
 # ---------------------------------------------------------------------------
 # Math / utility operators
 # ---------------------------------------------------------------------------

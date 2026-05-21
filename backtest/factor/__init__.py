@@ -67,9 +67,11 @@ from backtest.factor.transforms import (
     abs_,
     cap_neutralize,
     cs_demean,
+    cs_mad_winsorize,
     cs_winsorize,
     cs_zscore,
     if_else,
+    industry_median_fill,
     industry_neutralize,
     inverse,
     log,
@@ -98,6 +100,11 @@ from backtest.factor.transforms import (
     ts_sum,
     z_score,
 )
+
+# Import builtin factors (Barra L3 + L1) so their @register decorators run
+# on package load — keeps the registry populated for backfill / evaluate /
+# pipeline without each script needing an explicit import.
+import backtest.factor.builtin  # noqa: F401, E402
 
 # Import top-level alphas package (private, gitignored) so its
 # @register decorators run on package load — keeps the registry
@@ -158,6 +165,8 @@ __all__ = [
     "cs_zscore",
     "cs_demean",
     "cs_winsorize",
+    "cs_mad_winsorize",
+    "industry_median_fill",
     "abs_",
     "sign",
     "log",

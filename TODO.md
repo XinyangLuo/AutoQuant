@@ -20,12 +20,13 @@
   - 下游 admission / strategy / evaluation / pipeline script / tests 全部迁移
   - `_existing_columns` 加缓存消除 N+1；DRY admission 三态查询；76/76 因子测试通过
 
-- [ ] **Commit 2: Barra 三级因子注册（11 个）+ 一级合成（7 个）**
-  - 新建 `backtest/factor/builtin/barra/`：`size.py / beta.py / momentum.py / value.py / quality.py / liquidity.py / growth.py / composite.py`
-  - 11 个三级因子按 PLAN.md §2.1 公式实现，全部 `variant="none"`（自身是中性化回归变量）
-  - 严谨版实现：Beta WLS（窗口 252、半衰期 63）；Momentum EWMA（半衰期 126）+ 滞后 11 日 + 11 日等权平均；AGRO/EGRO 5 年季度对时间回归
-  - 7 个一级合成因子：Size=LNCAP、Beta=BETA、Momentum=RSTR、Value=(BTOP+ETOP+DTOP)/3、Quality=(ROA+GP+AGRO)/3、Liquidity=STOM、Growth=EGRO
-  - Sanity check 笔记：选 600519.SH / 300750.SZ 打印 7 个一级因子近 1 年值，确认 z-score 后基本在 [-3, 3]
+- [x] **Commit 2: Barra 三级因子注册（11 个）+ 一级合成（7 个）**（2026-05-22）
+  - `backtest/factor/builtin/barra/` 落地：`size / beta / momentum / value / quality / liquidity / growth / composite + _common`
+  - 11 个 L3 因子按 PLAN.md §2.1 公式实现，全部 `variant="barra_l3"`（MAD → 行业中位数填充 → cs_zscore 自动应用）
+  - 严谨版：Beta WLS 向量化（sliding_window_view + 闭式 2 参解，窗口 252、半衰期 63）；Momentum EWMA（半衰期 126）+ lag 11 + 11 日平滑；AGRO/EGRO 按 trade_date 分组的 PIT-safe 20 季回归
+  - 7 个一级合成因子（`variant="none"`）：Size=LNCAP、Beta=BETA、Momentum=RSTR、Value=(BTOP+ETOP+DTOP)/3、Quality=(ROA+GP+AGRO)/3、Liquidity=STOM、Growth=EGRO
+  - DTOP 修复：dividend fetch 加 400 天回看 buffer，早期 trade date 的 TTM 不再被截断
+  - composite 改 `groupby.mean()` 避免 pivot 内存峰值；共享 helper 抽到 `_common.py`
 
 - [ ] **Commit 3: 中性化 pipeline 替换为 PLAN.md §2.2 OLS 版**
   - `compute.apply_variant_pipeline` 中 `barra_ind_size` 分支当前仅做 SW-L1 industry-group cs_zscore（占位）；替换为完整 pipeline：MAD 去极值 → 行业中位数填充 → cs_zscore → 截面 OLS（因子 ~ 行业哑变量 + Size_z）→ 取残差 → re-cs_zscore
@@ -62,6 +63,12 @@
 
 - [ ] `_quote_ident` / `_upsert` / `_registered` 抽到共享模块，让 `FactorStorage` 和 `backtest/data/storage.py:MarketStorage` 共用 DuckDB 底座，避免两套并行实现长期漂移
 - [ ] `get_factors_long` 把 melt 推到 SQL（`UNION ALL` per column with `WHERE col IS NOT NULL`），避免 25M 行 × N 列宽表全部 melt 到内存
+
+### Barra 因子计算性能 follow-up（Commit 2 延期）
+
+- [ ] `compute.py` 财务因子 panel 拼接走流式：现在每个 trade_date 跑一次 `get_fina_snapshot` 再 `pd.concat` N 个 snapshot，最坏 ~14B 单元；改成按 trade_date 分块计算再拼小结果，或者在 storage 层加 `get_fina_snapshot_range(start, end)` 用区间 join 一次出长表
+- [ ] `momentum.py:_ewm_log_return_sum` 的 `rolling.apply` 用 `sliding_window_view` 向量化（与 beta 已做的对应），节省全市场 5000 股 × 1000 天 backfill 时间
+- [ ] backfill 多因子并行：现在 `compute_all` 串行循环 registry，可用 `ProcessPoolExecutor` 并发跑独立因子
 
 ## P3
 

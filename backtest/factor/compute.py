@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import inspect
+from datetime import datetime, timedelta
 from functools import partial
 
 import pandas as pd
@@ -10,8 +12,17 @@ from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
 from backtest.factor.registry import get_factor_function, get_factor_meta
 from backtest.factor.storage import FactorStorage
-from backtest.factor.transforms import industry_neutralize
-from backtest.factor.variants import BARRA_IND_SIZE_VARIANT, NONE_VARIANT
+from backtest.factor.transforms import (
+    cs_mad_winsorize,
+    cs_zscore,
+    industry_median_fill,
+    industry_neutralize,
+)
+from backtest.factor.variants import (
+    BARRA_IND_SIZE_VARIANT,
+    BARRA_L3_VARIANT,
+    NONE_VARIANT,
+)
 
 
 def compute_factor(
@@ -44,20 +55,22 @@ def compute_factor(
         src in ("income_q", "balancesheet_q", "cashflow_q", "financial_statements_q")
         for src in data_sources
     )
+    needs_factor_store = any(src == "factors_daily" for src in data_sources)
 
     own_market = market_storage is None
+    own_factor = factor_storage is None
 
     try:
-        if market_storage is None:
+        if market_storage is None and (needs_market or needs_fina):
             market_storage = MarketStorage()
+        if factor_storage is None and needs_factor_store:
+            factor_storage = FactorStorage()
 
         input_panel = pd.DataFrame()
 
         if needs_market:
             window = params.get("window", 252)
             # Convert trading-day window to calendar days (~1.5x is a safe over-estimate).
-            from datetime import datetime, timedelta
-
             start_dt = datetime.strptime(start_date, "%Y%m%d")
             lookback_start = (start_dt - timedelta(days=int(window * 1.5))).strftime("%Y%m%d")
 
@@ -66,7 +79,7 @@ def compute_factor(
                 start=lookback_start,
                 end=end_date,
             )
-            if bars.empty:
+            if bars.empty and not needs_factor_store:
                 return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
             input_panel = bars
 
@@ -90,12 +103,24 @@ def compute_factor(
                         fina_all, on=["date", "symbol"], how="left"
                     )
 
-        if input_panel.empty:
+        # Composites (e.g. Barra L1) read L3 values directly from factor_storage
+        # and don't need market_daily / fina. Skip the empty-panel guard for them.
+        if input_panel.empty and not needs_factor_store:
             return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
 
-        # Bind parameters and call the registered compute function
+        # Bind parameters and call the registered compute function. Pass
+        # factor_storage / start_date / end_date as kwargs only if the
+        # function declares them — plain bar-only factors stay unaware of
+        # the storage layer.
         bound_fn = partial(compute_fn, **params) if params else compute_fn
-        result_series = bound_fn(input_panel)
+        sig_params = inspect.signature(compute_fn).parameters
+        candidates = (
+            ("factor_storage", factor_storage),
+            ("start_date", start_date),
+            ("end_date", end_date),
+        )
+        extra_kwargs = {k: v for k, v in candidates if k in sig_params}
+        result_series = bound_fn(input_panel, **extra_kwargs)
 
         if not isinstance(result_series, pd.Series):
             raise TypeError(
@@ -119,6 +144,8 @@ def compute_factor(
     finally:
         if own_market and market_storage is not None:
             market_storage.close()
+        if own_factor and factor_storage is not None:
+            factor_storage.close()
 
 
 def apply_variant_pipeline(
@@ -131,11 +158,17 @@ def apply_variant_pipeline(
 
     The factor's ``variant`` (from registry) selects the pipeline:
 
-    * ``"none"`` — pass-through, factor values untouched. Used by Barra
-      builtin factors that are themselves regressors of the neutralization.
-    * ``"barra_ind_size"`` — SW-L1 industry-group cs_zscore. Will become
-      the full PLAN.md §2.2 pipeline (MAD winsorize → industry median fill
-      → OLS residual on industry + Size_z → re-cs_zscore).
+    * ``"none"`` — pass-through, factor values untouched. Used by Barra L1
+      composites (built from already-z-scored L3 exposures) and by any factor
+      that opts out of post-processing.
+    * ``"barra_l3"`` — CNE6 L3 style-exposure pipeline: MAD winsorize →
+      SW-L1 industry median fill → cs_zscore. Output is a z-scored style
+      exposure, **not** a residual against other styles. Used by all 11
+      Barra L3 factors (Size/Beta/Momentum/Value/Quality/Liquidity/Growth).
+    * ``"barra_ind_size"`` — SW-L1 industry-group cs_zscore (placeholder).
+      Will become the full PLAN.md §2.2 alpha-neutralization pipeline
+      (MAD winsorize → industry median fill → cs_zscore → OLS residual
+      on industry + Size_z → re-cs_zscore) in Commit 3.
 
     Returns
     -------
@@ -154,7 +187,7 @@ def apply_variant_pipeline(
 
     if variant == NONE_VARIANT:
         series = raw_series
-    elif variant == BARRA_IND_SIZE_VARIANT:
+    elif variant in (BARRA_L3_VARIANT, BARRA_IND_SIZE_VARIANT):
         own_market = market_storage is None
         try:
             if market_storage is None:
@@ -164,7 +197,13 @@ def apply_variant_pipeline(
             industry_panel = market_storage.get_industry_panel_range(
                 start=start, end=end, level="L1",
             )
-            series = industry_neutralize(raw_series, industry_panel)
+            if variant == BARRA_L3_VARIANT:
+                series = cs_mad_winsorize(raw_series, k=3.0)
+                series = industry_median_fill(series, industry_panel)
+                series = cs_zscore(series)
+            else:
+                # TODO Commit 3: replace with full OLS pipeline.
+                series = industry_neutralize(raw_series, industry_panel)
         finally:
             if own_market and market_storage is not None:
                 market_storage.close()
