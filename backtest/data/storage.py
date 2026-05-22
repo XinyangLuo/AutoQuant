@@ -181,8 +181,9 @@ FUNDAMENTAL_META = [
     "report_type", "comp_type", "end_type", "update_flag",
 ]
 
-FUNDAMENTAL_KEY_COLS = ["symbol", "end_date", "ann_date", "f_ann_date",
-                        "report_type", "comp_type", "end_type", "update_flag"]
+FUNDAMENTAL_PK = ("symbol", "end_date", "f_ann_date", "update_flag", "report_type")
+FUNDAMENTAL_TABLES = ("income_q", "balancesheet_q", "cashflow_q")
+_FINA_JOIN_KEYS = ("symbol", "end_date")
 
 _FUNDAMENTAL_COLS_MAP = {
     "income_q": FUNDAMENTAL_META + INCOME_NUMERIC,
@@ -193,6 +194,7 @@ _FUNDAMENTAL_COLS_MAP = {
 
 def _build_fundamental_schema(name: str, numeric_cols: list[str]) -> str:
     numeric_defs = ",\n    ".join(f"{c:30s} DOUBLE" for c in numeric_cols)
+    pk_sql = ", ".join(FUNDAMENTAL_PK)
     return f"""
 CREATE TABLE IF NOT EXISTS {name} (
     symbol      VARCHAR,
@@ -204,7 +206,7 @@ CREATE TABLE IF NOT EXISTS {name} (
     end_type    VARCHAR,
     update_flag VARCHAR,
     {numeric_defs},
-    PRIMARY KEY (symbol, end_date, f_ann_date, update_flag)
+    PRIMARY KEY ({pk_sql})
 )
 """
 
@@ -346,6 +348,7 @@ class MarketStorage:
 
     def _init_tables(self):
         self.conn.execute(DAILY_SCHEMA)
+        self._drop_fundamental_tables_if_legacy_pk()
         self.conn.execute(INCOME_SCHEMA)
         self.conn.execute(BALANCESHEET_SCHEMA)
         self.conn.execute(CASHFLOW_SCHEMA)
@@ -355,9 +358,33 @@ class MarketStorage:
         self.conn.execute(INDEX_MEMBERS_SCHEMA)
         self.conn.execute(TRADE_CALENDAR_SCHEMA)
         self._add_double_columns("market_daily", DAILY_COLUMNS[2:])
-        self._add_double_columns("income_q", INCOME_NUMERIC)
-        self._add_double_columns("balancesheet_q", BALANCESHEET_NUMERIC)
-        self._add_double_columns("cashflow_q", CASHFLOW_NUMERIC)
+        for table in FUNDAMENTAL_TABLES:
+            self._add_double_columns(table, _FUNDAMENTAL_COLS_MAP[table][len(FUNDAMENTAL_META):])
+
+    def _drop_fundamental_tables_if_legacy_pk(self):
+        """Drop legacy fundamental tables whose PK lacks ``report_type``.
+
+        Required because DuckDB has no ``ALTER PRIMARY KEY`` — switching from
+        the 4-column PK to ``FUNDAMENTAL_PK`` (5 columns) needs a rebuild.
+        Callers must re-run backfill afterwards.
+        """
+        existing = {
+            r[0] for r in self.conn.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'main' AND table_name IN ('income_q','balancesheet_q','cashflow_q')"
+            ).fetchall()
+        }
+        for table in FUNDAMENTAL_TABLES:
+            if table not in existing:
+                continue  # CREATE TABLE below handles fresh DBs
+            rows = self.conn.execute(f"PRAGMA table_info('{table}')").fetchall()
+            pk_cols = {r[1] for r in rows if r[5]}  # col name where pk flag > 0
+            if "report_type" not in pk_cols:
+                print(
+                    f"[storage] legacy PK on {table} (missing report_type); "
+                    f"dropping — re-run backfill to repopulate"
+                )
+                self.conn.execute(f"DROP TABLE {table}")
 
     def __enter__(self):
         return self
@@ -540,7 +567,7 @@ class MarketStorage:
     # Thin wrappers around generic helpers; table name is the only variable.
 
     def _fundamental_pk(self) -> tuple[str, ...]:
-        return ("symbol", "end_date", "f_ann_date", "update_flag")
+        return FUNDAMENTAL_PK
 
     def _fundamental_cols(self, table: str) -> list[str]:
         return _FUNDAMENTAL_COLS_MAP[table]
@@ -573,9 +600,12 @@ class MarketStorage:
 
         对 income_q / balancesheet_q / cashflow_q 三张表分别做
         ``WHERE f_ann_date <= D`` + ``QUALIFY`` 取每个 (symbol, end_date) 的最新可见版本,
-        再按 (symbol, end_date) outer-join 成 wide DataFrame。
+        再按 ``(symbol, end_date)`` outer-join 成 wide DataFrame。
 
-        非 key 列自动加 ``inc_/bs_/cf_`` 前缀避免重名。
+        非 join-key 列(包括 ``ann_date / f_ann_date / report_type / comp_type /
+        end_type / update_flag`` 等 meta 与数值列)自动加 ``inc_/bs_/cf_`` 前缀。
+        三表 outer-join 仅依据 ``(symbol, end_date)``,因为多 ``report_type`` 共存下
+        三表各自的 meta 不必相同(例如 inc 取到 type=4 而 bs 仍是 type=1)。
         """
         tables = {
             "inc": "income_q",
@@ -590,6 +620,7 @@ class MarketStorage:
             symbol_filter = f"AND symbol IN ({placeholders})"
             params.extend(symbols)
 
+        join_keys = set(_FINA_JOIN_KEYS)
         dfs: dict[str, pd.DataFrame] = {}
         for prefix, table in tables.items():
             sql = f"""
@@ -605,9 +636,7 @@ class MarketStorage:
             if df.empty:
                 dfs[prefix] = df
                 continue
-            # Rename non-key columns with prefix
-            key_cols = set(FUNDAMENTAL_KEY_COLS)
-            rename_map = {c: f"{prefix}_{c}" for c in df.columns if c not in key_cols}
+            rename_map = {c: f"{prefix}_{c}" for c in df.columns if c not in join_keys}
             df = df.rename(columns=rename_map)
             dfs[prefix] = df
 
@@ -620,12 +649,12 @@ class MarketStorage:
             else:
                 merged = merged.merge(
                     dfs[prefix],
-                    on=FUNDAMENTAL_KEY_COLS,
+                    on=list(_FINA_JOIN_KEYS),
                     how="outer",
                 )
 
         if columns:
-            keep = ["symbol", "end_date", "ann_date", "f_ann_date", "update_flag"]
+            keep = list(_FINA_JOIN_KEYS)
             keep += [c for c in columns if c in merged.columns]
             merged = merged[[c for c in keep if c in merged.columns]]
 

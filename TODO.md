@@ -17,8 +17,8 @@
 **Round 1 — data 层（fetch + storage + snapshot）**
 
 - [x] **P0.1 fetch 放宽 report_type**：`backtest/data/fetcher/fundamentals_fetcher.py` `_keep_consolidated` 改为保留 `report_type ∈ {1, 2, 3, 4, 5}`（合并口径全集，剔除母公司 6 / 11 / 12）。
-- [ ] **P0.2 PK 加 report_type**：`backtest/data/storage.py` 三张表 PK 改为 `(symbol, end_date, f_ann_date, update_flag, report_type)`。DuckDB 不支持 `ALTER PRIMARY KEY`，init 时检测旧 schema 则 drop 三表，由 backfill 重拉。
-- [ ] **P0.3 snapshot 保持现状**：`get_fina_snapshot` 维持 `WHERE f_ann_date <= ? + QUALIFY ROW_NUMBER OVER (... ORDER BY f_ann_date DESC, update_flag DESC) = 1`，不引入 CASE-rank。
+- [x] **P0.2 PK 加 report_type**：`backtest/data/storage.py` 三张表 PK 改为 `(symbol, end_date, f_ann_date, update_flag, report_type)`。DuckDB 不支持 `ALTER PRIMARY KEY`，init 时检测旧 schema 则 drop 三表，由 backfill 重拉。
+- [x] **P0.3 snapshot 保持现状**：`get_fina_snapshot` 维持 `WHERE f_ann_date <= ? + QUALIFY ROW_NUMBER OVER (... ORDER BY f_ann_date DESC, update_flag DESC) = 1`，不引入 CASE-rank。同步把 outer-join key 从 8 列收窄到 `(symbol, end_date)`，避免 multi-type 共存时三表 meta 不同导致 join 裂行。
 - [ ] **P0.4 backfill 全量重拉**：代码提交后由用户手动跑 `python -m backtest.data.backfill.fundamentals`（或重新 `cold_start`）。
 
 **Round 2 — factor 层（助手函数 + 因子迁移）**
