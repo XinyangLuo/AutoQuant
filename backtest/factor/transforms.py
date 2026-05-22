@@ -13,6 +13,8 @@ Provides two families:
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 import pandas as pd
 
@@ -1420,6 +1422,209 @@ def if_else(
     return true_values.where(condition, false_values)
 
 
+# ---------------------------------------------------------------------------
+# Fundamentals helpers — single-quarter derivation, TTM, YoY
+# ---------------------------------------------------------------------------
+# Unlike the (date, symbol)-indexed operators above, these consume the raw
+# PIT-concat panel produced by ``backtest/factor/compute.py`` for factors with
+# ``data_sources=['fundamentals']``. The panel has columns
+# ``[date, symbol, end_date, inc_*/bs_*/cf_*]`` with multiple rows per
+# ``(date, symbol)`` — one per visible quarter ``end_date``. Each helper
+# returns a Series aligned with ``panel.index``.
+
+FundamentalKind = Literal["flow", "stock"]
+
+_PRIOR_MMDD_BY_MONTH = {"06": "0331", "09": "0630", "12": "0930"}
+_TTM_ANNUALIZE_BY_MONTH = {"03": 4.0, "06": 2.0, "09": 4.0 / 3.0, "12": 1.0}
+
+
+def _check_fundamental_panel(panel: pd.DataFrame, value_col: str) -> None:
+    required = {"date", "symbol", "end_date", value_col}
+    missing = required - set(panel.columns)
+    if missing:
+        raise ValueError(
+            f"panel missing required columns: {sorted(missing)}; "
+            f"got columns: {sorted(panel.columns)}"
+        )
+    if (panel["end_date"].astype(str) == "").any():
+        raise ValueError("panel contains empty end_date values; expected YYYYMMDD strings")
+
+
+def _lookup_at_end_date(
+    panel: pd.DataFrame, value_col: str, target_end_date: pd.Series
+) -> np.ndarray:
+    """For each row, look up ``value_col`` at same ``(date, symbol)`` but a
+    different ``end_date``.
+
+    Uses ``set_index + reindex`` rather than ``merge`` to avoid hash-join
+    overhead at scale. Returns ndarray aligned with ``panel`` (NaN where the
+    key isn't present, including rows where ``target_end_date`` is empty).
+    """
+    indexed = panel.set_index(["date", "symbol", "end_date"])[value_col]
+    # Drop duplicate keys (defensive — same (date, symbol, end_date) should be unique
+    # post snapshot, but PIT-concat can collide if upstream changes)
+    indexed = indexed[~indexed.index.duplicated(keep="last")]
+    target_idx = pd.MultiIndex.from_arrays(
+        [panel["date"].values, panel["symbol"].values, target_end_date.values],
+        names=["date", "symbol", "end_date"],
+    )
+    return indexed.reindex(target_idx).to_numpy()
+
+
+def _prev_year_str(end_date: pd.Series) -> pd.Series:
+    """``end_date`` YYYY part minus one, as a 4-char string; NaN if non-numeric."""
+    year_int = pd.to_numeric(end_date.str[:4], errors="coerce")
+    prev = (year_int - 1).astype("Int64").astype(str)
+    return prev.where(year_int.notna(), other=pd.NA)
+
+
+def single_quarter(
+    panel: pd.DataFrame, value_col: str, *, kind: FundamentalKind = "flow"
+) -> pd.Series:
+    """单季度数据 — 累计报告期值相减得到。
+
+    *flow* (利润表 / 现金流量表)::
+
+        Q1 = report (原值)
+        Q2 = H1 − Q1
+        Q3 = 9M − H1
+        Q4 = FY − 9M
+
+    缺环比报告期 → NaN。
+
+    *stock* (资产负债表) 是时点数据，单季度 = 报告期值，直接返回 ``panel[value_col]``。
+
+    Parameters
+    ----------
+    panel : pd.DataFrame
+        必含列 ``date``, ``symbol``, ``end_date``, ``value_col``。``end_date``
+        为 ``YYYYMMDD`` 字符串。
+    value_col : str
+        要取单季度的列名。
+    kind : {"flow", "stock"}
+        ``flow`` 走相减公式，``stock`` 走 identity。
+
+    Returns
+    -------
+    pd.Series
+        与 ``panel.index`` 对齐。
+    """
+    _check_fundamental_panel(panel, value_col)
+    if kind == "stock":
+        return panel[value_col].copy()
+    if kind != "flow":
+        raise ValueError(f"kind must be 'flow' or 'stock', got {kind!r}")
+
+    end_date = panel["end_date"].astype(str)
+    month_str = end_date.str[4:6]
+    year_str = end_date.str[:4]
+
+    prior_mmdd = month_str.map(_PRIOR_MMDD_BY_MONTH)
+    prior_end_date = (year_str + prior_mmdd).where(prior_mmdd.notna(), other="")
+
+    current = panel[value_col].to_numpy(dtype=float, na_value=np.nan)
+    prior_val = _lookup_at_end_date(panel, value_col, prior_end_date)
+
+    result = np.where(month_str.values == "03", current, current - prior_val)
+    return pd.Series(result, index=panel.index, name=f"{value_col}_q")
+
+
+def ttm(
+    panel: pd.DataFrame, value_col: str, *, kind: FundamentalKind = "flow"
+) -> pd.Series:
+    """滚动 12 个月 (TTM)。
+
+    *flow* (利润 / 现金流)::
+
+        FY                : TTM = report
+        非 FY 且 LY_* 可见: TTM = current + LY_FY − LY_same
+        否则              : TTM = current × {Q1: 4, H1: 2, 9M: 4/3}  (年化兜底)
+
+    *stock* (资产负债表): 时点数据，TTM 默认 = 最新报告期值，直接返回 ``panel[value_col]``。
+
+    Parameters
+    ----------
+    panel : pd.DataFrame
+        必含列 ``date``, ``symbol``, ``end_date``, ``value_col``。
+    value_col : str
+        要取 TTM 的列名。
+    kind : {"flow", "stock"}
+
+    Returns
+    -------
+    pd.Series
+        与 ``panel.index`` 对齐。
+    """
+    _check_fundamental_panel(panel, value_col)
+    if kind == "stock":
+        return panel[value_col].copy()
+    if kind != "flow":
+        raise ValueError(f"kind must be 'flow' or 'stock', got {kind!r}")
+
+    end_date = panel["end_date"].astype(str)
+    month_str = end_date.str[4:6]
+    prev_year = _prev_year_str(end_date)
+    mmdd = end_date.str[4:]
+
+    ly_fy_ed = (prev_year + "1231").where(prev_year.notna(), other="")
+    ly_same_ed = (prev_year + mmdd).where(prev_year.notna(), other="")
+
+    current = panel[value_col].to_numpy(dtype=float, na_value=np.nan)
+    ly_fy_val = _lookup_at_end_date(panel, value_col, ly_fy_ed)
+    ly_same_val = _lookup_at_end_date(panel, value_col, ly_same_ed)
+
+    is_fy = month_str.values == "12"
+    formula = current + ly_fy_val - ly_same_val
+
+    annualize_scale = month_str.map(_TTM_ANNUALIZE_BY_MONTH).to_numpy(dtype=float, na_value=np.nan)
+    fallback = current * annualize_scale
+
+    result = np.where(is_fy, current, formula)
+    result = np.where(np.isnan(result), fallback, result)
+    return pd.Series(result, index=panel.index, name=f"{value_col}_ttm")
+
+
+def yoy(
+    panel: pd.DataFrame, value_col: str, *, relative: bool = True
+) -> pd.Series:
+    """同比 — 当前 vs 上年同期。
+
+    ``relative=True``  → ``(current − LY_same) / |LY_same|`` (增长率，分母 0 → NaN)
+    ``relative=False`` → ``current − LY_same`` (绝对差)
+
+    Parameters
+    ----------
+    panel : pd.DataFrame
+        必含列 ``date``, ``symbol``, ``end_date``, ``value_col``。
+    value_col : str
+    relative : bool, default True
+
+    Returns
+    -------
+    pd.Series
+        与 ``panel.index`` 对齐;缺上年同期 → NaN。
+    """
+    _check_fundamental_panel(panel, value_col)
+
+    end_date = panel["end_date"].astype(str)
+    prev_year = _prev_year_str(end_date)
+    ly_same_ed = (prev_year + end_date.str[4:]).where(prev_year.notna(), other="")
+
+    current = panel[value_col].to_numpy(dtype=float, na_value=np.nan)
+    ly_same_val = _lookup_at_end_date(panel, value_col, ly_same_ed)
+
+    if relative:
+        denom = np.abs(ly_same_val)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ratio = (current - ly_same_val) / denom
+        result = np.where(denom > 0, ratio, np.nan)
+        name = f"{value_col}_yoy"
+    else:
+        result = current - ly_same_val
+        name = f"{value_col}_yoy_abs"
+    return pd.Series(result, index=panel.index, name=name)
+
+
 __all__ = [
     "rank",
     "z_score",
@@ -1457,4 +1662,7 @@ __all__ = [
     "if_else",
     "industry_neutralize",
     "cap_neutralize",
+    "single_quarter",
+    "ttm",
+    "yoy",
 ]

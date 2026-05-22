@@ -18,6 +18,7 @@ from backtest.factor.transforms import (
     rank,
     sign,
     signed_power,
+    single_quarter,
     sqrt,
     ts_argmax,
     ts_argmin,
@@ -38,6 +39,8 @@ from backtest.factor.transforms import (
     ts_skewness,
     ts_std,
     ts_sum,
+    ttm,
+    yoy,
     z_score,
 )
 
@@ -1497,3 +1500,177 @@ class TestCsOlsResidualize:
             cs_ols_residualize(
                 y, panel, dummy_col="industry_code", numeric_cols=("size_z",),
             )
+
+
+# ---------------------------------------------------------------------------
+# Fundamentals helpers: single_quarter / ttm / yoy
+# ---------------------------------------------------------------------------
+
+def _make_fina_panel(rows: list[tuple[str, str, str, float]]) -> pd.DataFrame:
+    """Build a PIT-style panel: list of (date, symbol, end_date, value)."""
+    df = pd.DataFrame(rows, columns=["date", "symbol", "end_date", "v"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+class TestSingleQuarter:
+    def test_q1_returns_report_as_is(self):
+        panel = _make_fina_panel([("2024-06-30", "A", "20240331", 100.0)])
+        result = single_quarter(panel, "v", kind="flow")
+        assert result.iloc[0] == pytest.approx(100.0)
+
+    def test_q2_subtracts_q1(self):
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20240331", 100.0),
+            ("2024-09-01", "A", "20240630", 250.0),
+        ])
+        result = single_quarter(panel, "v", kind="flow")
+        assert result.iloc[0] == pytest.approx(100.0)
+        assert result.iloc[1] == pytest.approx(150.0)
+
+    def test_q3_subtracts_h1(self):
+        panel = _make_fina_panel([
+            ("2024-12-01", "A", "20240331", 100.0),
+            ("2024-12-01", "A", "20240630", 250.0),
+            ("2024-12-01", "A", "20240930", 400.0),
+        ])
+        result = single_quarter(panel, "v", kind="flow")
+        assert result.iloc[2] == pytest.approx(150.0)
+
+    def test_q4_subtracts_9m(self):
+        panel = _make_fina_panel([
+            ("2025-04-01", "A", "20240930", 400.0),
+            ("2025-04-01", "A", "20241231", 600.0),
+        ])
+        result = single_quarter(panel, "v", kind="flow")
+        assert result.iloc[1] == pytest.approx(200.0)
+
+    def test_missing_prior_yields_nan(self):
+        panel = _make_fina_panel([("2024-09-01", "A", "20240630", 250.0)])
+        result = single_quarter(panel, "v", kind="flow")
+        assert np.isnan(result.iloc[0])
+
+    def test_stock_kind_returns_identity(self):
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20240331", 100.0),
+            ("2024-09-01", "A", "20240630", 250.0),
+        ])
+        result = single_quarter(panel, "v", kind="stock")
+        np.testing.assert_array_equal(result.values, panel["v"].values)
+
+    def test_unknown_kind_raises(self):
+        panel = _make_fina_panel([("2024-09-01", "A", "20240630", 1.0)])
+        with pytest.raises(ValueError, match="kind"):
+            single_quarter(panel, "v", kind="bogus")
+
+    def test_missing_value_col_raises(self):
+        panel = _make_fina_panel([("2024-09-01", "A", "20240630", 1.0)])
+        with pytest.raises(ValueError, match="missing required columns"):
+            single_quarter(panel, "no_such_col", kind="flow")
+
+    def test_empty_end_date_raises(self):
+        panel = _make_fina_panel([("2024-09-01", "A", "", 1.0)])
+        with pytest.raises(ValueError, match="empty end_date"):
+            single_quarter(panel, "v", kind="flow")
+
+    def test_symbols_are_independent(self):
+        """A's H1 must not leak into B's Q2 lookup at same trade date."""
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20240331", 100.0),
+            ("2024-09-01", "A", "20240630", 250.0),
+            ("2024-09-01", "B", "20240331", 999.0),  # different scale entirely
+            ("2024-09-01", "B", "20240630", 1500.0),
+        ])
+        result = single_quarter(panel, "v", kind="flow")
+        # B's Q2 = 1500 - 999 = 501, not 1500 - 100
+        assert result.iloc[3] == pytest.approx(501.0)
+
+
+class TestTTM:
+    def test_fy_returns_value(self):
+        panel = _make_fina_panel([("2025-04-01", "A", "20241231", 800.0)])
+        result = ttm(panel, "v", kind="flow")
+        assert result.iloc[0] == pytest.approx(800.0)
+
+    def test_non_fy_with_ly_components(self):
+        # Q2 2024 visible at date 2024-09; need LY FY (20231231) and LY same (20230630)
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20230630", 200.0),
+            ("2024-09-01", "A", "20231231", 500.0),
+            ("2024-09-01", "A", "20240630", 300.0),
+        ])
+        result = ttm(panel, "v", kind="flow")
+        # Q2 2024 row: 300 + 500 - 200 = 600
+        assert result.iloc[2] == pytest.approx(600.0)
+
+    def test_annualize_fallback_q2(self):
+        # Q2 2024 visible but no LY data — fallback H1×2
+        panel = _make_fina_panel([("2024-09-01", "A", "20240630", 300.0)])
+        result = ttm(panel, "v", kind="flow")
+        assert result.iloc[0] == pytest.approx(600.0)
+
+    def test_annualize_fallback_q1(self):
+        panel = _make_fina_panel([("2024-06-01", "A", "20240331", 100.0)])
+        result = ttm(panel, "v", kind="flow")
+        assert result.iloc[0] == pytest.approx(400.0)
+
+    def test_annualize_fallback_q3(self):
+        panel = _make_fina_panel([("2024-12-01", "A", "20240930", 300.0)])
+        result = ttm(panel, "v", kind="flow")
+        assert result.iloc[0] == pytest.approx(400.0)
+
+    def test_stock_kind_returns_identity(self):
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20240630", 1000.0),
+            ("2024-09-01", "A", "20240930", 1100.0),
+        ])
+        result = ttm(panel, "v", kind="stock")
+        np.testing.assert_array_equal(result.values, panel["v"].values)
+
+    def test_unknown_kind_raises(self):
+        panel = _make_fina_panel([("2024-09-01", "A", "20240630", 1.0)])
+        with pytest.raises(ValueError, match="kind"):
+            ttm(panel, "v", kind="weird")
+
+
+class TestYoY:
+    def test_relative_growth(self):
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20230630", 100.0),
+            ("2024-09-01", "A", "20240630", 150.0),
+        ])
+        result = yoy(panel, "v", relative=True)
+        # current Q2 2024 row: (150-100)/|100| = 0.5
+        assert result.iloc[1] == pytest.approx(0.5)
+        # base year row has no LY → NaN
+        assert np.isnan(result.iloc[0])
+
+    def test_absolute_diff(self):
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20230630", 100.0),
+            ("2024-09-01", "A", "20240630", 150.0),
+        ])
+        result = yoy(panel, "v", relative=False)
+        assert result.iloc[1] == pytest.approx(50.0)
+
+    def test_zero_denominator_yields_nan(self):
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20230630", 0.0),
+            ("2024-09-01", "A", "20240630", 150.0),
+        ])
+        result = yoy(panel, "v", relative=True)
+        assert np.isnan(result.iloc[1])
+
+    def test_negative_base_uses_abs(self):
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20230630", -200.0),
+            ("2024-09-01", "A", "20240630", 100.0),
+        ])
+        result = yoy(panel, "v", relative=True)
+        # (100 - (-200)) / |−200| = 1.5
+        assert result.iloc[1] == pytest.approx(1.5)
+
+    def test_missing_value_col_raises(self):
+        panel = _make_fina_panel([("2024-09-01", "A", "20240630", 1.0)])
+        with pytest.raises(ValueError, match="missing required columns"):
+            yoy(panel, "absent_col")
