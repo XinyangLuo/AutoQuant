@@ -30,7 +30,7 @@ market_daily / income_q / balancesheet_q / cashflow_q
 ## 各子模块一句话定位
 
 - **数据模块**：把外部数据拉到本地，建立可重放、可增量更新的数据池。详见 [`backtest/data/DESIGN.md`](data/DESIGN.md)。
-- **因子模块**：定义、计算、登记、静态评估因子。双库设计——研究中的新因子写 `factors.duckdb`（work，临时）；人工 `admit` 后迁移到 `factor_library.duckdb`（library，稳定）。详见 [`backtest/factor/DESIGN.md`](factor/DESIGN.md)。
+- **因子模块**：定义、计算、登记、静态评估因子。双库设计——研究中的新因子写 `factors_pending.duckdb`（work，临时）；人工 `admit` 后迁移到 `factor_library.duckdb`（library，稳定）。详见 [`backtest/factor/DESIGN.md`](factor/DESIGN.md)。
 - **策略模块**：把因子组合成可执行的策略，**只输出每日目标持仓**。详见 [`backtest/strategy/DESIGN.md`](strategy/DESIGN.md)。
 - **回测引擎**：双轨回测（简单/详细）。把策略目标持仓 → 净值曲线。日频，A 股规则。详见 [`backtest/simulation/DESIGN.md`](simulation/DESIGN.md)。
 - **评测模块**：从 simulation 落盘的 parquet 反推策略质量。收益/风险/胜率/交易/持仓指标 + 净值/回撤/月度热力图 + 可选基准对比。全项目指标计算单一真理源（`BacktestResult.summary()` 已退化为薄封装）。详见 [`backtest/evaluation/DESIGN.md`](evaluation/DESIGN.md)。
@@ -95,6 +95,6 @@ result = sim.run(signals, market_data, dividends_data)
 ## 关键设计决策
 
 - **回测引擎与策略解耦**：策略只产出目标持仓，引擎负责成交模拟（停牌、涨跌停、成本、复权）
-- **因子双库 + 人工 admission**：研究中的新因子值写 `factors.duckdb`（work, 临时）。看完三层评测（factor eval + simple BT + detailed BT）后人工 `admit`，把数据迁移到 `factor_library.duckdb`（library, 稳定）并清空 work；`reject` 则只清 work、不写 library。Evaluation 的"与现有因子相关性"只读 library，避免临时数据互相污染。整体使用方式见 [`backtest/PIPELINE.md`](PIPELINE.md)。
+- **因子双库 + 人工 admission**：研究中的新因子值写 `factors_pending.duckdb`（work, 临时）。看完三层评测（factor eval + simple BT + detailed BT）后人工 `admit`，把数据迁移到 `factor_library.duckdb`（library, 稳定）并清空 work；`reject` 则只清 work、不写 library。`FactorLibrary.insert_factors` 拒绝写未 admit 因子（`allow_unadmitted=True` 旁路供 `promote_from_work` 和测试用），把"work-only / library-only"从约定升级为强制 invariant。Evaluation 的"与现有因子相关性"只读 library，避免临时数据互相污染。整体使用方式见 [`backtest/PIPELINE.md`](PIPELINE.md)。
 - **财务数据未来信息隔离（PIT）**：`income_q` / `balancesheet_q` / `cashflow_q` 三张物理表各自保留所有版本（原始 + 修正）；查询时 `get_fina_snapshot(D)` 对每张表分别按 `f_ann_date <= D` 过滤 + `QUALIFY ROW_NUMBER()` 取最新可见版本，再 outer-join 成 wide DataFrame，正确处理业绩修正（restatement）及约 1% 的三表独立修正 case。详见 [`backtest/data/DESIGN.md`](data/DESIGN.md) 的 PIT 章节
 - **评测指标单一来源**：所有 Sharpe / 回撤 / 换手 / 胜率等指标只在 `backtest/evaluation/metrics.py` 实现。`BacktestResult.summary()` 与 `scripts/` 中的 `compute_metrics` 都委托到此，杜绝公式漂移

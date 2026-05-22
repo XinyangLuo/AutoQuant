@@ -97,7 +97,7 @@ class TestEmptyInsert:
 
 class TestFactorLibrary:
     def test_delete_factor_disabled(self, tmp_library, sample_factors):
-        tmp_library.insert_factors(sample_factors)
+        tmp_library.insert_factors(sample_factors, allow_unadmitted=True)
         with pytest.raises(NotImplementedError, match="append-only"):
             tmp_library.delete_factor("f_001")
 
@@ -127,4 +127,27 @@ class TestFactorLibrary:
         # delete_factor drops the column; returns 1 on success (0 if absent).
         assert cleared == 1
         assert tmp_storage.get_factor("f_001").empty
+        assert len(tmp_library.get_factor("f_001")) == 4
+
+    def test_insert_rejects_unadmitted_factor(self, tmp_library, monkeypatch):
+        """Library refuses writes for factor_ids not flagged admitted in registry."""
+        monkeypatch.setattr(
+            "backtest.factor.registry.get_registry",
+            lambda: {"f_unadmitted_test": {"status": "pending"}},
+        )
+        df = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-01"]),
+            "symbol": ["A"],
+            "factor_id": ["f_unadmitted_test"],
+            "value": [1.0],
+        })
+        with pytest.raises(PermissionError, match="unadmitted factor"):
+            tmp_library.insert_factors(df)
+
+    def test_allow_unadmitted_flag_bypasses_admission_check(
+        self, tmp_library, sample_factors,
+    ):
+        """``allow_unadmitted=True`` is the only escape hatch — used by
+        promote_from_work and by test setup that seeds Barra L1 regressors."""
+        tmp_library.insert_factors(sample_factors, allow_unadmitted=True)
         assert len(tmp_library.get_factor("f_001")) == 4

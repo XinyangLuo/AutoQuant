@@ -168,7 +168,7 @@ class TestRidgeR2CheckIntegration:
                     "symbol": np.tile(symbols, len(dates)),
                     "factor_id": reg_id,
                     "value": vals,
-                }))
+                }), allow_unadmitted=True)
         return work_path, lib_path
 
     def test_pure_noise_classified_pure_alpha(self, tmp_path):

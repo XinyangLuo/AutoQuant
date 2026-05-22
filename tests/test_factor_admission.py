@@ -261,7 +261,7 @@ class TestAdmitRidgeGate:
             }))
         with FactorLibrary() as lib:
             for sub in rows:
-                lib.insert_factors(sub)
+                lib.insert_factors(sub, allow_unadmitted=True)
 
     def test_pure_alpha_stamps_tier_on_meta(self, patched_storage):
         import numpy as np

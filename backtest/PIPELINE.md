@@ -13,7 +13,7 @@
 ### 两个物理 DuckDB（关键设计）
 
 ```
-data/duckdb/factors.duckdb         ← 工作区 (FactorStorage)
+data/duckdb/factors_pending.duckdb ← 工作区 (FactorStorage)
                                      · backfill / evaluation / 回测 写读这里
                                      · 临时数据，admit 或 cleanup 时清空
 
@@ -655,7 +655,7 @@ python -m backtest.factor.admission status f_101
 
 ### 8.3 `admit` 干了什么
 
-1. 从 work DB（`factors.duckdb`）读 factor 的全部数据（含 `ann_date` / `f_ann_date`）
+1. 从 work DB（`factors_pending.duckdb`）读 factor 的全部数据（含 `ann_date` / `f_ann_date`）
 2. UPSERT 到 library DB（`factor_library.duckdb`）
 3. 从 work DB 删除该 factor 的所有行
 4. 更新 `registry.json` 的 `status="admitted"` + append 到 `admission_history`
@@ -827,7 +827,7 @@ Admission: f_rev_05  ->  ADMITTED
 
 此后：
 - `registry.json` 该因子状态变为 `"admitted"`
-- 数据从 `factors.duckdb` 迁移到 `factor_library.duckdb`
+- 数据从 `factors_pending.duckdb` 迁移到 `factor_library.duckdb`
 - 下一个新因子做 evaluation 时，`f_rev_05` 进入 corr 比较名单
 - 日常 `python -m backtest.factor.update` 自动维护其增量
 

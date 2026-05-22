@@ -2,12 +2,16 @@
 
 Two physical DBs share the same schema:
 
-- ``factors.duckdb`` (work area, :class:`FactorStorage`) — research churn.
-  ``backfill`` / ``compute`` / ``evaluation`` write here.
-- ``factor_library.duckdb`` (stable library, :class:`FactorLibrary`) — only
-  ``admit()`` writes here. Evaluation's cross-factor correlation check reads
-  from here so admission compares against *stabilised* factors, never the
-  temporary research churn.
+- ``factors_pending.duckdb`` (research / pending area, :class:`FactorStorage`).
+  Where ``backfill`` / ``compute`` / ``evaluation`` write the temporary
+  research churn. Anyone is free to write here. Factors stay until
+  ``admit()`` promotes them or ``reject()`` clears them.
+- ``factor_library.duckdb`` (stable library, :class:`FactorLibrary`). Holds
+  only **admitted** factors. ``FactorLibrary.insert_factors`` rejects any
+  factor whose registry status isn't ``"admitted"`` (escape hatch:
+  ``_bootstrap=True``). Evaluation's cross-factor correlation check reads
+  from here so admission compares against stabilised factors, never the
+  pending churn.
 
 Schema
 ------
@@ -51,14 +55,34 @@ from backtest.data.tushare_client import _find_project_root
 
 PROJECT_ROOT = _find_project_root()
 DATA_DIR = PROJECT_ROOT / "data" / "duckdb"
-FACTORS_WORK_DB_PATH = DATA_DIR / "factors.duckdb"
+FACTORS_WORK_DB_PATH = DATA_DIR / "factors_pending.duckdb"
 FACTOR_LIBRARY_DB_PATH = DATA_DIR / "factor_library.duckdb"
+
+# Legacy name — renamed to factors_pending.duckdb to signal "research /
+# unadmitted only". ``_migrate_legacy_work_db`` moves the file on first
+# init if found, so existing checkouts keep working without manual steps.
+_LEGACY_WORK_DB_PATH = DATA_DIR / "factors.duckdb"
 
 # Backwards-compatible alias for callers and tests that still reference the
 # old single-DB name. Always points to the work area.
 FACTORS_DB_PATH = FACTORS_WORK_DB_PATH
 
 FACTORS_TABLE = "factors_daily"
+
+
+def _migrate_legacy_work_db() -> None:
+    """Rename the old ``factors.duckdb`` to ``factors_pending.duckdb``.
+
+    Idempotent: runs only when the legacy file is present and the new file
+    doesn't already exist. Silent no-op afterwards.
+    """
+    if _LEGACY_WORK_DB_PATH.exists() and not FACTORS_WORK_DB_PATH.exists():
+        print(
+            f"[factor.storage] renaming legacy {_LEGACY_WORK_DB_PATH.name} "
+            f"→ {FACTORS_WORK_DB_PATH.name} (work DB; admitted factors live "
+            f"in {FACTOR_LIBRARY_DB_PATH.name})"
+        )
+        _LEGACY_WORK_DB_PATH.rename(FACTORS_WORK_DB_PATH)
 
 
 def _quote_ident(name: str) -> str:
@@ -68,11 +92,16 @@ def _quote_ident(name: str) -> str:
 
 
 class FactorStorage:
-    """DuckDB-backed wide-format factor store.
+    """DuckDB-backed wide-format factor store — **work / pending area**.
 
-    Defaults to the work-area DB (``factors.duckdb``). Callers can pass a
-    custom ``db_path`` — :class:`FactorLibrary` uses this to back the stable
-    library DB at ``factor_library.duckdb``.
+    Defaults to the work-area DB (``factors_pending.duckdb``). This is where
+    research / unadmitted factors live — anyone is free to write here.
+    Promotion to the stable library happens via
+    :func:`backtest.factor.admission.admit`, which moves the data into a
+    separate :class:`FactorLibrary` instance and drops the column from here.
+
+    Callers can pass a custom ``db_path`` — :class:`FactorLibrary` uses this
+    to back the stable library DB at ``factor_library.duckdb``.
 
     Public surface treats factors as columns: :meth:`get_factor` selects one
     column, :meth:`get_factor_panel` selects a list of columns,
@@ -82,7 +111,11 @@ class FactorStorage:
 
     def __init__(self, db_path: Path | str | None = None):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        self.db_path = Path(db_path) if db_path is not None else FACTORS_WORK_DB_PATH
+        if db_path is None:
+            _migrate_legacy_work_db()
+            self.db_path = FACTORS_WORK_DB_PATH
+        else:
+            self.db_path = Path(db_path)
         self.conn = duckdb.connect(str(self.db_path))
         self.conn.execute(f"""
             CREATE TABLE IF NOT EXISTS {FACTORS_TABLE} (
@@ -327,13 +360,47 @@ class FactorLibrary(FactorStorage):
     """Stable factor library — read-mostly, writes only via ``admit()``.
 
     Same schema as :class:`FactorStorage` but pointed at
-    ``factor_library.duckdb``. :meth:`delete_factor` is disabled because the
-    library is append-only.
+    ``factor_library.duckdb``. Compared to the work-area class:
+
+    - :meth:`insert_factors` rejects any ``factor_id`` whose registry status
+      isn't ``"admitted"``. Pass ``allow_unadmitted=True`` to bypass — that
+      flag exists for :meth:`promote_from_work` (which writes *before* the
+      status flip inside :func:`admit`) and test seeding.
+    - :meth:`delete_factor` / :meth:`delete_factors` are disabled: the
+      library is append-only.
     """
 
     def __init__(self, db_path: Path | str | None = None):
         super().__init__(db_path=Path(db_path) if db_path is not None
                                  else FACTOR_LIBRARY_DB_PATH)
+
+    def insert_factors(self, df: pd.DataFrame, *, allow_unadmitted: bool = False):
+        """UPSERT factor values into the library DB.
+
+        Refuses to write a ``factor_id`` whose registry status isn't
+        ``"admitted"`` (the wider class invariant: library = admitted only).
+        ``allow_unadmitted=True`` skips the check — used by
+        :meth:`promote_from_work` (which writes before the status flip inside
+        ``admit()``) and by tests that seed Barra L1 regressors directly.
+        """
+        if not allow_unadmitted and not df.empty:
+            # Policy → plumbing direction: registry sits above storage, so we
+            # import it lazily here rather than at module scope.
+            from backtest.factor.registry import get_registry
+            registry = get_registry()
+            offenders: list[str] = []
+            for fid in df["factor_id"].unique():
+                meta = registry.get(fid)
+                if meta is None or meta.get("status") != "admitted":
+                    offenders.append(fid)
+            if offenders:
+                raise PermissionError(
+                    f"FactorLibrary rejects write of unadmitted factor_id(s): "
+                    f"{offenders}. Promote via admission.admit() first "
+                    f"(intended for promote_from_work and test seeding only: "
+                    f"pass allow_unadmitted=True)."
+                )
+        super().insert_factors(df)
 
     def delete_factor(self, factor_id: str) -> int:  # noqa: D401
         raise NotImplementedError(
@@ -356,13 +423,16 @@ class FactorLibrary(FactorStorage):
 
         Caller clears the work DB afterwards (typically in the ``admit``
         orchestrator). Returns the number of rows written.
+
+        Bypasses the admission guard via ``allow_unadmitted=True`` — at the
+        moment this runs, ``admit()`` hasn't flipped the registry status yet.
         """
         df = work_storage.get_factor(factor_id)
         if df.empty:
             return 0
         df = df.copy()
         df["factor_id"] = factor_id
-        self.insert_factors(df)
+        self.insert_factors(df, allow_unadmitted=True)
         return len(df)
 
 

@@ -6,8 +6,8 @@
 
 **两个物理 DuckDB**：
 
-- `data/duckdb/factors.duckdb` —— **工作区**。`backfill` / `compute` / `evaluation` 期间临时数据落在这里。研究中的新因子的"住所"，临时。
-- `data/duckdb/factor_library.duckdb` —— **稳定库**。只有 `admit()` 会写入。Evaluation 的"与现有因子相关性"检查只读这个库，避免临时数据相互污染。
+- `data/duckdb/factors_pending.duckdb` —— **工作区**。`backfill` / `compute` / `evaluation` 期间临时数据落在这里。研究中的新因子的"住所"，临时。任何代码都能写。
+- `data/duckdb/factor_library.duckdb` —— **稳定库**。只有 `admit()` 会写入。`FactorLibrary.insert_factors` 强制要求 `factor_id` 在 registry 中 `status='admitted'`，否则抛 `PermissionError`（`allow_unadmitted=True` 旁路仅供 `promote_from_work` / 测试 seeding）。Evaluation 的"与现有因子相关性"检查只读这个库，避免临时数据相互污染。
 
 因子模块**不直接参与回测**——回测只消费 strategy 产出的权重。
 
@@ -162,7 +162,7 @@ cap_neutral = cap_neutralize(raw_series, cap_panel, cap_field='circ_mv', quantil
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│ data/duckdb/factors.duckdb                           │  ← FactorStorage (work)
+│ data/duckdb/factors_pending.duckdb                   │  ← FactorStorage (work)
 │                                                      │     · backfill / compute 写入（各 variant 并存）
 │  factors_daily                                       │     · evaluation 读取
 │  (date, symbol, factor_id, variant,                  │     · admit(variant) 后清空该 variant 行
