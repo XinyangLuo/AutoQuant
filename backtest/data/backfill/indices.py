@@ -32,7 +32,7 @@ def _next_day(yyyymmdd: str) -> str:
     return (datetime.strptime(yyyymmdd, "%Y%m%d") + timedelta(days=1)).strftime("%Y%m%d")
 
 
-def backfill(symbols: list[str], start_override: str | None = None) -> None:
+def backfill_indices(symbols: list[str], start_override: str | None = None) -> None:
     today = datetime.today().strftime("%Y%m%d")
     with MarketStorage() as storage:
         for symbol in tqdm(symbols, desc="Backfill index_daily"):
@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     if not symbols:
         parser.error("at least one symbol required")
-    backfill(symbols, start_override=args.start)
+    backfill_indices(symbols, start_override=args.start)
     return 0
 
 

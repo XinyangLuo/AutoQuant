@@ -26,7 +26,7 @@ from backtest.data.fetcher.sw_industry_fetcher import (
 )
 
 
-def backfill(levels: list[str]) -> None:
+def backfill_sw_industry(levels: list[str]) -> None:
     with MarketStorage() as storage:
         for level in levels:
             classify = fetch_industry_classify(level)
@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     levels = [s.strip() for s in args.levels.split(",") if s.strip()]
     if not levels:
         parser.error("at least one level required")
-    backfill(levels)
+    backfill_sw_industry(levels)
     return 0
 
 

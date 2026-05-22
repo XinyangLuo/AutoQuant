@@ -46,10 +46,10 @@ def _next_day(d: date) -> str:
     return (d + timedelta(days=1)).strftime("%Y%m%d")
 
 
-def backfill(
+def backfill_index_members(
     indices: list[str],
-    start_override: str | None,
-    end_override: str | None,
+    start_override: str | None = None,
+    end_override: str | None = None,
 ) -> None:
     today = datetime.today().strftime("%Y%m%d")
     end = end_override or today
@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     indices = [s.strip() for s in args.indices.split(",") if s.strip()]
     if not indices:
         parser.error("at least one index required")
-    backfill(indices, start_override=args.start, end_override=args.end)
+    backfill_index_members(indices, start_override=args.start, end_override=args.end)
     return 0
 
 

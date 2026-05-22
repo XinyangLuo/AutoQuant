@@ -1,24 +1,41 @@
 #!/usr/bin/env python3
 """
-Incremental update for market_daily, income/balancesheet/cashflow, and dividends.
+Incremental update for market_daily, income/balancesheet/cashflow, dividends,
+index_daily, and index_members.
 
 Phases run sequentially under one DB connection:
+  0. trade_calendar — append from MAX(cal_date)+1 to today
   1. market_daily   — from MAX(date)+1 to today, per trade date
   2. fundamentals   — from MAX(f_ann_date) to today, per table (income / balancesheet / cashflow)
   3. dividends      — from MAX(ann_date) to today, per trade date by ann_date
+  4. index_daily    — per-index MAX(date)+1 → today (benchmark OHLCV)
+  5. index_members  — per-index MAX(trade_date)+1 → today (densified monthly snapshots)
 
-Each phase resumes from its own DB cursor and skips empty days.
+``sw_industry`` is a slow-moving table (industry assignments change rarely)
+and ``backfill/sw_industry.py`` does a full rebuild, so it is excluded from
+the daily loop. Pass ``--include-sw-industry`` to rebuild it as well.
 
 Usage:
     python -m backtest.data.update_daily
+    python -m backtest.data.update_daily --include-sw-industry
 """
 
+import argparse
 from datetime import datetime, timedelta
 
 import pandas as pd
 from tqdm import tqdm
 
 from backtest.data._pipeline import update_by_ann_date
+from backtest.data.backfill.index_members import (
+    DEFAULT_INDICES as INDEX_MEMBERS_DEFAULT,
+    backfill_index_members,
+)
+from backtest.data.backfill.indices import (
+    DEFAULT_INDICES as INDICES_DEFAULT,
+    backfill_indices,
+)
+from backtest.data.backfill.sw_industry import backfill_sw_industry
 from backtest.data.fetcher.daily_fetcher import build_list_date_map, process_trade_date
 from backtest.data.fetcher.dividends_fetcher import fetch_dividend_by_ann_date
 from backtest.data.fetcher.fundamentals_fetcher import (
@@ -104,7 +121,14 @@ def update_dividends(storage: MarketStorage) -> None:
     )
 
 
-def main():
+def main(argv: list[str] | None = None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--include-sw-industry", action="store_true",
+        help="Also rebuild sw_industry (slow-moving; off by default).",
+    )
+    args = parser.parse_args(argv)
+
     stock_list = fetch_stock_list()
     print(f"Stock list: {len(stock_list)} stocks")
 
@@ -130,6 +154,16 @@ def main():
 
         print("\n=== Phase 3: dividends ===")
         update_dividends(storage)
+
+        print("\n=== Phase 4: index_daily ===")
+        backfill_indices(INDICES_DEFAULT)
+
+        print("\n=== Phase 5: index_members ===")
+        backfill_index_members(INDEX_MEMBERS_DEFAULT)
+
+        if args.include_sw_industry:
+            print("\n=== Phase 6: sw_industry (full rebuild) ===")
+            backfill_sw_industry(["L1", "L2"])
 
     print("\n" + "=" * 50)
     print("Update complete.")

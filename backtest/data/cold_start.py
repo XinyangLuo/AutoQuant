@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-One-button cold start: backfill market_daily, income/balancesheet/cashflow,
-and dividends from scratch.
+One-button cold start: backfill market_daily, fundamentals (income /
+balancesheet / cashflow), dividends, benchmark indices, index members, and
+SW industry mapping from scratch.
 
 Phases run sequentially under one DB connection:
-  1. market_daily   — loop trade dates, per-date OHLCV + adj + ST + limit + basic
-  2. fina_indicator — loop symbols, per-symbol full quarterly history
-  3. dividends      — loop symbols, per-symbol full dividend history
+  0. trade_calendar — Tushare full calendar with week/month boundary flags
+  1. market_daily   — per trade date OHLCV + adj + ST + limit + basic + margin + moneyflow
+  2. fundamentals   — per symbol full quarterly history (3 tables)
+  3. dividends      — per symbol full dividend history
+  4. index_daily    — per-index full OHLCV (CSI 300 / 500 / 1000 / 2000 / SSE / ChiNext)
+  5. index_members  — per-index monthly weight snapshots densified to trade dates
+  6. sw_industry    — SW2021 L1 + L2 industry membership
 
 All phases are resumable: rows already in DB are skipped.
 
@@ -24,7 +29,16 @@ from tqdm import tqdm
 from backtest.data._pipeline import print_stats
 from backtest.data.backfill.dividends import backfill_dividends
 from backtest.data.backfill.fundamentals import backfill_fundamentals
-from backtest.data.backfill.trade_calendar import backfill_trade_calendar
+from backtest.data.backfill.index_members import (
+    DEFAULT_INDICES as INDEX_MEMBERS_DEFAULT,
+    backfill_index_members,
+)
+from backtest.data.backfill.indices import (
+    DEFAULT_INDICES as INDICES_DEFAULT,
+    backfill_indices,
+)
+from backtest.data.backfill.sw_industry import backfill_sw_industry
+from backtest.data.backfill_trade_calendar import backfill_trade_calendar
 from backtest.data.fetcher.daily_fetcher import build_list_date_map, process_trade_date
 from backtest.data.stock_list import fetch_stock_list
 from backtest.data.storage import MarketStorage
@@ -92,7 +106,7 @@ def main():
         print("\n=== Phase 0: trade_calendar ===")
         today = datetime.now().strftime("%Y%m%d")
         earliest_list_date = stock_list["list_date"].min()
-        n_cal = backfill.trade_calendar(
+        n_cal = backfill_trade_calendar(
             start_date=earliest_list_date,
             end_date=today,
         )
@@ -106,13 +120,22 @@ def main():
             return
 
         print("\n=== Phase 2: income + balancesheet + cashflow ===")
-        backfill.fundamentals(storage, stock_list=stock_list)
+        backfill_fundamentals(storage, stock_list=stock_list)
         for name in ("income_q", "balancesheet_q", "cashflow_q"):
             print_stats(name, storage.get_fundamentals_stats(name), date_col="f_ann_date", prefix="f_ann ")
 
         print("\n=== Phase 3: dividends ===")
-        backfill.dividends(storage, stock_list=stock_list)
+        backfill_dividends(storage, stock_list=stock_list)
         print_stats("dividends", storage.get_dividend_stats(), prefix="ann ")
+
+        print("\n=== Phase 4: index_daily ===")
+        backfill_indices(INDICES_DEFAULT)
+
+        print("\n=== Phase 5: index_members ===")
+        backfill_index_members(INDEX_MEMBERS_DEFAULT)
+
+        print("\n=== Phase 6: sw_industry ===")
+        backfill_sw_industry(["L1", "L2"])
 
         print("\n" + "=" * 50)
         print("Cold start complete.")
