@@ -160,6 +160,191 @@ QUALIFY ROW_NUMBER() OVER (
 
 **对派生因子的影响**：离线计算财务因子时，先调用 `get_fina_snapshot(D)` 拿到 wide DataFrame，再算因子。结果连同 `ann_date` / `f_ann_date` 一并写入因子表（便于二次审计与回放）。
 
+## 财报数据使用指南 (Shi Chuan 4-case + 单季度 + TTM)
+
+> 本节是对上节 "业绩修正与 PIT" 的扩展：在 `update_flag` 之外，Tushare 还通过 `report_type` 暴露报表版本族（初始 / 基准 / 修正前 / 修正后）。石川《因子投资》第 3 章给出 4 种典型披露场景，下文给出对照与实现契约。
+>
+> **当前状态**：data 层方案已定稿，待代码落地（见 §6 路线图 Round 1）。单季度推导 / TTM / YoY 不在 data 层完成，由因子层 `backtest/factor/transforms.py` 助手函数承担（Round 2）。
+
+### 1. Tushare `report_type` 取值
+
+来源：Tushare `pro.income` / `pro.balancesheet` / `pro.cashflow` 文档（<https://tushare.pro/document/2?doc_id=33>）。
+
+| code | 含义 | 备注 |
+|---|---|---|
+| 1 | 合并报表（默认） | 初始合并报表 |
+| 2 | 单季合并 | 已是单季度，但保留作为冗余 |
+| 3 | 调整（合并） | "前次披露" 合并版本 |
+| 4 | 调整（合并报表）/ 基准 | 次年年报附带披露的同年基准 |
+| 5 | 调整前（合并） | 更正发生时的 "原值" |
+| 6 | 母公司报表 | 单体口径，不入库 |
+| 11 / 12 | 母公司调整 / 调整前 | 单体口径，不入库 |
+
+**入库范围**：`report_type ∈ {1, 2, 3, 4, 5}`（合并口径全集）；`6 / 11 / 12`（母公司口径）不入库。
+
+**实证结论 — `update_flag` 不可作为版本新旧判定**：
+
+Tushare 数据中 `update_flag` 并非严格的 "0=原始 / 1=修正"。实测案例：
+
+- `920522.BJ` 2023H1（end_date=20230630）三条记录按 `f_ann_date` 升序的 `update_flag` 序列为 `(1, 0, 1)`
+- `920663.BJ` 2022 年报（end_date=20221231）同样为 `(1, 0, 1)`
+- `300237.SZ` 2018 年报（end_date=20181231）只两条：`f_ann_date=20190426 update_flag=0`（原始 3.79 亿）+ `f_ann_date=20220628 update_flag=1`（修正后 4116 万）—— **修正只新增一行，原行不改写**
+
+因此：
+
+- **`f_ann_date` 是唯一可靠的版本时间戳**。同一 `(symbol, end_date)` 在不同 `report_type`（如初始 1、基准 4、修正前 5）下各自可能有多个 `f_ann_date` 版本；存储层保留所有物理行（PK 含 `report_type` 不互覆盖），snapshot 层按 `WHERE f_ann_date <= D` + 取最新即可。
+- 同 `f_ann_date` 偶发 `update_flag=0/1` 两条**同值**冗余行（如 `688981.SH 20250829`），仅需任取一条避免 outer-join 三表重复。
+
+**石川语义 vs. Tushare 取值**（仅作语义参考，snapshot 实现不依赖该映射）：
+
+| 石川语义角色 | 实际含义 | 候选 Tushare `report_type` | 说明 |
+|---|---|---|---|
+| 初始（类型 1）| 当期首次披露的合并报表 | 1 | 已确认 |
+| 基准（类型 2）| 次年年报随发的同年合并 | 4 | 仅语义参考 |
+| 修正前（类型 3）| 更正公告前的初始报表（历史快照）| 5（或 3）| 仅语义参考 |
+| 修正后（类型 4）| 更正后的值 | 1（含 `update_flag='1'`）| 仅语义参考 |
+
+由于 4-case 框架本质上等价于「同 `(symbol, end_date)` 按 `f_ann_date` 取最新」（详见 §2），snapshot 不需要按 `report_type` 分支决策。
+
+### 2. 石川 4 种披露场景与取数契约
+
+verbatim 引用（出自《因子投资》第 3 章图 3.7）：
+
+> (a) x 年年报在 t1 日披露后没有发生调整和更正，此时只有 1 条数据即类型 1。t1 日后如果要使用该财报数据，则提取类型 1 即可。
+>
+> (b) x 年年报在 t1 日首次披露，在 t2 日 x+1 年年报披露时顺便再一次披露了 x 年年报（基准报表）。因此，若在 t1 日到 t2 日之间使用该财报数据，则应提取类型 1；若在 t2 日后使用该数据，则提取类型 2。
+>
+> (c) 除了常规的初始报表和基准报表，还发生了数据更正，且更正发生在基准报表之前。在 t1 日披露 x 年年报，此时记录为类型 1；在 t2 日对年报进行了更正，此时更正后的数据记为类型 1，更正前的数据记为类型 3；在 t3 日披露调整数据，此时记录为类型 2。因此，如果在 t1 日到 t2 日使用 x 年年报，应提取类型 3；若在 t2 日到 t3 日之间使用该数据，则提取类型 1；若在 t3 日之后，提取类型 2 即可。
+>
+> (d) 更正发生在基准报表之后。在 t1 日披露 x 年年报，此时记为类型 1；在 t2 日披露 x 年年报基准报表，记为类型 2；t3 日发出 x 年年报更正公告，此时修改类型 1 和类型 2 为更正后的最新值，原来的数据分别记为类型 3 和类型 4。因此，如果在 t1 日到 t2 日期间使用该年报，则应提取类型 3；如果在 t2 日到 t3 日之间使用该数据，则提取类型 4；在 t3 日之后提取类型 2 即可。
+
+D 日取数对照表（**语义参考**——实际实现无需按场景分支，原理见表后说明）：
+
+| 场景 | D 位置 | 应读类型 | Tushare 实现（语义参考） |
+|---|---|---|---|
+| (a) | D ≥ t1 | 类型 1 | `report_type='1'` |
+| (b) | t1 ≤ D < t2 | 类型 1 | `report_type='1'` |
+| (b) | D ≥ t2 | 类型 2 | `report_type='4'` |
+| (c) | t1 ≤ D < t2 | 类型 3 | t1 时点 `report_type='1'` |
+| (c) | t2 ≤ D < t3 | 类型 1 | t2 时点 `report_type='1'` |
+| (c) | D ≥ t3 | 类型 2 | `report_type='4'` |
+| (d) | t1 ≤ D < t2 | 类型 3 | t1 时点 `report_type='1'` |
+| (d) | t2 ≤ D < t3 | 类型 4 | t2 时点 `report_type='4'` |
+| (d) | D ≥ t3 | 类型 2 | 最新 `report_type='4'` |
+
+**关键洞察**：上表的每一行都等价于 "D 日按 `f_ann_date` 取同 `(symbol, end_date)` 下最新可见版本"。只要：
+
+1. fetch 把 `report_type ∈ {1,2,3,4,5}` 全部入库；
+2. 存储层 PK 加入 `report_type`，让不同 type 的物理行不互覆盖；
+
+则按 `WHERE f_ann_date <= D + QUALIFY ROW_NUMBER OVER (PARTITION BY symbol, end_date ORDER BY f_ann_date DESC, update_flag DESC) = 1` 即可**自然实现** 4-case 框架，**无需** CASE WHEN report_type 优先级判定。
+
+**`get_fina_snapshot(D)` 实际实现 SQL**（Round 1 落地）：
+
+```sql
+SELECT *
+FROM income_q  -- balancesheet_q / cashflow_q 同理
+WHERE f_ann_date <= ?
+QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY symbol, end_date
+    ORDER BY f_ann_date DESC,
+             update_flag DESC  -- 仅作同 f_ann_date 下的 stable tiebreaker
+) = 1;
+```
+
+说明：
+
+- `f_ann_date DESC` 取 D 日最新已见版本——这是 4-case 框架的核心：场景 (a) 取唯一的 `f_ann_date=t1`；场景 (b) 在 `D≥t2` 时自然取到 t2 时点的基准版本（因为它的 `f_ann_date=t2 > t1`）；场景 (c)/(d) 同理。
+- `update_flag DESC` 仅为去重——同 `(symbol, end_date, f_ann_date)` 偶发 `update_flag=0/1` 两条同值行（如 `688981.SH 20250829`），任取一条不影响数值，但 outer-join 三表前必须去掉重复以免笛卡尔积。
+- 同 `(symbol, end_date)` 下不同 `report_type` 的行（如初始 1、基准 4、修正前 5）通过 `f_ann_date DESC` 自然分先后；多 type 共存仅在物理层保留可溯源，对 snapshot 输出无影响。
+
+### 3. 单季度数据推导
+
+资产负债表是时点数据，所以单季度数据 = 报告期数据。利润表 / 现金流量表是累计值，单季度数据 = 当期累计 − 上一报告期累计。
+
+| 报告期 | `end_date` 末月 | 利润表 / 现金流量表 公式 | 资产负债表 公式 |
+|---|---|---|---|
+| Q1 | 03 | `Q1 = report 原值` | `= report`（时点）|
+| Q2 | 06 | `Q2 = H1 − Q1` | `= report` |
+| Q3 | 09 | `Q3 = 9M − H1` | `= report` |
+| Q4 | 12 | `Q4 = FY − 9M` | `= report` |
+
+NaN 传播规则：若任一参与运算的环比报告期缺失（前一报告期 row 在 PIT 快照中不存在），对应单季度结果为 NaN。
+
+**实现位置**：**不在 data 层完成**。data 层只负责 PIT 快照取数，单季度推导是因子构建时的 transform —— 不同因子需要的科目不同，统一在 data 层算等于浪费。助手函数 `single_quarter(panel, value_col)` 计划放在 `backtest/factor/transforms.py`，由 Round 2 (P0.5) 提供。本节定义公式契约。
+
+### 4. TTM (Trailing Twelve Months)
+
+**利润表 / 现金流量表（流量科目）**：
+
+```
+若 latest.end_date 末月 == 12（年报）：
+    TTM = latest.value
+否则若 LY_FY 存在 且 LY_same_period 存在：
+    TTM = latest.value + LY_FY.value − LY_same_period.value
+否则（兜底年化）：
+    TTM = annualize(latest.value, end_date)
+    其中系数：Q1=4, H1=2, 9M=4/3, FY=1
+```
+
+**资产负债表（时点科目）**：
+
+**默认 `TTM_BS = latest reported value`**（即 D 日 PIT 快照中最新可见的报告期值）。
+
+该默认与现有 `backtest/factor/builtin/barra/_common.py:latest_quarter_per_day` 行为一致；BS-only 因子（BTOP、AGRO）迁移到 `ttm()` 助手后**数值不变**。
+
+简述但**不启用**的替代选项（仅留 future opt-in，需要时再加 flag）：
+
+- 最近 4 个报告期平均
+- 当前 + 同比 平均
+
+**实现位置**：**不在 data 层完成**（同 §3）。助手函数 `ttm(panel, value_col, kind='flow'|'stock')` 计划放在 `backtest/factor/transforms.py`，由 Round 2 (P0.5) 提供。本节定义公式契约。
+
+### 5. 当前实现差距 (gap analysis)
+
+| 功能 | 现状 | 正确做法 | 状态 |
+|---|---|---|---|
+| Fetch 多 `report_type` | `fetcher/fundamentals_fetcher.py:18-25` 只保留 `'1'` | 入库 1/2/3/4/5 | Round 1 待落地 |
+| Storage PK | `storage.py` PK=4 列 | 加入 `report_type` → 5 列 PK | Round 1 待落地 |
+| Snapshot 取数 | 已按 `(f_ann_date DESC, update_flag DESC)` 取最新 | 保持现状（与 fetch 多 type 配合即实现 4-case）| Round 1 与 fetch+PK 一起验证 |
+| 单季度推导 | 无 | `transforms.py:single_quarter` | Round 2 (P0.5) |
+| TTM | `_common.py:annualize_ytd` 近似 | `transforms.py:ttm` | Round 2 (P0.5) |
+| YoY / 同比 | 无 | `transforms.py:yoy` | Round 2 (P0.5) |
+| 测试 | `tests/test_fundamentals.py` 仅随机抽样一致性 | + multi-type 一致性 + 单季度 + TTM + YoY 单测 | Round 1 / Round 2 分摊 |
+
+**Factor 消费者影响清单**（六个 Barra 因子）：
+
+| 因子 | 文件 | 当前依赖 | 未来 (Round 2 P0.6) 改读 |
+|---|---|---|---|
+| `f_barra_growth_egro` | `barra/growth.py` | `pit_quarterly_slope(inc_basic_eps)` | 同（slope 不受 TTM 影响）|
+| `f_barra_quality_roa` | `barra/quality.py` | `annualize_ytd(inc_n_income_attr_p) / bs_total_assets` | `ttm(inc_n_income_attr_p) / bs_ttm` |
+| `f_barra_quality_gp` | `barra/quality.py` | `annualize_ytd(rev) − annualize_ytd(cost)` | `ttm(rev) − ttm(cost)` |
+| `f_barra_quality_agro` | `barra/quality.py` | `pit_quarterly_slope(bs_total_assets)` | 同 |
+| `f_barra_value_btop` | `barra/value.py` | `bs_total_hldr_eqy_inc_min_int / circ_mv` | 同（BS 默认 = latest）|
+| `f_barra_value_etop` | `barra/value.py` | `annualize_ytd(inc_n_income_attr_p) / circ_mv` | `ttm(inc_n_income_attr_p) / circ_mv` |
+
+**数值漂移风险**：
+
+- **Round 1（data 层）落地后**：现有 Barra 因子的输入会变化—— `get_fina_snapshot` 同 `(symbol, end_date)` 的取值从 "仅 type=1 中最新" 变成 "type 1/2/3/4/5 全集中按 f_ann_date 最新"。多数情况一致，但**修正后版本族（type=5 或 update_flag=1）可能改写 type=1 之前的"原始已知值"**——这是石川 4-case 框架的正确行为，但意味着历史回测结果会有微小数值差异。落地后需跑现有 Barra 因子的 IC sanity，对比 PR 前后。
+- **Round 2（factor 层）迁移后**：BTOP / EGRO / AGRO 不变（BS 默认 = latest = 现行语义；slope 因子不触及年化）；ROA / GP / ETOP 会变（`annualize_ytd` → 真 TTM）。迁移时再做一次前后 IC sanity。
+
+### 6. 下一步路线图
+
+落到 [`TODO.md`](../../TODO.md) P0 §"基本面因子修正"，分两轮：
+
+**Round 1（data 层，代码即将落地）**
+
+- (P0.1) `fundamentals_fetcher.py`：`_keep_consolidated` 放宽到 `report_type ∈ {1,2,3,4,5}`（合并口径全集，剔除母公司 6/11/12）
+- (P0.2) `storage.py`：三张表 PK 改为 `(symbol, end_date, f_ann_date, update_flag, report_type)`。DuckDB 不支持 `ALTER PRIMARY KEY` → init 时若检测到旧 schema 则 drop 三表
+- (P0.3) `get_fina_snapshot`：保持现有 SQL（`WHERE f_ann_date <= ? + QUALIFY ORDER BY f_ann_date DESC, update_flag DESC`），不引入 CASE-rank（实证 §1 表明 update_flag 不可靠 + f_ann_date 已足够实现 4-case 语义）
+- (P0.4) backfill：代码改完，用户手动跑 `python -m backtest.data.backfill.fundamentals`（或重新 `cold_start`）
+
+**Round 2（factor 层，下一轮）**
+
+- (P0.5) `backtest/factor/transforms.py`：新增 `single_quarter(panel, value_col)` / `ttm(panel, value_col, kind='flow'|'stock')` / `yoy(panel, value_col)` 助手函数（基于 PIT 多期快照）
+- (P0.6) Barra 因子迁移：ROA / GP / ETOP 改用 `ttm`；前后 IC sanity 对比，记录数值漂移
+- (P0.7) 测试：multi-type fetch 一致性 + 5-列 PK + snapshot 行为（Round 1）+ 单季度公式 + TTM 公式 + YoY 单测（Round 2）
+
 ## 对外接口
 
 ```python

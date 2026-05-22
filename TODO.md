@@ -9,6 +9,24 @@
 
 ## P0
 
+### 基本面因子修正 (Shi Chuan 4-case framework)
+
+> 设计文档：[`backtest/data/DESIGN.md`](backtest/data/DESIGN.md) §"财报数据使用指南"。
+> 实证表明 `update_flag` 不可靠（920522.BJ / 920663.BJ 案例），`f_ann_date` 才是唯一可靠版本时间戳。只要 fetch 入库 `report_type ∈ {1,2,3,4,5}` + PK 加 `report_type` 不互覆盖，按 `f_ann_date DESC` 取最新即自然实现石川 4-case 框架。单季度推导 / TTM / YoY 不在 data 层完成，由因子层 `transforms.py` 助手函数承担。
+
+**Round 1 — data 层（fetch + storage + snapshot）**
+
+- [x] **P0.1 fetch 放宽 report_type**：`backtest/data/fetcher/fundamentals_fetcher.py` `_keep_consolidated` 改为保留 `report_type ∈ {1, 2, 3, 4, 5}`（合并口径全集，剔除母公司 6 / 11 / 12）。
+- [ ] **P0.2 PK 加 report_type**：`backtest/data/storage.py` 三张表 PK 改为 `(symbol, end_date, f_ann_date, update_flag, report_type)`。DuckDB 不支持 `ALTER PRIMARY KEY`，init 时检测旧 schema 则 drop 三表，由 backfill 重拉。
+- [ ] **P0.3 snapshot 保持现状**：`get_fina_snapshot` 维持 `WHERE f_ann_date <= ? + QUALIFY ROW_NUMBER OVER (... ORDER BY f_ann_date DESC, update_flag DESC) = 1`，不引入 CASE-rank。
+- [ ] **P0.4 backfill 全量重拉**：代码提交后由用户手动跑 `python -m backtest.data.backfill.fundamentals`（或重新 `cold_start`）。
+
+**Round 2 — factor 层（助手函数 + 因子迁移）**
+
+- [ ] **P0.5 transforms 助手**：`backtest/factor/transforms.py` 新增 `single_quarter(panel, value_col)` / `ttm(panel, value_col, kind='flow'|'stock')` / `yoy(panel, value_col)`，基于 PIT 多期快照。
+- [ ] **P0.6 Barra 因子迁移**：`quality.py` ROA / GP、`value.py` ETOP 从 `annualize_ytd` 改用 `ttm`；前后 IC sanity 对比，记录数值漂移。
+- [ ] **P0.7 测试覆盖**：Round 1 验证 multi-type fetch + 5-列 PK + snapshot 行为；Round 2 验证 transforms 助手（单季度公式 / TTM 公式 / YoY）。
+
 ### 因子挖掘流程优化 — 剩余项
 
 - [ ] 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证

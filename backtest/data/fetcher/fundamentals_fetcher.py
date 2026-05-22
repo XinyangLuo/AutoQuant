@@ -1,8 +1,12 @@
 """Tushare pro.income / pro.balancesheet / pro.cashflow fetchers.
 
-Each table is fetched independently.  All rows with report_type='1'
-(consolidated statements) are kept; other report types are dropped.
-The shared key columns are renamed from ts_code → symbol.
+Each table is fetched independently.  All consolidated report types
+(report_type in {'1','2','3','4','5'}) are kept; parent-company types
+(6/11/12) are dropped.  The shared key columns are renamed from
+ts_code → symbol.
+
+See `backtest/data/DESIGN.md` §"财报数据使用指南" §1 for the report_type
+taxonomy and the rationale for keeping the full consolidated family.
 """
 
 from functools import partial
@@ -12,14 +16,16 @@ import pandas as pd
 from backtest.data.tushare_client import fetch_and_transform, pro
 
 
-CONSOLIDATED = "1"
+CONSOLIDATED_REPORT_TYPES = frozenset({"1", "2", "3", "4", "5"})
 
 
 def _keep_consolidated(df: pd.DataFrame) -> pd.DataFrame:
-    """Keep only consolidated report rows (report_type='1') and rename ts_code."""
+    """Keep only consolidated-family rows and rename ts_code."""
     if df.empty:
         return df
-    df = df[df.get("report_type", CONSOLIDATED).astype(str) == CONSOLIDATED]
+    if "report_type" in df.columns:
+        mask = df["report_type"].astype(str).isin(CONSOLIDATED_REPORT_TYPES)
+        df = df.loc[mask]
     if "ts_code" in df.columns:
         df = df.rename(columns={"ts_code": "symbol"})
     return df.dropna(subset=["symbol", "end_date"])
