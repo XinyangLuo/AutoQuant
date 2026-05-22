@@ -1568,10 +1568,17 @@ class TestSingleQuarter:
         with pytest.raises(ValueError, match="missing required columns"):
             single_quarter(panel, "no_such_col", kind="flow")
 
-    def test_empty_end_date_raises(self):
-        panel = _make_fina_panel([("2024-09-01", "A", "", 1.0)])
-        with pytest.raises(ValueError, match="empty end_date"):
-            single_quarter(panel, "v", kind="flow")
+    def test_nan_end_date_yields_nan(self):
+        """Market-only rows (no fina match) carry NaN end_date and should propagate NaN."""
+        panel = _make_fina_panel([
+            ("2024-09-01", "A", "20240331", 100.0),
+            ("2024-09-01", "A", "20240630", 250.0),
+            ("2024-09-01", "B", None, np.nan),  # no fina visible
+        ])
+        result = single_quarter(panel, "v", kind="flow")
+        assert result.iloc[0] == pytest.approx(100.0)
+        assert result.iloc[1] == pytest.approx(150.0)
+        assert np.isnan(result.iloc[2])
 
     def test_symbols_are_independent(self):
         """A's H1 must not leak into B's Q2 lookup at same trade date."""
@@ -1618,6 +1625,28 @@ class TestTTM:
         panel = _make_fina_panel([("2024-12-01", "A", "20240930", 300.0)])
         result = ttm(panel, "v", kind="flow")
         assert result.iloc[0] == pytest.approx(400.0)
+
+    def test_seasonal_earnings_year2_recovers_true_ttm(self):
+        """Q1=50, Q2=100, Q3=150, Q4=200 → TTM = 500 (single-quarter sum × 1y).
+
+        At year 2 Q1, naive annualize would give 50×4=200; correct TTM uses
+        LY_FY (500) + current (50) − LY_same (50) = 500.
+        """
+        rows = []
+        for year in (2023, 2024):
+            rows += [
+                ("2024-12-01", "A", f"{year}0331", 50.0),
+                ("2024-12-01", "A", f"{year}0630", 150.0),
+                ("2024-12-01", "A", f"{year}0930", 300.0),
+                ("2024-12-01", "A", f"{year}1231", 500.0),
+            ]
+        panel = _make_fina_panel(rows)
+        result = ttm(panel, "v", kind="flow")
+        # 2024 Q1 row (index 4) should be exactly 500, not 200
+        assert result.iloc[4] == pytest.approx(500.0)
+        # All year-2 rows recover the true TTM
+        for i in range(4, 8):
+            assert result.iloc[i] == pytest.approx(500.0)
 
     def test_stock_kind_returns_identity(self):
         panel = _make_fina_panel([

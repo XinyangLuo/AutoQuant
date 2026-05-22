@@ -1,8 +1,9 @@
 """Barra Quality factor — ROA, GP, AGRO.
 
-* **ROA** ``= ttm_net_income / latest_total_assets``. Same YTD-annualization
-  approximation as ETOP. Total assets uses the latest reported balance-sheet
-  value (point-in-time snapshot).
+* **ROA** ``= ttm_net_income / latest_total_assets``. Net income TTM via
+  `transforms.ttm` (Shi Chuan formula: current + LY_FY − LY_same, fallback
+  annualize). Total assets uses the latest reported balance-sheet value
+  (point-in-time snapshot).
 * **GP** ``= (ttm_revenue - ttm_oper_cost) / latest_total_assets``.
 * **AGRO** ``= -k / |mean(TA)|`` where ``k`` is the OLS slope of last 20
   quarterly ``total_assets`` on time. Negative sign so faster expansion is
@@ -15,12 +16,12 @@ import numpy as np
 import pandas as pd
 
 from backtest.factor.builtin.barra._common import (
-    annualize_ytd,
     latest_quarter_per_day,
     pit_quarterly_slope,
     to_panel_series,
 )
 from backtest.factor.registry import register
+from backtest.factor.transforms import ttm
 from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 
@@ -29,17 +30,17 @@ from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
     name="Barra Quality — ROA",
     category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "income_q", "balancesheet_q"],
-    description="Annualized-YTD net income / latest total assets.",
+    description="TTM net income (attr. to parent) / latest total assets.",
     variant=BARRA_L3_VARIANT,
     frequency="D",
 )
 def barra_quality_roa(panel: pd.DataFrame) -> pd.Series:
-    df = latest_quarter_per_day(
-        panel[["date", "symbol", "inc_n_income_attr_p", "bs_total_assets", "end_date"]]
-    )
-    ttm_income = annualize_ytd(df["inc_n_income_attr_p"], df["end_date"])
+    cols = ["date", "symbol", "inc_n_income_attr_p", "bs_total_assets", "end_date"]
+    sub = panel[cols].copy()
+    sub["inc_n_income_attr_p_ttm"] = ttm(sub, "inc_n_income_attr_p", kind="flow")
+    df = latest_quarter_per_day(sub)
     assets = df["bs_total_assets"].where(df["bs_total_assets"] > 0, np.nan)
-    roa = ttm_income / assets
+    roa = df["inc_n_income_attr_p_ttm"] / assets
     return to_panel_series(df, roa.values, name="roa")
 
 
@@ -48,20 +49,18 @@ def barra_quality_roa(panel: pd.DataFrame) -> pd.Series:
     name="Barra Quality — GP",
     category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "income_q", "balancesheet_q"],
-    description="(Annualized-YTD revenue - Annualized-YTD oper_cost) / total assets.",
+    description="(TTM revenue - TTM oper_cost) / latest total assets.",
     variant=BARRA_L3_VARIANT,
     frequency="D",
 )
 def barra_quality_gp(panel: pd.DataFrame) -> pd.Series:
-    df = latest_quarter_per_day(
-        panel[
-            ["date", "symbol", "inc_revenue", "inc_oper_cost", "bs_total_assets", "end_date"]
-        ]
-    )
-    rev_ttm = annualize_ytd(df["inc_revenue"], df["end_date"])
-    cost_ttm = annualize_ytd(df["inc_oper_cost"], df["end_date"])
+    cols = ["date", "symbol", "inc_revenue", "inc_oper_cost", "bs_total_assets", "end_date"]
+    sub = panel[cols].copy()
+    sub["inc_revenue_ttm"] = ttm(sub, "inc_revenue", kind="flow")
+    sub["inc_oper_cost_ttm"] = ttm(sub, "inc_oper_cost", kind="flow")
+    df = latest_quarter_per_day(sub)
     assets = df["bs_total_assets"].where(df["bs_total_assets"] > 0, np.nan)
-    gp = (rev_ttm - cost_ttm) / assets
+    gp = (df["inc_revenue_ttm"] - df["inc_oper_cost_ttm"]) / assets
     return to_panel_series(df, gp.values, name="gp")
 
 

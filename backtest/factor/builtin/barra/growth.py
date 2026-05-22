@@ -1,10 +1,11 @@
 """Barra Growth factor — EGRO.
 
-``EGRO = slope(last 20 quarterly EPS on time) / |mean(EPS)|``. Positive
-direction so faster earnings growth ⇒ higher quality (opposite sign to AGRO).
-EPS uses ``inc_basic_eps``; we keep YTD-as-reported and take the slope on
-those values rather than reconstructing per-quarter EPS, mirroring the
-asset-growth treatment in AGRO.
+``EGRO = slope(last 20 quarterly TTM EPS on time) / |mean(TTM EPS)|``.
+Positive direction so faster earnings growth ⇒ higher quality (opposite
+sign to AGRO). Input is TTM EPS rather than as-reported YTD cumulative EPS
+— the latter is sawtooth-shaped (Q1, H1, 9M, FY, Q1, …) and biases the
+OLS slope; TTM smooths the seasonality so the slope reflects multi-year
+growth rather than within-year accumulation.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import pandas as pd
 
 from backtest.factor.builtin.barra._common import pit_quarterly_slope, to_panel_series
 from backtest.factor.registry import register
+from backtest.factor.transforms import ttm
 from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 
@@ -22,16 +24,20 @@ from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
     category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "income_q"],
     description=(
-        "Slope of last 20 quarterly basic_eps on time, divided by |mean(EPS)|. "
+        "Slope of last 20 quarterly TTM basic_eps on time, divided by |mean|. "
         "Positive direction: faster EPS growth ⇒ higher score."
     ),
     variant=BARRA_L3_VARIANT,
     frequency="D",
 )
 def barra_growth_egro(panel: pd.DataFrame) -> pd.Series:
+    sub = panel[["date", "symbol", "inc_basic_eps", "end_date"]].copy()
+    sub["inc_basic_eps_ttm"] = ttm(sub, "inc_basic_eps", kind="flow")
+    # No latest_quarter_per_day here: pit_quarterly_slope reads the full
+    # multi-quarter history per (date, symbol) and OLS-regresses it.
     scored = pit_quarterly_slope(
-        panel[["date", "symbol", "inc_basic_eps", "end_date"]],
-        value_col="inc_basic_eps",
+        sub[["date", "symbol", "inc_basic_eps_ttm", "end_date"]],
+        value_col="inc_basic_eps_ttm",
         n=20,
         sign=1.0,
     )

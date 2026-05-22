@@ -24,7 +24,7 @@
 **Round 2 — factor 层（助手函数 + 因子迁移）**
 
 - [x] **P0.5 transforms 助手**：`backtest/factor/transforms.py` 新增 `single_quarter(panel, value_col)` / `ttm(panel, value_col, kind='flow'|'stock')` / `yoy(panel, value_col)`，基于 PIT 多期快照。
-- [ ] **P0.6 Barra 因子迁移**：`quality.py` ROA / GP、`value.py` ETOP 从 `annualize_ytd` 改用 `ttm`；前后 IC sanity 对比，记录数值漂移。
+- [x] **P0.6 Barra 因子迁移**：`quality.py` ROA / GP、`value.py` ETOP 从 `annualize_ytd` 改用 `ttm`；`growth.py` EGRO 改为 TTM EPS → slope（修复累计 EPS 锯齿对 OLS 的扰动）。同时删除 `_common.py:annualize_ytd`（无引用）。
 - [ ] **P0.7 测试覆盖**：Round 1 验证 multi-type fetch + 5-列 PK + snapshot 行为；Round 2 验证 transforms 助手（单季度公式 / TTM 公式 / YoY）。
 
 ### 因子挖掘流程优化 — 剩余项

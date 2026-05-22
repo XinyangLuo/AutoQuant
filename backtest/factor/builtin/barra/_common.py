@@ -36,17 +36,6 @@ def latest_quarter_per_day(panel: pd.DataFrame) -> pd.DataFrame:
     return df.loc[keep]
 
 
-def annualize_ytd(net_income: pd.Series, end_date: pd.Series) -> pd.Series:
-    """Annualize a YTD cumulative figure based on the quarter it ended in."""
-    month = pd.to_numeric(end_date.str[4:6], errors="coerce")
-    scale = pd.Series(np.nan, index=net_income.index)
-    scale[month == 3] = 4.0
-    scale[month == 6] = 2.0
-    scale[month == 9] = 4.0 / 3.0
-    scale[month == 12] = 1.0
-    return net_income * scale
-
-
 def regress_slope_over_mean(values: np.ndarray) -> float:
     """Slope of ``values`` vs integer time index, scaled by ``|mean(values)|``.
 

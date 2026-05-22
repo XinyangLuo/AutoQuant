@@ -2,9 +2,9 @@
 
 * **BTOP** ``= book_equity / circ_mv``. Book equity = ``bs_total_hldr_eqy_inc_min_int``
   (公司全部所有者权益, includes minority interest, as Barra does).
-* **ETOP** ``= ttm_net_income / circ_mv``. Net income trailing 12 months,
-  approximated by annualizing the latest reported YTD cumulative net income
-  (Q1 ×4, Q2 ×2, Q3 ×4/3, Q4 ×1).
+* **ETOP** ``= ttm_net_income / circ_mv``. Net income TTM via
+  `transforms.ttm` (Shi Chuan formula: current + LY_FY − LY_same, fallback
+  annualize for the first year of history).
 * **DTOP** ``= ttm_cash_dividend_per_share / prev_close``. Sum of cash_div
   with ``ex_date`` in the trailing 365 days, divided by ``pre_close``.
 """
@@ -16,11 +16,11 @@ import pandas as pd
 
 from backtest.data.storage import MarketStorage
 from backtest.factor.builtin.barra._common import (
-    annualize_ytd,
     latest_quarter_per_day,
     to_panel_series,
 )
 from backtest.factor.registry import register
+from backtest.factor.transforms import ttm
 from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 DIVIDEND_LOOKBACK_DAYS = 400
@@ -51,20 +51,17 @@ def barra_value_btop(panel: pd.DataFrame) -> pd.Series:
     name="Barra Value — ETOP",
     category=CATEGORY_BARRA_L3,
     data_sources=["market_daily", "income_q"],
-    description=(
-        "Annualized-YTD net income attributable to parent / floating market cap. "
-        "Approximates Barra trailing-12-month earnings yield."
-    ),
+    description="TTM net income attributable to parent / floating market cap.",
     variant=BARRA_L3_VARIANT,
     frequency="D",
 )
 def barra_value_etop(panel: pd.DataFrame) -> pd.Series:
-    df = latest_quarter_per_day(
-        panel[["date", "symbol", "circ_mv", "inc_n_income_attr_p", "end_date"]]
-    )
-    ttm_income = annualize_ytd(df["inc_n_income_attr_p"], df["end_date"])
+    cols = ["date", "symbol", "circ_mv", "inc_n_income_attr_p", "end_date"]
+    sub = panel[cols].copy()
+    sub["inc_n_income_attr_p_ttm"] = ttm(sub, "inc_n_income_attr_p", kind="flow")
+    df = latest_quarter_per_day(sub)
     cap_yuan = df["circ_mv"] * 1e4
-    etop = ttm_income / cap_yuan.where(cap_yuan > 0, np.nan)
+    etop = df["inc_n_income_attr_p_ttm"] / cap_yuan.where(cap_yuan > 0, np.nan)
     return to_panel_series(df, etop.values, name="etop")
 
 
