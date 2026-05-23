@@ -17,11 +17,19 @@ thresholds:
     ret_type: open
     exclude_limit_up: true
 
+    # Ridge R² 分档阈值（step8）
+    ridge_r2:
+      pure_alpha_max: 0.2
+      smart_beta_max: 0.7
+      # R² < 0.2            → pure_alpha（正交 alpha，入库）
+      # 0.2 ≤ R² < 0.7      → smart_beta（部分风格暴露，入库）
+      # R² ≥ 0.7            → reject（风格克隆，拒绝）
+
   # Pipeline 各 step 自动门控阈值
   pipeline:
     # step1: 覆盖率检查
     coverage:
-      max_missing_rate_pv: 0.10
+      max_missing_rate_pv: 0.15
       max_missing_rate_fin: 0.30
 
     # step3: ICIR 检查
@@ -41,7 +49,7 @@ thresholds:
       min_annual_return: 0.10
       max_max_drawdown: 0.40
       min_calmar: 0.5
-      max_annual_turnover: 20.0
+      max_annual_turnover: 50.0
 
     # step7: 详细回测
     detailed_backtest:
@@ -59,6 +67,10 @@ thresholds:
 # Pipeline 配置
 # ---------------------------------------------------------------------------
 pipeline:
+  # 回测周期（默认值，CLI --start / --end 可覆盖）
+  start_date: "20160101"
+  end_date: "20251231"
+
   # 评估周期
   eval_horizons: [1, 5, 10, 20, 60]
   icir_check_horizons: [1, 5]

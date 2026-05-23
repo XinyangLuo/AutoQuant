@@ -1,12 +1,13 @@
-# 因子挖掘 Pipeline
+# 因子挖掘 Pipeline — 设计文档
+
+> **使用手册**：[`backtest/PIPELINE.md`](../PIPELINE.md)。本文是技术设计文档，描述架构、数据流和模块契约。两者冲突时以 PIPELINE.md 为准。
 
 ## 定位
 
-串行 step1~step9 因子挖掘流水线，每步有明确的淘汰标准（pass/fail gate）。
+串行 step1~step9 因子挖掘流水线，每步有明确的淘汰标准（pass/fail gate）。与旧版 `scripts/run_factor_pipeline.py` 的区别：
 
-与旧版 `scripts/run_factor_pipeline.py` 的区别：
 - 旧版：一次性跑完 eval + simple BT + detailed BT，无淘汰门控
-- 新版：每步独立 CLI，可单独调用；失败即停；state 落盘便于 Agent 介入
+- 新版：每步独立 CLI，可单独调用；失败即停；state 落盘便于 Agent 介入；**拒绝时生成完整诊断报告而非直接清理**
 
 ## 设计原则
 
@@ -14,18 +15,19 @@
 2. **State 落盘共享**：`results/<fid>/pipeline_state.json` 是全流程状态文件
 3. **统一返回码**：0=通过, 1=淘汰, 2=基础设施错误
 4. **stdout 输出 JSON**：方便 Agent 解析
-5. **频率感知阈值**：日频(D)与月频(M)不同
+5. **阈值单一来源**：所有门控阈值统一从 `config.yaml` 读取（`backtest/config_loader.py`）
+6. **拒绝不清理**：因子被拒绝后保留 work DB 数据和完整诊断报告，由人工决定清理时机
 
 ## 目录结构
 
 ```
-backtest/factor/pipeline/
+backtest/pipeline/
     __init__.py          # 公开 API
-    config.py            # PipelineConfig, StepThresholds
+    config.py            # PipelineConfig, StepThresholds（默认值从 config.yaml 读取）
     state.py             # PipelineState（可序列化）
     steps.py             # step1~step9 函数（纯逻辑，无 CLI）
-    _report.py           # markdown 报告生成
-    _cleanup.py          # 淘汰时清理产物
+    _report.py           # markdown 报告 + 诊断图生成（拒绝时也会执行）
+    _cleanup.py          # 手动清理工具（不再自动调用）
     __main__.py          # CLI dispatcher: step1~step9 + run-all
 ```
 
@@ -86,7 +88,7 @@ python -m backtest.pipeline step5 f_001 \
   "step_results": {
     "step1": {"passed": true, "metrics": {"max_missing_rate": 0.02}},
     "step2": {"passed": true, "metrics": {"size_corr": 0.001}},
-    "step3": {"passed": false, "reason": "ICIR=-0.5 <= 1.0", "metrics": {...}}
+    "step3": {"passed": false, "reason": "ICIR<=1.0", "metrics": {...}}
   },
   "retry_count": 0,
   "retry_params": {},
@@ -99,45 +101,33 @@ python -m backtest.pipeline step5 f_001 \
 }
 ```
 
-`step_results` 用 dict（key=step name）方便随机访问和覆盖。
-
 ## Step 说明
 
 | Step | 名称 | 功能 | 淘汰标准 |
 |------|------|------|----------|
-| step1 | Coverage | 截面缺失率检查 | 量价 > 10%，财务 > 30% |
-| step2 | Neutralization | 验证中性化有效性 | size/industry corr >= 0.05 或 existing corr >= 0.5 |
-| step3 | ICIR | 离线 ICIR 门控 | 日频：\|IC\|<=0.01 或 ICIR<=1.0 或 t<=2.0 或 pos_ratio<=55%（1D/5D 任一通过即可）；月频：\|IC\|<=0.03 或 ICIR<=0.8 或 t<=2.5 或 pos_ratio<=65% |
-| step4 | Monotonicity | 10 组单调性 | Spearman corr(group, mean_ret) <= 0.7 |
+| step1 | Coverage | 截面缺失率检查（95 分位数） | 量价 > 15%，财务 > 30%（config.yaml） |
+| step2 | Neutralization | 验证中性化有效性（size + industry） | size_corr ≥ 0.05 或 ind_corr ≥ 0.05。现有因子相关性仅计算不门控，推迟到 step8 |
+| step3 | ICIR | 离线 ICIR 门控 | 日频：|IC|≤0.01 或 ICIR≤1.0 或 t≤2.0 或 pos_ratio≤55%（任一 horizon 通过即可）；月频阈值见 config.yaml |
+| step4 | Monotonicity | 10 组单调性 | Spearman corr(group, mean_ret) ≤ 0.7 |
 | step5 | Strategy Config | 构建默认策略配置 | 无淘汰（总是通过） |
-| step6 | Simple Backtest | 向量化回测 | Sharpe<=0.8 或 ann_ret<=10% 或 max_dd<=-30% 或 Calmar<=0.5 或 turnover>=20x |
-| step7 | Detailed Backtest | 事件驱动回测 | Sharpe<=0.4 或 ann_ret<=8% 或 max_dd<=-30% 或 Calmar<=0.5 或 turnover>=20x |
-| step8 | Ridge R² | 风格克隆检测 | tier == reject（R² >= 0.80） |
-| step9 | Admission | 报告生成 + 入库 | 入库失败则 reject |
+| step6 | Simple Backtest | 向量化回测（无成本） | Sharpe≤0.8 或 ann_ret≤10% 或 max_dd≤-40% 或 Calmar≤0.5。不检查换手率（SimpleSimulator 不计算） |
+| step7 | Detailed Backtest | 事件驱动回测（含成本） | Sharpe≤0.4 或 ann_ret≤8% 或 max_dd≤-40% 或 Calmar≤0.5 或 turnover≥50x |
+| step8 | Ridge R² | 风格克隆检测（对 6 个 Barra L1 做 ridge 回归） | tier == reject（R² ≥ smart_beta_max，见下方分档） |
+| step9 | Report | 生成诊断报告，标记 ready_for_review | 无淘汰（总是通过）。需人工 `admit` |
 
-### 频率感知阈值
+### 阈值来源
 
-```python
-# 日频 (D)
-StepThresholds(
-    min_abs_ic=0.01,
-    min_annual_icir=1.0,
-    min_ic_tstat=2.0,
-    min_ic_positive_ratio=0.55,
-    min_sharpe_simple=0.8,
-    min_sharpe_detailed=0.4,
-)
+所有阈值定义在 `config.yaml` → `thresholds.pipeline`，通过 `backtest.config_loader.get_section()` 读取。`StepThresholds` dataclass 的 `field(default_factory=...)` 在构造时懒加载，保证单一事实来源。
 
-# 月频 (M)
-StepThresholds(
-    min_abs_ic=0.03,
-    min_annual_icir=0.8,
-    min_ic_tstat=2.5,
-    min_ic_positive_ratio=0.65,
-    min_sharpe_simple=1.0,
-    min_sharpe_detailed=0.6,
-)
-```
+### Ridge R² 分档（config.yaml → thresholds.admission.ridge_r2）
+
+| R² 范围 | Tier | 含义 |
+|---------|------|------|
+| R² < 0.2 | `pure_alpha` | 与现有风格正交 — 入库 |
+| 0.2 ≤ R² < 0.7 | `smart_beta` | 部分风格暴露 — 入库 |
+| R² ≥ 0.7 | `reject` | 风格克隆 — 拒绝 |
+
+不再有 `edge_smart_beta` 和 residual ICIR 二次判定。
 
 ### Retry 逻辑
 
@@ -146,28 +136,41 @@ StepThresholds(
 2. 通过 `python -m backtest.pipeline step5 f_001 --top-pct 0.05 --decay 10` 覆盖
 3. 重新跑 step6（最多 3 次）
 
-当前 `run-all` 中 retry 为 stub（确定性 fallback 规则），未来替换为 Agent 调用。
+当前 `run-all` 中 retry 为 stub（`state.retry_count` / `retry_params` 已定义但从未写入），未来替换为 Agent 调用。
 
-## 淘汰清理
+## 拒绝处理
 
-任一 step 失败时：
-1. `FactorStorage.delete_factor(factor_id)` — 清 work DB
-2. `reject(factor_id)` — 标记 registry
-3. `shutil.rmtree(results/<factor_id>)` — 删除回测产物
+任一 step 失败时 `run-all` 的行为：
+1. 停止后续 step 执行
+2. **生成完整诊断报告**（`results/<factor_id>/pipeline_report.md` + 4 张诊断图）
+3. **保留** work DB 数据和 results 目录（不自动清理）
+4. 返回 exit code 1
+
+手动清理：`python -m backtest.factor.cleanup f_xxx`
+
+## 诊断报告
+
+`run-all` 始终生成报告（通过或拒绝均生成）。报告包含：
+
+- **决策横幅**：拒绝 step 和原因
+- **Step 汇总表**：每步 pass/fail + 关键指标 + 拒绝原因
+- **因子评估**：IC decay 图 + 分位组收益图
+- **回测结果**：NAV + Drawdown 曲线（从 `nav.parquet` 加载实际数据）
+- **Ridge R² 分类**：R² 值和 tier 分档
 
 ## 与现有模块的关系
 
 | Pipeline Step | 复用的已有模块 |
 |---------------|---------------|
 | step1 | `FactorStorage.get_factor()`, `MarketStorage.get_bars()` |
-| step2 | `FactorStorage.get_factor(SIZE_LNCAP_ID)`, `MarketStorage.get_industry_panel_range()`, `_corr_with_existing()` |
+| step2 | `FactorLibrary.get_factor(SIZE_L1_ID)`, `MarketStorage.get_industry_panel_range()`, `_corr_with_existing()` |
 | step3 | `evaluate()` |
 | step4 | `EvaluationResult.group_returns`（step3 缓存复用） |
 | step5 | `StrategyConfig` dataclass |
 | step6 | `SingleFactorStrategy`, `SimpleSimulator` |
 | step7 | `DetailedSimulator`, `MarketStorage.get_dividends()` |
 | step8 | `ridge_r2_check()` |
-| step9 | `admit()`, `EvaluationReport` |
+| step9 | `admit()`, `generate_pipeline_report()` |
 
 ## Agent 交互模式
 
@@ -182,8 +185,9 @@ for step in ["step1", "step2", ..., "step9"]:
             suggestion = agent_analyze_and_suggest(state)
             run_cli(f"python -m backtest.pipeline step5 {factor_id} "
                     f"--top-pct {suggestion['top_pct']} --decay {suggestion['decay']}")
-            continue  # 重跑 step6
+            continue  # retry step6
         else:
             print("Factor rejected:", state["step_results"][step]["reason"])
+            # Report already generated by run-all; review and decide.
             break
 ```

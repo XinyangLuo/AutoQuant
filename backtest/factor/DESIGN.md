@@ -335,7 +335,7 @@ RECOMMENDED_THRESHOLDS = {
 
 | 消费方 | 提供方 | 函数 |
 |---|---|---|
-| compute.py | data/storage.py | `get_bars()`, `get_panel()`, `get_fina_snapshot()` |
+| compute.py | data/storage.py | `get_bars()`, `get_panel()`, `get_fina_snapshot_range()` |
 | backfill.py | data/storage.py | `get_max_date()` (market_daily 边界) |
 | evaluation.py | data/storage.py | `get_bars()` (计算未来收益率) |
 | evaluation.py | factor/storage.py | `FactorStorage.get_factor()` + `FactorLibrary.get_factors_long()` |

@@ -274,8 +274,8 @@ signals_df = strategy.run(start, end)
 - 信号 DataFrame schema 完全不变，下游 simulation 引擎无感知
 
 ### 完成标准
-- [ ] `base.py:_get_rebalance_dates` 删除
+- [x] `base.py:_get_rebalance_dates` 已删除（已迁移到 `backtest.data.trade_calendar`）
 - [ ] 测试场景：2024 全年 + `freq='1M'` → 12 个日期，且每个都是当月首个交易日（人工对 1 月 / 2 月春节假后那段做 sanity check）
-- [ ] 现有 single_factor / multi_factor 策略不需要任何改动（接口不变）
+- [x] 现有 single_factor / multi_factor 策略不需要任何改动（接口不变）
 
 依赖：data 模块的 P0-3 部分先落地（`trade_calendar` 表 + `get_rebalance_dates` 函数）。

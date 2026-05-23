@@ -16,10 +16,10 @@ import pandas as pd
 from backtest.data.storage import MarketStorage
 from backtest.factor.admission import admit
 from backtest.factor.admission_check import (
-    R2_EDGE_SMART_BETA_MAX,
     TIER_REJECT,
     ridge_r2_check,
 )
+from backtest.config_loader import get_section
 from backtest.factor.evaluation import (
     _corr_with_existing,
     _ic_series,
@@ -128,19 +128,24 @@ def step1_coverage_check(state: PipelineState) -> PipelineState:
 
     max_missing = max(missing_rates)
     mean_missing = sum(missing_rates) / len(missing_rates)
+    # 95th percentile is robust to single-day IPO-wave spikes while still
+    # catching systematic coverage problems.
+    pct95 = float(np.percentile(missing_rates, 95))
 
     metrics = {
         "max_missing_rate": float(max_missing),
         "mean_missing_rate": float(mean_missing),
+        "pct95_missing_rate": pct95,
         "threshold": float(threshold),
         "is_financial": is_financial,
         "n_dates": factor_df["date"].nunique(),
     }
 
-    if max_missing > threshold:
+    if pct95 > threshold:
         return _reject(
             state, "step1",
-            f"Missing rate {max_missing:.1%} exceeds threshold {threshold:.1%}",
+            f"95th percentile missing rate {pct95:.1%} exceeds threshold {threshold:.1%} "
+            f"(max={max_missing:.1%}, mean={mean_missing:.1%})",
             metrics,
         )
 
@@ -158,7 +163,9 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
     Checks:
     1. corr with size_z < 0.05
     2. corr with all industry dummies < 0.05
-    3. max corr with existing library factors < 0.5
+
+    Existing-factor correlation is deferred to step8 (ridge R2) — step2
+    only verifies that the neutralization pipeline itself worked.
     """
     config = state.config
 
@@ -198,10 +205,10 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
     if not industry.empty:
         merged = factor_df.merge(industry, on=["date", "symbol"], how="inner")
         if not merged.empty:
-            # Build dummies per date to avoid huge memory
             max_ind_corr = _max_industry_corr(merged)
 
-    # 3. Max correlation with existing library factors
+    # Existing-factor correlation: computed for diagnostics but NOT gated here.
+    # The ridge R2 check in step8 is the single admission gate for style overlap.
     max_existing_corr = 0.0
     max_existing_factor: str | None = None
     with FactorLibrary() as lib:
@@ -217,7 +224,6 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
     passed = (
         size_corr < config.max_corr_size
         and max_ind_corr < config.max_corr_industry
-        and max_existing_corr < config.max_corr_existing
     )
 
     metrics = {
@@ -233,11 +239,6 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
             violations.append(f"size_corr={size_corr:.3f} >= {config.max_corr_size}")
         if max_ind_corr >= config.max_corr_industry:
             violations.append(f"ind_corr={max_ind_corr:.3f} >= {config.max_corr_industry}")
-        if max_existing_corr >= config.max_corr_existing:
-            violations.append(
-                f"existing_corr={max_existing_corr:.3f} (with {max_existing_factor}) "
-                f">= {config.max_corr_existing}"
-            )
         return _reject(state, "step2", "; ".join(violations), metrics)
 
     return _pass(state, "step2", metrics)
@@ -561,7 +562,6 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
         "annual_return": "min_annual_return_simple",
         "max_drawdown": "max_max_drawdown",
         "calmar": "min_calmar_simple",
-        "annual_turnover": "max_annual_turnover",
     })
 
 
@@ -653,12 +653,16 @@ def _backtest_gate(
     for metric_key, th_key in threshold_map.items():
         threshold = getattr(th, th_key)
         val = metrics.get(metric_key)
+        # NaN means the engine doesn't compute this metric (e.g. SimpleSimulator
+        # doesn't track turnover).  Skip the check rather than failing.
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            continue
         if metric_key in ("max_drawdown",):
-            checks[metric_key] = (val or float("-inf")) > -threshold
+            checks[metric_key] = val > -threshold
         elif metric_key in ("annual_turnover",):
-            checks[metric_key] = (val or float("inf")) < threshold
+            checks[metric_key] = val < threshold
         else:
-            checks[metric_key] = (val or float("-inf")) > threshold
+            checks[metric_key] = val > threshold
 
     if all(checks.values()):
         return _pass(state, step, metrics)
@@ -708,16 +712,17 @@ def step8_ridge_r2(state: PipelineState) -> PipelineState:
     metrics = {
         "r2": float(ridge_result.r2),
         "tier": ridge_result.tier,
-        "residual_icir": ridge_result.residual_icir,
         "n_obs": ridge_result.n_obs,
     }
 
     if passed:
         return _pass(state, "step8", metrics)
 
+    th = get_section("thresholds", "admission", "ridge_r2")
+    reject_at = th["smart_beta_max"]
     return _reject(
         state, "step8",
-        f"R2={ridge_result.r2:.3f} >= {R2_EDGE_SMART_BETA_MAX}, "
+        f"R2={ridge_result.r2:.3f} >= {reject_at}, "
         f"tier={TIER_REJECT} (style clone)",
         metrics,
     )
@@ -729,7 +734,11 @@ def step8_ridge_r2(state: PipelineState) -> PipelineState:
 
 
 def step9_report_and_admit(state: PipelineState) -> PipelineState:
-    """Generate markdown report and call admit()."""
+    """Generate markdown report and mark pipeline as ready for human review.
+
+    Does NOT auto-admit. The human reviews the report and manually runs
+    ``python -m backtest.factor.admission admit <fid>``.
+    """
     config = state.config
 
     # Generate report
@@ -738,37 +747,9 @@ def step9_report_and_admit(state: PipelineState) -> PipelineState:
     report_path = generate_pipeline_report(state)
     state.artifacts["report"] = str(report_path)
 
-    # Build admission metadata
-    meta = {
-        "pipeline_version": "1.0",
-        "step_results": {
-            step: {
-                "passed": r.passed,
-                "metrics": r.metrics,
-            }
-            for step, r in state.step_results.items()
-        },
-        "strategy_config": {
-            "top_pct": config.default_top_pct,
-            "decay": config.default_decay,
-            "rebalance": config.default_rebalance,
-        },
-        "ridge": {
-            "r2": state.ridge_result.r2 if state.ridge_result else None,
-            "tier": state.ridge_result.tier if state.ridge_result else None,
-        },
-    }
-
-    try:
-        action = admit(
-            config.factor_id,
-            notes=f"Auto-admitted via pipeline. Report: {report_path}",
-            strategy_config=meta,
-        )
-        state.status = "admitted"
-        return _pass(state, "step9", {
-            "rows_promoted": action.rows_promoted,
-            "report_path": str(report_path),
-        })
-    except Exception as exc:
-        return _reject(state, "step9", f"Admission failed: {exc}")
+    state.status = "ready_for_review"
+    return _pass(state, "step9", {
+        "report_path": str(report_path),
+        "action": "ready_for_review",
+        "next_step": f"python -m backtest.factor.admission admit {config.factor_id}",
+    })

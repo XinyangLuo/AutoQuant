@@ -889,9 +889,9 @@ Admission: f_rev_05  ->  ADMITTED
 ### 回测层
 
 - **只看 simple、不看 detailed**：成本和涨跌停可吞 1~3 pp 年化。
-- **基准没拉数据**：`benchmark="000300.SH"` 但 `index_daily` 表里没数据 → 相关指标全 N/A。先：
+- **基准没拉数据**：`benchmark="000300.SH"` 但 `index_daily` 表里没数据 → 相关指标全 N/A。先跑：
   ```bash
-  python -m backtest.data.backfill_indices --symbols 000300.SH,000905.SH,000852.SH
+  python -m backtest.data.cold_start   # 包含 index_daily 全量初始化
   ```
 - **fees_pct_of_initial > 10%**：换手太高或 commission_rate 设错。
 
@@ -919,18 +919,19 @@ Admission: f_rev_05  ->  ADMITTED
 - [ ] 多因子组合的样本外参数选择器
 - [ ] Walk-forward 滚动评测：训练窗口/评估窗口分离
 - [ ] Agent 投研系统调用本 pipeline 作为底层 tool
-- [ ] **P1：Barra 风格自动化 Pipeline**（设计稿见附录 A，落地后取代第 1~8 章）
+- [x] **P1：Barra 风格自动化 Pipeline**（已部分落地 `backtest/pipeline/`，见附录 A 和 `pipeline/DESIGN.md`；retry 逻辑待 Agent 接入）
 
 ---
 
 ## 附录 A：P1 自动化 Pipeline（设计稿，未实现）
 
-> 本附录是 PLAN.md §4 的回填版，记录**未来**取代当前手动流程的自动化 step1~step9 全套设计。所有阈值、公式、分流规则都在此固定。落地时按本节施工，不再回头改 PLAN.md。
+> 本附录是 PLAN.md §4 的回填版，记录自动化 step1~step9 全套设计。**已部分实现**（`backtest/pipeline/`），详见 [`pipeline/DESIGN.md`](pipeline/DESIGN.md)。
+> 阈值统一从 `config.yaml` 读取（单一事实来源），代码中不再 hard-code。
 >
-> **前置依赖**（按编号顺序完成才能上 P1）：
-> 1. **P0-1 算子库**（`feat/factor-operators`）—— 提供 `cs_zscore` / `cs_winsorize`
-> 2. **P0-2 Barra 风险模型**（待 P0-1 merge 后开 worktree）—— 提供 7 个一级 Barra 因子 + 统一中性化 pipeline
-> 3. **P0-3 交易日历**（`feat/trade-calendar`）—— 提供 `is_week_first` / `is_month_first` 等列
+> **前置依赖**（已完成）：
+> 1. ~~P0-1 算子库~~ ✓ 已落地
+> 2. ~~P0-2 Barra 风险模型~~ ✓ 7 个 L1 因子已 admit
+> 3. ~~P0-3 交易日历~~ ✓ 已落地
 > 4. rd-agent 框架（`agents/rdagent/`）—— 提供 step6/7 重试时的决策能力
 
 ### A.0 总览
@@ -972,25 +973,21 @@ step9: admit + 写 meta + 自动生成 markdown 报告
 
 ### A.2 step2：统一中性化 + 与已有因子相关性
 
-**中性化 pipeline**（详见 `backtest/factor/DESIGN.md` 的 P0-2 节，PLAN.md §2.2）：
+**中性化 pipeline**（详见 `backtest/factor/DESIGN.md`）：
 
 ```
-1. cs_winsorize(raw, k=3, mad_const=1.4826)    -- MAD 去极值，median ± 3·1.4826·MAD clip
-2. 申万一级行业截面中位数填充               -- get_industry_panel_range(level='L1')
-3. cs_zscore                                     -- 截面标准化
-4. OLS: factor ~ industry_dummies + size_z      -- 截面回归，size_z = cs_zscore(log(circ_mv))
-5. 取残差，cs_zscore 再标准化                    -- 得到 'neutral' variant
+1. MAD 去极值 → 2. 申万一级行业截面中位数填充 → 3. cs_zscore
+4. OLS: factor ~ industry_dummies + size_z        → 5. 取残差，cs_zscore 再标准化
 ```
 
 **通过标准**：
 
 | 测度 | 阈值 | 用途 |
 |---|---|---|
-| 与 size 的 Pearson corr | \|corr\| < 0.05 | 验中性化是否成功（截面 Pearson 日均，取 abs） |
+| 与 size 的 Pearson corr | \|corr\| < 0.05 | 验中性化是否成功 |
 | 与 industry dummies 的 Pearson corr（任一行业） | \|corr\| < 0.05 | 同上 |
-| 与 library 已入库因子的最大 Pearson corr | max\|corr\| < 0.5 | 拒绝重复因子 |
 
-**所有相关性测度统一定义**：取每日截面 Pearson 相关系数序列，再取时序均值，最后取绝对值。
+**与 library 已入库因子的相关性**：仅计算不门控（保留在 metrics 中供参考），统一推迟到 step8 ridge R² 做风格克隆判定。
 
 不通过 → reject。
 
@@ -1053,9 +1050,11 @@ delay: 1
 |---|---|---|
 | Sharpe | > 0.8 | > 1.0 |
 | 年化收益 | > 10% | > 10% |
-| 最大回撤 | < 30% | < 30% |
+| 最大回撤 | < 40% | < 40% |
 | Calmar | > 0.5 | > 0.5 |
-| 年化双边换手率 | < 20 倍 | < 20 倍 |
+
+> 不检查换手率：SimpleSimulator 不模拟交易，无法计算 turnover。
+> 阈值定义在 `config.yaml` → `thresholds.pipeline.simple_backtest`。
 
 **全部通过 → step7**；任一不通过 → 回 step5。
 
@@ -1071,9 +1070,11 @@ delay: 1
 |---|---|---|
 | Sharpe | > 0.4 | > 0.6 |
 | 年化收益 | > 8% | > 8% |
-| 最大回撤 | < 30% | < 30% |
+| 最大回撤 | < 40% | < 40% |
 | Calmar | > 0.5 | > 0.5 |
-| 年化双边换手率 | < 20 倍 | < 20 倍 |
+| 年化双边换手率 | < 50 倍 | < 50 倍 |
+
+> 阈值定义在 `config.yaml` → `thresholds.pipeline.detailed_backtest` + `simple_backtest.max_annual_turnover`。
 
 **全部通过 → step8**；任一不通过 → 同 step6 重试机制（独立计数，最多 3 次）。
 
@@ -1081,28 +1082,26 @@ delay: 1
 
 **回归设置**：
 
-- 因变量：候选因子（`neutral` variant 时序值）
-- 自变量：剩余 6 个一级 Barra 因子（**不含** Size 和 Industry，二者已在 step2 中性化中扣除），即 Beta / Momentum / Value / Quality / Liquidity / Growth 的 `raw` variant
-- 时序长度：候选因子可用全部交易日
-- 正则化：Ridge，α 用默认 1.0（或 CV 选）
+- 因变量：候选因子（`barra_ind_size` variant 时序值）
+- 自变量：6 个一级 Barra 因子（**不含** Size 和 Industry，二者已在 step2 中性化中扣除），即 Beta / Momentum / Value / Quality / Liquidity / Growth
+- 正则化：Ridge，α = 1.0
 
-**R² 分层规则**：
+**R² 分层规则**（定义在 `config.yaml` → `thresholds.admission.ridge_r2`）：
 
 | R² 区间 | 分类 | 入库 |
 |---|---|---|
-| `R² < 0.10` | **pure_alpha** | 直接入库 |
-| `0.10 ≤ R² < 0.50` | **smart_beta** | 直接入库 |
-| `0.50 ≤ R² < 0.80` | **edge_smart_beta** | 需对 Ridge 残差再算 ICIR（日频 > 1.0 / 月频 > 0.8）才入库 |
-| `R² ≥ 0.80` | **reject** | 视为现有风格因子复制品，丢弃 |
+| `R² < 0.2` | **pure_alpha** | 与现有风格正交 — 入库 |
+| `0.2 ≤ R² < 0.7` | **smart_beta** | 部分风格暴露 — 入库 |
+| `R² ≥ 0.7` | **reject** | 风格克隆 — 拒绝 |
 
-**因子库按频率分库**：日频因子库 / 月频因子库（在 `registry.json` 的 meta 中加 `frequency` 字段区分）。
+> 不再有 `edge_smart_beta` 和 residual ICIR 二次判定。三档分界值从 `config.yaml` 读取，可随时调整。
 
 ### A.9 step9：操作入库 + 生成报告
 
 **入库**：
 1. 把候选因子从 work DB 迁移到 library DB（同现有 `admit()` 机制）
 2. 在 `registry.json` 中写入 meta：
-   - `tier` ∈ {pure_alpha, smart_beta, edge_smart_beta}
+   - `tier` ∈ {pure_alpha, smart_beta, reject}
    - `r2_vs_barra`：Ridge R²
    - `frequency` ∈ {daily, monthly}
    - `pipeline_config`：step5~step7 最终通过时的策略配置（含重试历史中的 decay / universe / top_pct）
@@ -1149,14 +1148,14 @@ delay: 1
 
 ### A.10 拒绝处理
 
-任一 step 不通过 → 自动 reject 操作：
-1. 清空 work DB 中该因子的全部 variant 数据
-2. 删除 `results/<factor_id>/` 目录下本次产生的所有文件，保持目录与因子库整洁
-3. `registry.json` 更新 `status="rejected"`，meta 中记录 `reject_reason`（哪个 step 哪个指标失败）
+任一 step 不通过 → 停止后续 step：
+1. **生成完整诊断报告**（`results/<factor_id>/pipeline_report.md` + 诊断图），列出每步指标和拒绝原因
+2. **保留** work DB 数据和 results 目录（不自动清理），由人工决定后续操作
+3. 手动清理：`python -m backtest.factor.cleanup f_xxx`
 
 ### A.11 阈值调整原则
 
-PLAN.md §4 备注 2：「对于每一步的阈值，有意见可以商量重定。」本附录的阈值定稿后写入 `backtest/factor/admission.py` 的常量 `P1_PIPELINE_THRESHOLDS`，调整需走 PR。
+所有阈值统一定义在 `config.yaml` → `thresholds.pipeline` + `thresholds.admission.ridge_r2`，通过 `backtest.config_loader.get_section()` 读取。调整阈值直接修改 `config.yaml`，无需改代码。
 
 ### A.12 未来扩展（不在本期 P1 范围）
 

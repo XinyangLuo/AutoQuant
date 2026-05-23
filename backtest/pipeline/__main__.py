@@ -18,9 +18,8 @@ import json
 import sys
 from pathlib import Path
 
-from backtest.pipeline._cleanup import cleanup_on_rejection
 from backtest.pipeline.config import PipelineConfig
-from backtest.pipeline.state import PipelineState
+from backtest.pipeline.state import PipelineState, StepResult
 from backtest.pipeline.steps import (
     step1_coverage_check,
     step2_neutralization_check,
@@ -57,8 +56,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # init
     p_init = sub.add_parser("init", help="Initialise pipeline state")
     p_init.add_argument("factor_id")
-    p_init.add_argument("--start", required=True)
-    p_init.add_argument("--end", required=True)
+    p_init.add_argument("--start", default=None, help="default from config.yaml")
+    p_init.add_argument("--end", default=None, help="default from config.yaml")
     p_init.add_argument("--frequency", choices=["D", "M"], default="D")
     p_init.add_argument("--results-root", default="results")
     p_init.add_argument("--ret-type", default="open", choices=["close", "open"])
@@ -78,8 +77,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # run-all
     p_run = sub.add_parser("run-all", help="Run all steps sequentially")
     p_run.add_argument("factor_id")
-    p_run.add_argument("--start", required=True)
-    p_run.add_argument("--end", required=True)
+    p_run.add_argument("--start", default=None, help="default from config.yaml")
+    p_run.add_argument("--end", default=None, help="default from config.yaml")
     p_run.add_argument("--frequency", choices=["D", "M"], default="D")
     p_run.add_argument("--from-step", type=int, default=1, choices=range(1, 10))
     p_run.add_argument("--results-root", default="results")
@@ -87,6 +86,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--benchmark", default="000300.SH")
 
     return parser
+
+
+def _resolve_dates(args) -> tuple[str, str]:
+    """Resolve start/end dates: CLI args take priority, fall back to config.yaml."""
+    from backtest.config_loader import get_section
+
+    start = args.start or None  # treat empty string as None
+    end = args.end or None
+    if not start:
+        start = get_section("pipeline", "start_date")
+    if not end:
+        end = get_section("pipeline", "end_date")
+    return start, end
 
 
 def _load_or_init_state(args) -> PipelineState:
@@ -97,11 +109,12 @@ def _load_or_init_state(args) -> PipelineState:
         return PipelineState.load(state_path)
 
     # Create new state (for run-all without prior init)
+    start_date, end_date = _resolve_dates(args)
     config = PipelineConfig.for_frequency(
         frequency=getattr(args, "frequency", "D"),
         factor_id=args.factor_id,
-        start_date=args.start,
-        end_date=args.end,
+        start_date=start_date,
+        end_date=end_date,
         results_root=args.results_root,
         ret_type=getattr(args, "ret_type", "open"),
         benchmark=getattr(args, "benchmark", "000300.SH"),
@@ -137,11 +150,12 @@ def _output_json(step_name: str, passed: bool, reason: str | None, metrics: dict
 
 
 def cmd_init(args) -> int:
+    start_date, end_date = _resolve_dates(args)
     config = PipelineConfig.for_frequency(
         frequency=args.frequency,
         factor_id=args.factor_id,
-        start_date=args.start,
-        end_date=args.end,
+        start_date=start_date,
+        end_date=end_date,
         results_root=args.results_root,
         ret_type=args.ret_type,
         benchmark=args.benchmark,
@@ -184,6 +198,7 @@ def cmd_step(args, step_name: str) -> int:
 def cmd_run_all(args) -> int:
     state = _load_or_init_state(args)
     from_step = args.from_step
+    rejected_step: str | None = None
 
     for step_name in STEP_ORDER[from_step - 1:]:
         print(f"\n--- Running {step_name} ---", file=sys.stderr)
@@ -194,8 +209,35 @@ def cmd_run_all(args) -> int:
 
         if not passed:
             print(f"\nREJECTED at {step_name}: {reason}", file=sys.stderr)
-            cleanup_on_rejection(state)
-            return 1
+            rejected_step = step_name
+            # Stop running further steps but still generate report below.
+            break
+
+    # Always generate a diagnostic report — even on rejection.
+    from backtest.pipeline._report import generate_pipeline_report
+
+    report_path = generate_pipeline_report(state)
+    print(f"\nReport: {report_path}", file=sys.stderr)
+
+    if rejected_step:
+        # Mark as rejected in registry so `admission status` reflects reality.
+        # Don't call reject() — that would delete the work DB data we want to preserve.
+        from backtest.factor.registry import _load_registry, _save_registry
+        from datetime import datetime, timezone
+        reg = _load_registry()
+        entry = reg.get(config.factor_id, {})
+        entry["status"] = "rejected"
+        entry["rejection"] = {
+            "step": rejected_step,
+            "reason": state.step_results.get(rejected_step, StepResult(False)).reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        reg[config.factor_id] = entry
+        _save_registry(reg)
+        state.status = "rejected"
+        _save_state(state)
+        print(f"\nPipeline REJECTED at {rejected_step}. Factor data preserved in work DB.", file=sys.stderr)
+        return 1
 
     print(f"\nPipeline complete: {state.status}", file=sys.stderr)
     return 0

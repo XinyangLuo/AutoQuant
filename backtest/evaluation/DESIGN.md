@@ -18,8 +18,7 @@ backtest/evaluation/
 ├── benchmark.py         # 指数 NAV 加载 + beta/alpha/IR/超额曲线
 ├── plot.py              # 8 子图大图，Agg 后端
 ├── report.py            # EvaluationReport + evaluate() + render_table()
-├── DESIGN.md            # 本文件
-└── README.md            # 用户向使用说明
+└── DESIGN.md            # 本文件
 ```
 
 ## 输入数据契约
@@ -90,8 +89,8 @@ from backtest.evaluation import (
 
 report = evaluate(
     result_dir="results/<factor_id>/<variant>/<tag>/detailed",
-    benchmark="000300.SH",   # 可选
-    plot=True,               # 默认 True
+    benchmark=None,           # 可选，e.g. "000300.SH"
+    plot=True,                # 默认 True
     output_dir=None,         # 默认与 result_dir 同
     rf=0.0,                  # 年化无风险利率
     rolling_sharpe_window=90,

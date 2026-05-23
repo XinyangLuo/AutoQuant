@@ -8,14 +8,20 @@ import pytest
 
 from backtest.factor.admission_check import (
     BARRA_L1_REGRESSORS,
-    R2_EDGE_SMART_BETA_MAX,
-    R2_PURE_ALPHA_MAX,
-    R2_SMART_BETA_MAX,
+    TIER_PURE_ALPHA,
+    TIER_REJECT,
+    TIER_SMART_BETA,
     _classify,
     _pooled_r2,
     _ridge_fit,
     ridge_r2_check,
 )
+
+
+# Thresholds from config.yaml (single source of truth).
+# Duplicated here so tests fail if config changes unintentionally.
+R2_PURE_ALPHA_MAX = 0.2
+R2_SMART_BETA_MAX = 0.7
 
 
 @pytest.fixture(autouse=True)
@@ -30,27 +36,22 @@ def clean_registry():
 
 class TestClassify:
     def test_pure_alpha_band(self):
-        assert _classify(0.0) == "pure_alpha"
-        assert _classify(0.099) == "pure_alpha"
+        assert _classify(0.0) == TIER_PURE_ALPHA
+        assert _classify(0.199) == TIER_PURE_ALPHA
 
     def test_smart_beta_band(self):
-        assert _classify(0.10) == "smart_beta"
-        assert _classify(0.49) == "smart_beta"
-
-    def test_edge_smart_beta_band(self):
-        assert _classify(0.50) == "edge_smart_beta"
-        assert _classify(0.799) == "edge_smart_beta"
+        assert _classify(0.20) == TIER_SMART_BETA
+        assert _classify(0.699) == TIER_SMART_BETA
 
     def test_reject_band(self):
-        assert _classify(0.80) == "reject"
-        assert _classify(1.0) == "reject"
+        assert _classify(0.70) == TIER_REJECT
+        assert _classify(1.0) == TIER_REJECT
 
-    def test_thresholds_are_exposed(self):
-        # If these constants drift, the pipeline behaviour drifts — make
-        # the dependency explicit so a downstream change is visible in tests.
-        assert R2_PURE_ALPHA_MAX == 0.10
-        assert R2_SMART_BETA_MAX == 0.50
-        assert R2_EDGE_SMART_BETA_MAX == 0.80
+    def test_thresholds_match_config(self):
+        from backtest.config_loader import get_section
+        th = get_section("thresholds", "admission", "ridge_r2")
+        assert th["pure_alpha_max"] == R2_PURE_ALPHA_MAX
+        assert th["smart_beta_max"] == R2_SMART_BETA_MAX
 
 
 class TestRidgeFit:
@@ -95,27 +96,25 @@ class TestPooledR2:
         })
         return candidate, regressors
 
-    def test_pure_noise_yields_low_r2(self):
+    def test_pure_noise_yields_pure_alpha(self):
         candidate, regressors = self._make_panel(true_betas=np.zeros(6), seed=42)
         r2, residual, keys = _pooled_r2(candidate, regressors, alpha=1.0)
         assert r2 < R2_PURE_ALPHA_MAX
         assert residual.shape[0] == keys.shape[0]
         assert keys.shape[1] == 2
 
-    def test_pure_combination_yields_high_r2(self):
-        # y is a clean linear combination of the regressors — R² → 1 minus a sliver of noise.
+    def test_pure_combination_yields_reject(self):
         candidate, regressors = self._make_panel(
             n_days=80, n_symbols=50,
             true_betas=np.array([2.0, -1.5, 1.0, 0.5, -0.5, 1.2]),
             seed=7,
         )
-        # Reduce noise: rebuild candidate with smaller noise variance.
         rng = np.random.default_rng(7)
         reg_block = regressors.iloc[:, 2:].to_numpy()
         y = reg_block @ np.array([2.0, -1.5, 1.0, 0.5, -0.5, 1.2]) + 0.01 * rng.standard_normal(len(reg_block))
         candidate = candidate.assign(value=y)
         r2, _, _ = _pooled_r2(candidate, regressors, alpha=1.0)
-        assert r2 > R2_EDGE_SMART_BETA_MAX
+        assert r2 >= R2_SMART_BETA_MAX
 
     def test_partial_signal_lands_in_smart_beta_band(self):
         candidate, regressors = self._make_panel(
@@ -124,7 +123,7 @@ class TestPooledR2:
             seed=11,
         )
         r2, _, _ = _pooled_r2(candidate, regressors, alpha=1.0)
-        assert R2_PURE_ALPHA_MAX <= r2 < R2_EDGE_SMART_BETA_MAX
+        assert R2_PURE_ALPHA_MAX <= r2 < R2_SMART_BETA_MAX
 
     def test_too_few_rows_raises(self):
         rng = np.random.default_rng(0)
@@ -151,7 +150,6 @@ class TestRidgeR2CheckIntegration:
         work_path = tmp_path / "factors.duckdb"
         lib_path = tmp_path / "factor_library.duckdb"
 
-        # candidate goes to work
         with FactorStorage(db_path=work_path) as ws:
             ws.insert_factors(pd.DataFrame({
                 "date": np.repeat(dates, len(symbols)),
@@ -160,7 +158,6 @@ class TestRidgeR2CheckIntegration:
                 "value": candidate_values,
             }))
 
-        # Barra L1 regressors go to library
         with FactorLibrary(db_path=lib_path) as lb:
             for reg_id, vals in regressor_values.items():
                 lb.insert_factors(pd.DataFrame({
@@ -198,9 +195,8 @@ class TestRidgeR2CheckIntegration:
                 "f_alpha_candidate",
                 factor_storage=ws, library=lb,
             )
-        assert result.tier == "pure_alpha"
+        assert result.tier == TIER_PURE_ALPHA
         assert result.r2 < R2_PURE_ALPHA_MAX
-        assert result.residual_icir is None
         assert result.n_regressors == 6
         assert result.n_obs == n
 
@@ -218,15 +214,14 @@ class TestRidgeR2CheckIntegration:
         rng = np.random.default_rng(2)
         dates = pd.date_range("2024-01-01", periods=50, freq="B")
         symbols = [f"S{i:03d}" for i in range(30)]
-        n = len(dates) * len(symbols)
 
-        regressors = {fid: rng.standard_normal(n) for fid in BARRA_L1_REGRESSORS}
-        # candidate is mostly a sum of the regressors → R² will exceed 0.80
+        regressors = {fid: rng.standard_normal(len(dates) * len(symbols))
+                      for fid in BARRA_L1_REGRESSORS}
         candidate = (
             1.0 * regressors["f_barra_beta"]
             + 1.0 * regressors["f_barra_momentum"]
             + 1.0 * regressors["f_barra_value"]
-            + 0.01 * rng.standard_normal(n)
+            + 0.01 * rng.standard_normal(len(dates) * len(symbols))
         )
         work_path, lib_path = self._seed_dbs(
             tmp_path, candidate, regressors, dates, symbols,
@@ -237,8 +232,8 @@ class TestRidgeR2CheckIntegration:
                 "f_alpha_candidate",
                 factor_storage=ws, library=lb,
             )
-        assert result.tier == "reject"
-        assert result.r2 >= R2_EDGE_SMART_BETA_MAX
+        assert result.tier == TIER_REJECT
+        assert result.r2 >= R2_SMART_BETA_MAX
 
     def test_missing_regressor_raises(self, tmp_path):
         from backtest.factor.registry import register
@@ -256,7 +251,6 @@ class TestRidgeR2CheckIntegration:
         symbols = [f"S{i:03d}" for i in range(20)]
         n = len(dates) * len(symbols)
 
-        # seed only candidate (no library regressors)
         work_path = tmp_path / "factors.duckdb"
         lib_path = tmp_path / "factor_library.duckdb"
         with FactorStorage(db_path=work_path) as ws:
@@ -267,7 +261,7 @@ class TestRidgeR2CheckIntegration:
                 "value": rng.standard_normal(n),
             }))
         with FactorLibrary(db_path=lib_path):
-            pass  # touch the file but leave it empty
+            pass
 
         with FactorStorage(db_path=work_path) as ws, FactorLibrary(db_path=lib_path) as lb:
             with pytest.raises(ValueError, match="Regressor.*missing from library"):

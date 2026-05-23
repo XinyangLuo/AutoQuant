@@ -492,8 +492,6 @@ def main():
             if rc is not None:
                 print(f"  ridge check          : R²={rc['r2']:.3f} "
                       f"tier={rc['tier']} n_obs={rc['n_obs']:,}")
-                if rc.get("residual_icir") is not None:
-                    print(f"  residual ICIR        : {rc['residual_icir']:.3f}")
         print()
         return
 
