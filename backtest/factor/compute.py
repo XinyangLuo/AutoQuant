@@ -9,7 +9,6 @@ from functools import partial
 import pandas as pd
 
 from backtest.data.storage import MarketStorage
-from backtest.data.trade_calendar import get_trade_dates
 from backtest.factor.builtin.barra._common import apply_l3_pipeline
 from backtest.factor.registry import get_factor_function, get_factor_meta
 from backtest.factor.storage import FactorLibrary, FactorStorage
@@ -20,50 +19,6 @@ from backtest.factor.variants import (
     NONE_VARIANT,
     SIZE_L1_ID,
 )
-
-
-# Multi-year fina factor compute panels grow as O(trade_dates × symbols ×
-# end_dates_visible). For factors like Growth / Quality whose helpers retain
-# the multi-quarter history per (date, symbol), a 35-year single-shot panel
-# exceeds RAM and the OS SIGKILLs the worker. Chunking the range into
-# manageable windows keeps each compute call's peak memory bounded; outputs
-# are concatenated so the caller sees the full range. Picked 2 years as a
-# compromise between memory bound and number of round-trips.
-_FINA_CHUNK_YEARS = 1
-
-
-def _compute_factor_chunked(
-    factor_id: str,
-    start_date: str,
-    end_date: str,
-    *,
-    market_storage: MarketStorage | None,
-    factor_storage: FactorStorage | None,
-    chunk_years: int,
-) -> pd.DataFrame:
-    """Split a fina-heavy compute_factor call into calendar-year chunks."""
-    start_dt = datetime.strptime(start_date, "%Y%m%d")
-    end_dt = datetime.strptime(end_date, "%Y%m%d")
-
-    pieces: list[pd.DataFrame] = []
-    cur = start_dt
-    while cur <= end_dt:
-        chunk_end_year = cur.year + chunk_years - 1
-        chunk_end = min(datetime(chunk_end_year, 12, 31), end_dt)
-        sub = compute_factor(
-            factor_id,
-            cur.strftime("%Y%m%d"),
-            chunk_end.strftime("%Y%m%d"),
-            market_storage=market_storage,
-            factor_storage=factor_storage,
-        )
-        if not sub.empty:
-            pieces.append(sub)
-        cur = datetime(chunk_end_year + 1, 1, 1)
-
-    if not pieces:
-        return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
-    return pd.concat(pieces, ignore_index=True)
 
 
 def compute_factor(
@@ -86,11 +41,16 @@ def compute_factor(
     Only the raw factor is computed here. To apply the registry-declared
     neutralization, pass the result to :func:`apply_variant_pipeline`.
 
-    For factors that read PIT financial snapshots over multi-year ranges,
-    the per-date-snapshot concat panel can exceed RAM. ``_FINA_CHUNK_YEARS``
-    auto-splits the range into calendar-year chunks for such factors and
-    concatenates the per-chunk outputs — keeping the math identical while
-    bounding peak memory.
+    Fina-heavy factors (Growth / Quality / Value / ...) read PIT snapshots
+    via :meth:`MarketStorage.get_fina_snapshot_range` — one range-join SQL
+    per fina table replaces the legacy per-trade-date QUALIFY loop, so a
+    35-year backfill no longer needs calendar-year chunking. Two registry
+    knobs control panel size:
+
+    - ``fina_columns``: whitelist of prefixed columns the factor actually
+      reads (avoids hauling all ~330 fina columns through pandas).
+    - ``last_n_quarters``: keep only the most recent N ``end_date`` rows per
+      ``(date, symbol)`` — slope / TTM helpers only need ~20.
     """
     meta = get_factor_meta(factor_id)
     compute_fn = get_factor_function(factor_id)
@@ -103,22 +63,6 @@ def compute_factor(
         for src in data_sources
     )
     needs_factor_store = any(src == "factors_daily" for src in data_sources)
-
-    # Auto-chunk fina-heavy factors over long ranges. Each chunk loads its own
-    # bounded PIT-concat panel; the factor function runs once per chunk. Safe
-    # because the factor's output for date D depends only on the snapshot at
-    # D + lookback already inside compute_factor's window calculation.
-    if needs_fina and not needs_factor_store:
-        start_dt = datetime.strptime(start_date, "%Y%m%d")
-        end_dt = datetime.strptime(end_date, "%Y%m%d")
-        years_span = (end_dt - start_dt).days / 365.25
-        if years_span > _FINA_CHUNK_YEARS:
-            return _compute_factor_chunked(
-                factor_id, start_date, end_date,
-                market_storage=market_storage,
-                factor_storage=factor_storage,
-                chunk_years=_FINA_CHUNK_YEARS,
-            )
 
     own_market = market_storage is None
     own_factor = factor_storage is None
@@ -147,25 +91,23 @@ def compute_factor(
             input_panel = bars
 
         if needs_fina:
-            # Financial data requires per-date PIT snapshots.
-            # We fetch the snapshot for each trade date in the range and
-            # concatenate them into a single (date, symbol) panel.
-            # Optional ``fina_columns`` in registry parameters lets the factor
-            # restrict the snapshot to the columns it actually reads — without
-            # it each snapshot pulls all ~330 fina columns and the concatenated
-            # panel blows up memory on long ranges.
+            # PIT snapshots for every trade date in [start, end]. Use the
+            # range function — one range-join SQL per fina table replaces
+            # N_dates × 3 independent QUALIFY scans. ``fina_columns`` (from
+            # registry) keeps the SELECT narrow; ``last_n_quarters`` (also
+            # from registry, optional) caps the per-(date, symbol) history
+            # depth — slope / TTM factors only need the most recent ~20.
             fina_cols = params.get("fina_columns")
-            trade_dates = get_trade_dates(start_date, end_date)
-            fina_dfs: list[pd.DataFrame] = []
-            for date in trade_dates:
-                snap = market_storage.get_fina_snapshot(
-                    as_of_date=date, columns=fina_cols,
-                )
-                if not snap.empty:
-                    snap["date"] = pd.Timestamp(date)
-                    fina_dfs.append(snap)
-            if fina_dfs:
-                fina_all = pd.concat(fina_dfs, ignore_index=True)
+            last_n_quarters = params.get("last_n_quarters")
+            fina_all = market_storage.get_fina_snapshot_range(
+                start=start_date,
+                end=end_date,
+                columns=fina_cols,
+                last_n_quarters=last_n_quarters,
+            )
+            if not fina_all.empty:
+                # Range function returns DATE; align with market_daily merge key.
+                fina_all["date"] = pd.to_datetime(fina_all["date"])
                 if input_panel.empty:
                     input_panel = fina_all
                 else:
@@ -173,10 +115,10 @@ def compute_factor(
                         fina_all, on=["date", "symbol"], how="left"
                     )
             else:
-                # No fina snapshot is visible in this date range (e.g. early
-                # 1990s chunk before listing). The factor function would crash
-                # looking up missing fina columns — return empty so the chunk
-                # contributes nothing instead of erroring out.
+                # No fina snapshot is visible in this date range (e.g. a
+                # pre-1990s window before any company listed). The factor
+                # function would crash looking up missing fina columns —
+                # short-circuit to an empty result frame.
                 return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
 
         # Composites (e.g. Barra L1) read L3 values directly from factor_storage

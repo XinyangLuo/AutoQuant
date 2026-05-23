@@ -178,7 +178,11 @@ def barra_liquidity(
     ),
     variant=NONE_VARIANT,
     frequency="D",
-    parameters={"fina_columns": ["inc_basic_eps"]},
+    parameters={
+        "fina_columns": ["inc_basic_eps"],
+        # pit_quarterly_slope(n=20) — keep panel size bounded.
+        "last_n_quarters": 20,
+    },
 )
 def barra_growth(
     panel: pd.DataFrame,
@@ -247,12 +251,18 @@ def barra_value(
     ),
     variant=NONE_VARIANT,
     frequency="D",
-    parameters={"fina_columns": [
-        "inc_n_income_attr_p",
-        "inc_revenue",
-        "inc_oper_cost",
-        "bs_total_assets",
-    ]},
+    parameters={
+        "fina_columns": [
+            "inc_n_income_attr_p",
+            "inc_revenue",
+            "inc_oper_cost",
+            "bs_total_assets",
+        ],
+        # AGRO's pit_quarterly_slope(n=20); ROA/GP use latest_quarter_per_day
+        # (single end_date per row) — 20 is the strictest bound across the
+        # three so trimming at this depth is safe for all three components.
+        "last_n_quarters": 20,
+    },
 )
 def barra_quality(
     panel: pd.DataFrame,

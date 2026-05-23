@@ -701,6 +701,162 @@ class MarketStorage:
 
         return merged
 
+    def get_fina_snapshot_range(
+        self,
+        start: str,
+        end: str,
+        symbols: list[str] | None = None,
+        columns: list[str] | None = None,
+        last_n_quarters: int | None = None,
+    ) -> pd.DataFrame:
+        """Batched PIT snapshots for every trade date in ``[start, end]``.
+
+        Semantically equivalent to::
+
+            for D in trade_dates(start, end):
+                yield get_fina_snapshot(D, ...)
+
+        but executed as **one range-join SQL per table** instead of
+        ``N_dates × 3`` independent QUALIFY scans. The trick:
+
+        1. For each ``(symbol, end_date)`` group compute ``superseded_at =
+           LEAD(f_ann_date)`` — the next version's publication date — once.
+        2. Range-join against ``trade_calendar``: a version row ``v`` is the
+           D-day-visible-latest iff ``v.f_ann_date <= D < v.superseded_at``
+           (NULL ``superseded_at`` means "still current").
+
+        ``last_n_quarters`` (if given) caps to the most recent N ``end_date``
+        rows per ``(date, symbol)``. Slope / TTM factors only need the last
+        ~20 quarters; trimming serves two purposes:
+
+        - **Memory**: the version CTE pre-filters ``end_date >= start −
+          ceil(N/4) years`` so the range join doesn't fan out across 35
+          years of history when only the recent 5 are needed.
+        - **Output size**: a QUALIFY trims final rows to top-N per
+          ``(date, symbol)``.
+
+        Output columns: ``date, symbol, end_date, <requested cols...>``
+        (long format, one row per ``(date, symbol, end_date)``). The three
+        fundamental tables are still outer-joined on ``(symbol, end_date)``
+        so a single row carries ``inc_/bs_/cf_`` values aligned. ``date`` is
+        a ``DATE`` column ready for downstream merge with ``market_daily``.
+        """
+        tables = {
+            "inc": "income_q",
+            "bs": "balancesheet_q",
+            "cf": "cashflow_q",
+        }
+
+        # Pre-filter version table by end_date when last_n_quarters is set.
+        # 20 quarters back = 5 years; add a 1-year cushion for late-published
+        # versions whose end_date is years before f_ann_date.
+        end_date_floor_sql = ""
+        if last_n_quarters is not None:
+            lookback_years = int(last_n_quarters / 4) + 2
+            start_year = int(start[:4])
+            floor_year = max(start_year - lookback_years, 1990)
+            end_date_floor_sql = f"end_date >= '{floor_year}0101'"
+
+        per_table_cols: dict[str, list[str] | None] = {}
+        if columns:
+            for prefix in tables:
+                per_table_cols[prefix] = [
+                    c.removeprefix(f"{prefix}_") for c in columns
+                    if c.startswith(f"{prefix}_")
+                ]
+        else:
+            for prefix in tables:
+                per_table_cols[prefix] = None
+
+        symbol_clause = ""
+        symbol_params: list[str] = []
+        if symbols:
+            placeholders = ", ".join("?" for _ in symbols)
+            symbol_clause = f"symbol IN ({placeholders})"
+            symbol_params = list(symbols)
+
+        where_parts = [p for p in (symbol_clause, end_date_floor_sql) if p]
+        where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+        join_keys = set(_FINA_JOIN_KEYS)
+        dfs: dict[str, pd.DataFrame] = {}
+        for prefix, table in tables.items():
+            wanted = per_table_cols[prefix]
+            if wanted is None:
+                version_select = "*"
+            else:
+                needed = (
+                    list(_FINA_JOIN_KEYS) + ["f_ann_date", "update_flag"] + wanted
+                )
+                seen: set[str] = set()
+                kept: list[str] = []
+                for c in needed:
+                    if c not in seen:
+                        kept.append(c)
+                        seen.add(c)
+                version_select = ", ".join(f'"{c}"' for c in kept)
+
+            sql = f"""
+                WITH versions AS (
+                    SELECT {version_select},
+                        LEAD(f_ann_date) OVER (
+                            PARTITION BY symbol, end_date
+                            ORDER BY f_ann_date ASC, update_flag ASC
+                        ) AS superseded_at
+                    FROM {table}
+                    {where_clause}
+                )
+                SELECT td.cal_date AS date, v.*
+                FROM versions v
+                JOIN trade_calendar td
+                  ON td.cal_date >= strptime(v.f_ann_date, '%Y%m%d')::DATE
+                 AND (v.superseded_at IS NULL
+                      OR td.cal_date < strptime(v.superseded_at, '%Y%m%d')::DATE)
+                 AND td.cal_date BETWEEN strptime(?, '%Y%m%d')::DATE
+                                     AND strptime(?, '%Y%m%d')::DATE
+                 AND td.is_open
+            """
+            if last_n_quarters is not None:
+                sql += f"""
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY td.cal_date, v.symbol
+                    ORDER BY v.end_date DESC
+                ) <= {int(last_n_quarters)}
+                """
+            params = list(symbol_params) + [start, end]
+            df = self.conn.execute(sql, params).fetchdf()
+            if df.empty:
+                dfs[prefix] = df
+                continue
+            if "superseded_at" in df.columns:
+                df = df.drop(columns=["superseded_at"])
+            rename_map = {
+                c: f"{prefix}_{c}" for c in df.columns
+                if c not in join_keys and c != "date"
+            }
+            df = df.rename(columns=rename_map)
+            dfs[prefix] = df
+
+        merge_keys = ["date", "symbol", "end_date"]
+        merged = dfs["inc"]
+        for prefix in ("bs", "cf"):
+            other = dfs[prefix]
+            if merged.empty:
+                merged = other
+            elif other.empty:
+                continue
+            else:
+                merged = merged.merge(other, on=merge_keys, how="outer")
+
+        if columns:
+            keep = list(merge_keys) + [c for c in columns if c in merged.columns]
+            merged = merged[[c for c in keep if c in merged.columns]].copy()
+            for c in columns:
+                if c not in merged.columns:
+                    merged[c] = pd.NA
+
+        return merged
+
     # -- dividends ------------------------------------------------------------
 
     def get_max_dividend_ann_date(self) -> str | None:

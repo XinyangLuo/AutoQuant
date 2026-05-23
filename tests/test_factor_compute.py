@@ -132,6 +132,11 @@ class MockMarketStorage:
     def get_fina_snapshot(self, as_of_date, symbols=None, columns=None):
         return pd.DataFrame()
 
+    def get_fina_snapshot_range(
+        self, start, end, symbols=None, columns=None, last_n_quarters=None,
+    ):
+        return pd.DataFrame()
+
     def close(self):
         pass
 
