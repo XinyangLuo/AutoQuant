@@ -716,7 +716,7 @@ class MarketStorage:
             for D in trade_dates(start, end):
                 yield get_fina_snapshot(D, ...)
 
-        but executed as **one range-join SQL per table** instead of
+        but executed as **one range-join SQL per table per chunk** instead of
         ``N_dates × 3`` independent QUALIFY scans. The trick:
 
         1. For each ``(symbol, end_date)`` group compute ``superseded_at =
@@ -735,11 +735,64 @@ class MarketStorage:
         - **Output size**: a QUALIFY trims final rows to top-N per
           ``(date, symbol)``.
 
+        Internally the date range is split into 2-year sub-windows. A single
+        range-join over ``trade_calendar × versions`` materializes ``N_dates
+        × N_versions`` intermediate rows before QUALIFY trims, and full
+        history (35y × 250 dates × 20 q × 5500 symbols ≈ 1B intermediate
+        rows) crashes DuckDB's planner with OOM even when the final output
+        would be modest. Sub-windowing keeps the planner's working set
+        bounded; concat across windows is cheap (DuckDB writes columnar
+        chunks, pandas does one pass on the result).
+
         Output columns: ``date, symbol, end_date, <requested cols...>``
         (long format, one row per ``(date, symbol, end_date)``). The three
         fundamental tables are still outer-joined on ``(symbol, end_date)``
         so a single row carries ``inc_/bs_/cf_`` values aligned. ``date`` is
         a ``DATE`` column ready for downstream merge with ``market_daily``.
+        """
+        from datetime import datetime as _dt
+
+        _CHUNK_YEARS = 2
+
+        start_dt = _dt.strptime(start, "%Y%m%d")
+        end_dt = _dt.strptime(end, "%Y%m%d")
+        pieces: list[pd.DataFrame] = []
+        cur = start_dt
+        while cur <= end_dt:
+            sub_end = _dt(cur.year + _CHUNK_YEARS - 1, 12, 31)
+            if sub_end > end_dt:
+                sub_end = end_dt
+            sub = self._get_fina_snapshot_window(
+                cur.strftime("%Y%m%d"),
+                sub_end.strftime("%Y%m%d"),
+                symbols=symbols,
+                columns=columns,
+                last_n_quarters=last_n_quarters,
+            )
+            if not sub.empty:
+                pieces.append(sub)
+            cur = _dt(sub_end.year + 1, 1, 1)
+
+        if not pieces:
+            # Maintain the stable-column contract even on empty results.
+            cols = ["date", "symbol", "end_date"] + (list(columns) if columns else [])
+            return pd.DataFrame(columns=cols)
+        return pd.concat(pieces, ignore_index=True)
+
+    def _get_fina_snapshot_window(
+        self,
+        start: str,
+        end: str,
+        symbols: list[str] | None = None,
+        columns: list[str] | None = None,
+        last_n_quarters: int | None = None,
+    ) -> pd.DataFrame:
+        """One range-join SQL per fina table for the ``[start, end]`` window.
+
+        Caller (``get_fina_snapshot_range``) sub-divides long ranges to keep
+        the per-window intermediate manageable. This function itself runs a
+        single range-join per table — three SQL round trips total — and
+        outer-joins their results on ``(date, symbol, end_date)``.
         """
         tables = {
             "inc": "income_q",
