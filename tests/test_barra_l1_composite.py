@@ -105,6 +105,19 @@ class TestSingleComponentComposite:
 
 
 class TestRegistryShape:
+    @pytest.fixture(autouse=True)
+    def _reimport_barra(self):
+        """``test_factor_compute.py`` has an autouse fixture that clears the
+        registry between tests; ensure the Barra composites are present before
+        these assertions run."""
+        from backtest.factor import registry
+        from backtest.factor.builtin import barra  # registers the 7 L1 composites
+
+        # Force re-registration if the cache was cleared.
+        import importlib
+        importlib.reload(barra.composite)
+        yield
+
     def test_only_7_barra_l1_factors_registered(self):
         from backtest.factor.registry import get_registry
 

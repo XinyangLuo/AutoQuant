@@ -108,9 +108,14 @@ def compute_factor(
         # Bind parameters and call the registered compute function. Pass
         # market_storage / factor_storage / start_date / end_date as kwargs
         # only if the function declares them — plain bar-only factors stay
-        # unaware of the storage layer.
-        bound_fn = partial(compute_fn, **params) if params else compute_fn
+        # unaware of the storage layer. ``params`` (from registry) is the
+        # union of "lookback hint" (read above to size the bars fetch) and
+        # "actual function kwargs". Filter against the signature so registry-
+        # only hints like ``window`` don't get passed to composites that
+        # don't take them.
         sig_params = inspect.signature(compute_fn).parameters
+        param_kwargs = {k: v for k, v in params.items() if k in sig_params}
+        bound_fn = partial(compute_fn, **param_kwargs) if param_kwargs else compute_fn
         candidates = (
             ("market_storage", market_storage),
             ("factor_storage", factor_storage),

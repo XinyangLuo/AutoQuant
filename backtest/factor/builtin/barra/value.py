@@ -55,7 +55,9 @@ def barra_value_dtop(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> pd.Series:
-    df = panel[["date", "symbol", "pre_close"]].copy()
+    # When the panel is a PIT-concat (multiple end_date rows per (date, symbol)),
+    # we only need one row per (date, symbol) for the per-day pre_close lookup.
+    df = panel[["date", "symbol", "pre_close"]].drop_duplicates(["date", "symbol"]).copy()
     df = df.sort_values(["symbol", "date"])
 
     # Extend the dividend fetch ~400 days before start_date so the cumsum
