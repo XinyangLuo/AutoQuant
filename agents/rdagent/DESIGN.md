@@ -255,3 +255,26 @@ for exp in best:
 | `backtest.evaluation` | `evaluate()`、指标计算 |
 | `backtest.data.storage` | `MarketStorage`、数据获取 |
 | `scripts/run_factor_pipeline.py` | 参考流水线编排逻辑 |
+
+## DeepSeek API
+使用DeepSeek V4 Pro作为Agent的底层模型，API在.env文件中使用
+    # Please install OpenAI SDK first: `pip3 install openai`
+    import os
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=os.environ.get('DEEPSEEK_API_KEY'),
+        base_url="https://api.deepseek.com")
+
+    response = client.chat.completions.create(
+        model="deepseek-v4-pro",
+        messages=[
+            {"role": "system", "content": "You are a helpful assistant"},
+            {"role": "user", "content": "Hello"},
+        ],
+        stream=False,
+        reasoning_effort="high",
+        extra_body={"thinking": {"type": "enabled"}}
+    )
+
+    print(response.choices[0].message.content)
