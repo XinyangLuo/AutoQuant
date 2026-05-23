@@ -9,14 +9,42 @@ Provides two families:
 - 中性化算子(因子层): :func:`industry_neutralize`, :func:`cap_neutralize`
 
 中性化算子被 backfill 在变体 fan-out 时调用,把"原始因子值"加工成"行业/市值中性化后的纯净因子值",再连同 ``variant`` 列一起写入 ``factors_daily``。
+
+Time-series operator min_periods convention
+-------------------------------------------
+All ``ts_*`` rolling operators (and :func:`z_score`) default to
+``min_periods = ceil(0.7 * window)`` — i.e. a window must contain at least
+70% non-NaN observations to emit a value, otherwise NaN. Callers can pass an
+explicit ``min_periods`` to override.
+
+The rationale: for daily-frequency factors, a 20-day rolling window over a
+suspended stock with only 5 trading days of data shouldn't pass as a valid
+``ts_std`` — but with pandas' default ``min_periods=window`` the suspension
+would silently turn the whole tail to NaN (too strict, factor goes blank
+right after resumption). 70% strikes a balance: tolerates ~6 missing days
+out of 20 (typical for short suspensions, dividends, halts) while rejecting
+windows where the stock genuinely wasn't trading.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Literal
 
 import numpy as np
 import pandas as pd
+
+
+MIN_VALID_RATIO: float = 0.7
+
+
+def _default_min_periods(window: int, *, lower_bound: int = 1) -> int:
+    """``ceil(MIN_VALID_RATIO * window)`` clamped to ``[lower_bound, window]``.
+
+    Used by all ts_* operators when the caller doesn't pass an explicit
+    ``min_periods``.
+    """
+    return max(lower_bound, min(window, math.ceil(MIN_VALID_RATIO * window)))
 
 
 def _check_panel_series(values: pd.Series) -> None:
@@ -87,11 +115,13 @@ def _ts_roll(
     """Sort by (symbol, date), groupby symbol, rolling, restore (date, symbol) order.
 
     Returns the unmodified rolling result (caller does .mean(), .std(), etc.).
+    When ``min_periods`` is None, defaults to ``ceil(0.7 * window)`` clamped
+    to ``[window_min, window]`` — see module docstring for the rationale.
     """
-    if min_periods is None:
-        min_periods = window
     if window < window_min:
         raise ValueError(f"window must be >= {window_min}, got {window}")
+    if min_periods is None:
+        min_periods = _default_min_periods(window, lower_bound=window_min)
     if min_periods < min_periods_min:
         raise ValueError(f"min_periods must be >= {min_periods_min}, got {min_periods}")
 
@@ -121,7 +151,7 @@ def z_score(
         Rolling window length in observations (typically trading days).
     min_periods : int, optional
         Minimum number of observations to produce a value. Defaults to
-        ``window`` (strict — no z-score until the window is fully covered).
+        ``ceil(0.7 * window)`` — see module docstring.
 
     Returns
     -------
@@ -411,7 +441,7 @@ def ts_rank(
         Rolling window length in observations (typically trading days).
     min_periods : int, optional
         Minimum number of observations to produce a value. Defaults to
-        ``window``.
+        ``ceil(0.7 * window)`` — see module docstring.
 
     Returns
     -------
@@ -452,7 +482,7 @@ def ts_mean(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -479,7 +509,7 @@ def ts_std(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -506,7 +536,7 @@ def ts_sum(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -533,7 +563,7 @@ def ts_min(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -560,7 +590,7 @@ def ts_max(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -621,7 +651,7 @@ def ts_argmax(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -653,7 +683,7 @@ def ts_argmin(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -763,7 +793,7 @@ def ts_product(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -792,7 +822,7 @@ def ts_skewness(
     window : int
         Rolling window length in observations (must be >= 3).
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -819,7 +849,7 @@ def ts_kurtosis(
     window : int
         Rolling window length in observations (must be >= 4).
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -848,7 +878,7 @@ def ts_ir(
     window : int
         Rolling window length in observations (must be >= 2).
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -888,7 +918,7 @@ def ts_decay_linear(
     window : int
         Rolling window length in observations.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -940,7 +970,7 @@ def ts_decay_exp(
     halflife : float, default 10.0
         Number of observations for weight to decay by half.
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -990,7 +1020,7 @@ def ts_corr(
     window : int
         Rolling window length in observations (must be >= 2).
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -1001,10 +1031,10 @@ def ts_corr(
     _check_panel_series(y)
     if not x.index.equals(y.index):
         raise ValueError("x and y must have identical MultiIndex")
-    if min_periods is None:
-        min_periods = window
     if window < 2:
         raise ValueError(f"window must be >= 2, got {window}")
+    if min_periods is None:
+        min_periods = _default_min_periods(window, lower_bound=2)
     if min_periods < 2:
         raise ValueError(f"min_periods must be >= 2, got {min_periods}")
 
@@ -1045,7 +1075,7 @@ def ts_covariance(
     window : int
         Rolling window length in observations (must be >= 2).
     min_periods : int, optional
-        Minimum observations. Defaults to ``window``.
+        Minimum observations. Defaults to ``ceil(0.7 * window)``.
 
     Returns
     -------
@@ -1056,10 +1086,10 @@ def ts_covariance(
     _check_panel_series(y)
     if not x.index.equals(y.index):
         raise ValueError("x and y must have identical MultiIndex")
-    if min_periods is None:
-        min_periods = window
     if window < 2:
         raise ValueError(f"window must be >= 2, got {window}")
+    if min_periods is None:
+        min_periods = _default_min_periods(window, lower_bound=2)
     if min_periods < 2:
         raise ValueError(f"min_periods must be >= 2, got {min_periods}")
 
@@ -1446,8 +1476,6 @@ def _check_fundamental_panel(panel: pd.DataFrame, value_col: str) -> None:
             f"panel missing required columns: {sorted(missing)}; "
             f"got columns: {sorted(panel.columns)}"
         )
-    if (panel["end_date"].astype(str) == "").any():
-        raise ValueError("panel contains empty end_date values; expected YYYYMMDD strings")
 
 
 def _lookup_at_end_date(

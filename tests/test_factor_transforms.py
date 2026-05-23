@@ -206,6 +206,52 @@ class TestZScore:
 
 
 # ---------------------------------------------------------------------------
+# 70% min-valid-obs convention (module-wide default)
+# ---------------------------------------------------------------------------
+
+class TestMinValidRatioDefault:
+    """Default ``min_periods = ceil(0.7 * window)``. Caller can still override."""
+
+    def test_ts_std_window_20_needs_14_obs(self):
+        # 20 dates, but first 10 are NaN (e.g. suspension). Only 10 obs in
+        # the trailing window — < 14 — so result should be NaN.
+        dates = [f"2024-01-{i:02d}" for i in range(1, 21)]
+        idx = _make_index([(d, "A") for d in dates])
+        vals = [np.nan] * 10 + [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+        s = pd.Series(vals, index=idx)
+
+        result = ts_std(s, window=20)
+
+        # Last row has 10 non-NaN obs, below 14 → NaN.
+        assert np.isnan(result.iloc[-1])
+
+    def test_ts_std_window_20_with_14_obs_emits(self):
+        # Same setup but only 6 missing → 14 non-NaN obs in the trailing window.
+        dates = [f"2024-01-{i:02d}" for i in range(1, 21)]
+        idx = _make_index([(d, "A") for d in dates])
+        vals = [np.nan] * 6 + [float(i) for i in range(1, 15)]
+        s = pd.Series(vals, index=idx)
+
+        result = ts_std(s, window=20)
+
+        assert not np.isnan(result.iloc[-1])
+
+    def test_explicit_min_periods_overrides_default(self):
+        # Caller forces strict min_periods=20 → all rows with <20 non-NaN NaN.
+        dates = [f"2024-01-{i:02d}" for i in range(1, 21)]
+        idx = _make_index([(d, "A") for d in dates])
+        vals = [np.nan] + [float(i) for i in range(1, 20)]  # 19 non-NaN obs
+        s = pd.Series(vals, index=idx)
+
+        # default would emit (≥14 obs); explicit min_periods=20 should not.
+        loose = ts_std(s, window=20)
+        strict = ts_std(s, window=20, min_periods=20)
+
+        assert not np.isnan(loose.iloc[-1])
+        assert np.isnan(strict.iloc[-1])
+
+
+# ---------------------------------------------------------------------------
 # ts_mean / ts_std / ts_rank (existing, keep)
 # ---------------------------------------------------------------------------
 
@@ -831,12 +877,12 @@ class TestTsKurtosis:
 
         result = ts_kurtosis(s, window=5)
 
-        # First 4 should be NaN (need 5 obs, but kurt needs 4 so first 3 are NaN)
-        # Actually rolling kurt with window=5, min_periods=5: first 4 NaN
+        # With default min_periods = ceil(0.7 * 5) = 4: first 3 are NaN
+        # (need at least 4 obs to start emitting). idx 3 onward is valid.
         assert np.isnan(result.iloc[0])
         assert np.isnan(result.iloc[1])
         assert np.isnan(result.iloc[2])
-        assert np.isnan(result.iloc[3])
+        assert not np.isnan(result.iloc[3])
 
     def test_rejects_non_multiindex(self):
         s = pd.Series([1.0, 2.0, 3.0])

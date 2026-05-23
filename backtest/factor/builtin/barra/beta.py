@@ -19,7 +19,6 @@ from numpy.lib.stride_tricks import sliding_window_view
 from backtest.data.storage import MarketStorage
 from backtest.factor.builtin.barra._common import (
     halflife_weights,
-    log_return,
     to_panel_series,
 )
 
@@ -82,7 +81,6 @@ def barra_beta_beta(
     df = panel[["date", "symbol", "close", "adj_factor"]].copy()
     df["adj_close"] = df["close"] * df["adj_factor"]
     df = df.sort_values(["symbol", "date"])
-    df["r"] = log_return(df, "adj_close")
 
     start = df["date"].min().strftime("%Y%m%d")
     end = df["date"].max().strftime("%Y%m%d")
@@ -93,8 +91,24 @@ def barra_beta_beta(
         return pd.Series(dtype=float, name="beta")
     bench = bench.sort_values("date")
     bench["R"] = np.log(bench["close"]).diff()
-    bench = bench[["date", "R"]]
+    bench = bench[["date", "R"]].reset_index(drop=True)
+    bench_dates = pd.DatetimeIndex(bench["date"])
 
+    # Align each symbol to the bench trading calendar so suspensions become
+    # explicit NaNs in r. Without this reindex, the per-symbol .diff() spans
+    # multiple calendar days across a suspension (Jan 4 → Jan 6 with Jan 5
+    # missing), and the resulting return is paired against the bench's
+    # single-day return — numerically wrong.
+    sym_pieces: list[pd.DataFrame] = []
+    for sym, g in df.groupby("symbol", sort=False):
+        sub = g.set_index("date")[["adj_close"]].reindex(bench_dates)
+        sub.index.name = "date"
+        sub["r"] = np.log(sub["adj_close"]).diff()
+        sub["symbol"] = sym
+        sym_pieces.append(sub.reset_index())
+    if not sym_pieces:
+        return pd.Series(dtype=float, name="beta")
+    df = pd.concat(sym_pieces, ignore_index=True)
     df = df.merge(bench, on="date", how="left")
     df = df.sort_values(["symbol", "date"])
 
@@ -109,4 +123,7 @@ def barra_beta_beta(
         return pd.Series(beta, index=g.index)
 
     df["beta"] = df.groupby("symbol", group_keys=False)[["r", "R"]].apply(_one)
+    # Reindex-introduced rows have adj_close NaN — drop them so the returned
+    # Series carries one row per actually-traded (date, symbol) only.
+    df = df.dropna(subset=["adj_close"])
     return to_panel_series(df, "beta", name="beta")
