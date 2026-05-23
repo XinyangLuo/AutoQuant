@@ -1465,7 +1465,9 @@ def if_else(
 FundamentalKind = Literal["flow", "stock"]
 
 _PRIOR_MMDD_BY_MONTH = {"06": "0331", "09": "0630", "12": "0930"}
-_TTM_ANNUALIZE_BY_MONTH = {"03": 4.0, "06": 2.0, "09": 4.0 / 3.0, "12": 1.0}
+# Quarter-month → scale factor that annualises a YTD cumulative number when
+# LY_FY / LY_same aren't yet visible. Public — Barra event_ttm reuses it.
+TTM_ANNUALIZE_BY_MONTH = {"03": 4.0, "06": 2.0, "09": 4.0 / 3.0, "12": 1.0}
 
 
 def _check_fundamental_panel(panel: pd.DataFrame, value_col: str) -> None:
@@ -1604,7 +1606,7 @@ def ttm(
     is_fy = month_str.values == "12"
     formula = current + ly_fy_val - ly_same_val
 
-    annualize_scale = month_str.map(_TTM_ANNUALIZE_BY_MONTH).to_numpy(dtype=float, na_value=np.nan)
+    annualize_scale = month_str.map(TTM_ANNUALIZE_BY_MONTH).to_numpy(dtype=float, na_value=np.nan)
     fallback = current * annualize_scale
 
     result = np.where(is_fy, current, formula)

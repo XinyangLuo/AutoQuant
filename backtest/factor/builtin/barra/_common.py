@@ -12,6 +12,7 @@ import pandas as pd
 
 from backtest.data.storage import MarketStorage
 from backtest.factor.transforms import (
+    TTM_ANNUALIZE_BY_MONTH,
     cs_mad_winsorize,
     cs_zscore,
     industry_median_fill,
@@ -49,9 +50,6 @@ def apply_l3_pipeline(
     return series
 
 
-_TTM_ANNUALIZE_BY_MONTH = {"03": 4.0, "06": 2.0, "09": 4.0 / 3.0, "12": 1.0}
-
-
 def event_ttm(events: pd.DataFrame, value_col: str) -> pd.DataFrame:
     """Per-event, per-history-quarter flow TTM.
 
@@ -81,17 +79,6 @@ def event_ttm(events: pd.DataFrame, value_col: str) -> pd.DataFrame:
     df["end_date"] = df["end_date"].astype(str)
     df["announce_end_date"] = df["announce_end_date"].astype(str)
 
-    # Within-event lookup: (symbol, announce_end_date, end_date) → value.
-    # Use a flat dict keyed by 3-tuples for O(1) reads — pandas MultiIndex
-    # reindex is the obvious choice but its NaN handling on tuple keys is
-    # janky here.
-    lookup_keys = list(zip(
-        df["symbol"].to_numpy(),
-        df["announce_end_date"].to_numpy(),
-        df["end_date"].to_numpy(),
-    ))
-    lookup = dict(zip(lookup_keys, df[value_col].to_numpy(dtype=float)))
-
     month_str = df["end_date"].str[4:6].to_numpy()
     year = df["end_date"].str[:4].astype(int).to_numpy()
     mmdd = df["end_date"].str[4:].to_numpy()
@@ -99,23 +86,25 @@ def event_ttm(events: pd.DataFrame, value_col: str) -> pd.DataFrame:
     ly_fy_key = np.char.add(prev_year, "1231")
     ly_same_key = np.char.add(prev_year, mmdd)
 
-    sym = df["symbol"].to_numpy()
-    ann = df["announce_end_date"].to_numpy()
+    # Two left-merges look up LY_FY / LY_same within the same event. Using
+    # pandas merge on indexed columns is ~10× faster at 22k+ events than
+    # the prior dict-of-tuples + list-comprehension lookup.
+    lookup_cols = ["symbol", "announce_end_date", "end_date", value_col]
+    lookup = df[lookup_cols].drop_duplicates(
+        ["symbol", "announce_end_date", "end_date"], keep="last",
+    ).rename(columns={value_col: "_v"})
 
-    ly_fy_val = np.array(
-        [lookup.get((s, a, k), np.nan) for s, a, k in zip(sym, ann, ly_fy_key)],
-        dtype=float,
-    )
-    ly_same_val = np.array(
-        [lookup.get((s, a, k), np.nan) for s, a, k in zip(sym, ann, ly_same_key)],
-        dtype=float,
-    )
+    keys = df[["symbol", "announce_end_date"]].copy()
+    keys["end_date"] = ly_fy_key
+    ly_fy_val = keys.merge(lookup, on=lookup_cols[:3], how="left")["_v"].to_numpy()
+    keys["end_date"] = ly_same_key
+    ly_same_val = keys.merge(lookup, on=lookup_cols[:3], how="left")["_v"].to_numpy()
 
     current = df[value_col].to_numpy(dtype=float)
     is_fy = month_str == "12"
     formula = current + ly_fy_val - ly_same_val
     annualize_scale = np.array(
-        [_TTM_ANNUALIZE_BY_MONTH.get(m, np.nan) for m in month_str], dtype=float,
+        [TTM_ANNUALIZE_BY_MONTH.get(m, np.nan) for m in month_str], dtype=float,
     )
     fallback = current * annualize_scale
 
@@ -242,6 +231,7 @@ def expand_events_to_dates(
     events: pd.DataFrame,
     trade_dates: pd.Series,
     *,
+    market_storage: MarketStorage,
     value_col: str = "value",
     name: str = "value",
 ) -> pd.Series:
@@ -253,15 +243,14 @@ def expand_events_to_dates(
     next announcement (NULL if still current). The validity interval is
     ``[f_ann_date, next_f_ann_date)`` half-open in trade-date space.
 
-    Returns a ``(date, symbol)``-indexed Series. Implemented via DuckDB's
-    range-join because the equivalent pandas merge_asof + filter is 5-10×
-    slower at our row counts (millions of (date, symbol) pairs).
+    Returns a ``(date, symbol)``-indexed Series. DuckDB's range-join is
+    5–10× faster than the equivalent ``merge_asof + filter`` in pandas
+    at our row counts; we run it on the live ``market_storage.conn`` so
+    we inherit its memory-limit / spill PRAGMAs and avoid the per-call
+    connection setup.
     """
     if events.empty:
         return pd.Series(dtype=float, name=name).rename_axis(["date", "symbol"])
-
-    # Lazy import to keep this module light when DuckDB isn't installed.
-    import duckdb
 
     events = events[["symbol", "f_ann_date", "next_f_ann_date", value_col]].copy()
     events["f_ann_date"] = events["f_ann_date"].astype(str)
@@ -269,21 +258,22 @@ def expand_events_to_dates(
 
     td = pd.DataFrame({"date": pd.to_datetime(trade_dates)})
 
-    con = duckdb.connect()
+    con = market_storage.conn
+    con.register("__events", events)
+    con.register("__td", td)
     try:
-        con.register("events", events)
-        con.register("td", td)
         result = con.execute(f"""
             SELECT td.date, e.symbol, e."{value_col}" AS value
-            FROM td
-            JOIN events e
+            FROM __td td
+            JOIN __events e
               ON td.date >= strptime(e.f_ann_date, '%Y%m%d')
              AND (e.next_f_ann_date IS NULL
                   OR td.date < strptime(e.next_f_ann_date, '%Y%m%d'))
             ORDER BY td.date, e.symbol
         """).fetchdf()
     finally:
-        con.close()
+        con.unregister("__events")
+        con.unregister("__td")
 
     if result.empty:
         return pd.Series(dtype=float, name=name).rename_axis(["date", "symbol"])
@@ -314,7 +304,8 @@ def regress_slope_over_mean(values: np.ndarray) -> float:
     """Slope of ``values`` vs integer time index, scaled by ``|mean(values)|``.
 
     NaN if fewer than 4 valid points or if time variation is degenerate.
-    Used by AGRO/EGRO.
+    Used by AGRO/EGRO when applied to a single time series; the matrix
+    form for many series at once is :func:`event_slope_over_mean`.
     """
     mask = ~np.isnan(values)
     if mask.sum() < 4:
@@ -332,128 +323,6 @@ def regress_slope_over_mean(values: np.ndarray) -> float:
     if mean == 0 or np.isnan(slope):
         return np.nan
     return slope / abs(mean)
-
-
-def pit_quarterly_slope(
-    panel: pd.DataFrame,
-    value_col: str,
-    *,
-    n: int = 20,
-    sign: float = 1.0,
-) -> pd.DataFrame:
-    """PIT-safe per-trade-date slope-over-mean regression on quarterly history.
-
-    For each ``(symbol, trade_date)`` row in ``panel`` (which carries that day's
-    visible quarter history), regress the trailing ``n`` quarters of
-    ``value_col`` on integer time, scale by ``|mean|``, multiply by ``sign``.
-
-    Rows within each ``(symbol, date)`` group are assumed already sorted by
-    ``end_date`` ascending — ``compute_factor`` produces them in that order
-    and ``get_fina_snapshot`` guarantees uniqueness of ``end_date`` per group.
-
-    Event-driven dedup: between two consecutive ``f_ann_date`` announcements
-    for the same symbol, the "trailing 20 quarters visible" set is constant
-    — so the slope is constant. The naive ``groupby(['symbol', 'date'])``
-    recomputes the same number ~245× per year per symbol. Here we group by
-    ``(symbol, max(end_date) per (date, symbol))`` instead: that pair changes
-    only when a new announcement supersedes the previous one, so the number
-    of distinct groups drops from ``N_dates × N_symbols`` (~1.3M/year) to
-    ``N_events ≈ 4 × N_symbols`` (~22k/year) — a 60× reduction in regression
-    calls. Slopes are computed once per unique (symbol, latest_end_date) and
-    merged back to the full panel.
-
-    Returns a frame with columns ``[date, symbol, value]`` carrying one row
-    per ``(date, symbol)``.
-    """
-    df = panel.dropna(subset=[value_col, "end_date"]).copy()
-    if df.empty:
-        return pd.DataFrame(columns=["date", "symbol", "value"])
-
-    df["end_date"] = df["end_date"].astype(str)
-    df = df.sort_values(["symbol", "date", "end_date"]).reset_index(drop=True)
-
-    # The "latest visible announcement" for each (date, symbol) is the
-    # max end_date in its group. (symbol, latest_end_date) is the event
-    # key — slope is constant within an event.
-    df["latest_end_date"] = df.groupby(
-        ["symbol", "date"], sort=False
-    )["end_date"].transform("max")
-
-    # Build the event panel: unique (symbol, latest_end_date) groups, each
-    # carrying the up-to-n quarter history visible at that event. Pick the
-    # first (date) representative of each event to source the history rows.
-    first_date_per_event = df.groupby(
-        ["symbol", "latest_end_date"], sort=False
-    )["date"].transform("min")
-    event_rows = df[df["date"] == first_date_per_event].copy()
-
-    # Cap to last n quarters within each event (defensive — SQL trim
-    # should already have done this).
-    event_rows = event_rows.sort_values(
-        ["symbol", "latest_end_date", "end_date"]
-    ).reset_index(drop=True)
-    event_grp = event_rows.groupby(
-        ["symbol", "latest_end_date"], sort=False
-    )
-    seq = event_grp.cumcount().to_numpy()
-    group_size = event_grp[value_col].transform("size").to_numpy()
-    keep = seq >= np.maximum(group_size - n, 0)
-    event_rows = event_rows.loc[keep].reset_index(drop=True)
-
-    # Recompute group ids on the trimmed event panel for matrix scatter.
-    event_grp = event_rows.groupby(
-        ["symbol", "latest_end_date"], sort=False
-    )
-    seq = event_grp.cumcount().to_numpy()
-    group_id = (seq == 0).cumsum() - 1
-    n_groups = int(group_id.max()) + 1 if len(group_id) else 0
-
-    if n_groups == 0:
-        return pd.DataFrame(columns=["date", "symbol", "value"])
-
-    values = event_rows[value_col].to_numpy(dtype=float)
-    mat = np.full((n_groups, n), np.nan)
-    mat[group_id, seq] = values
-
-    mask = ~np.isnan(mat)
-    n_valid = mask.sum(axis=1).astype(float)
-    x_full = np.broadcast_to(np.arange(n, dtype=float), mat.shape)
-    x = np.where(mask, x_full, 0.0)
-    y = np.where(mask, mat, 0.0)
-
-    sum_x = x.sum(axis=1)
-    sum_y = y.sum(axis=1)
-    sum_xx = (x * x).sum(axis=1)
-    sum_xy = (x * y).sum(axis=1)
-
-    with np.errstate(invalid="ignore", divide="ignore"):
-        mean_x = sum_x / n_valid
-        mean_y = sum_y / n_valid
-        cov_xy = sum_xy / n_valid - mean_x * mean_y
-        var_x = sum_xx / n_valid - mean_x * mean_x
-        slope = cov_xy / var_x
-        score = sign * slope / np.abs(mean_y)
-
-    bad = (n_valid < 4) | (var_x <= 0) | (mean_y == 0) | ~np.isfinite(score)
-    score = np.where(bad, np.nan, score)
-
-    # One row per event: pick first row per group.
-    first_mask = np.r_[True, np.diff(group_id) != 0]
-    event_keys = event_rows.loc[
-        first_mask, ["symbol", "latest_end_date"]
-    ].reset_index(drop=True)
-    event_keys["value"] = score
-
-    # Map slope back to every (date, symbol) row via the (symbol,
-    # latest_end_date) key. Pick first row per (date, symbol) so output
-    # is one row per (date, symbol).
-    panel_keys = df.drop_duplicates(
-        ["symbol", "date"]
-    )[["symbol", "date", "latest_end_date"]].reset_index(drop=True)
-    merged = panel_keys.merge(
-        event_keys, on=["symbol", "latest_end_date"], how="left",
-    )
-    return merged[["date", "symbol", "value"]]
 
 
 def log_return(df: pd.DataFrame, price_col: str = "adj_close") -> pd.Series:

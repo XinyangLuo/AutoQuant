@@ -21,13 +21,8 @@ from backtest.factor.variants import (
 )
 
 
-# Fina-heavy factors (Growth, Quality) build a multi-quarter PIT panel for
-# every (trade_date, symbol) and then groupby-apply Python regressions over
-# it. Even with get_fina_snapshot_range's batched SQL, materializing
-# the full 35-year history in one pandas frame (≈ 40M rows × N columns)
-# pushes peak memory past the OS cap. We chunk the compute window into
-# calendar-year slices and concat the per-chunk outputs — math identical,
-# peak memory bounded to one chunk worth.
+# Non-event-driven fina factors build a per-(date, symbol) panel. Long
+# ranges blow up memory, so split the compute into calendar-year slices.
 _FINA_CHUNK_YEARS = 1
 
 
@@ -109,18 +104,11 @@ def compute_factor(
     needs_factor_store = any(src == "factors_daily" for src in data_sources)
 
     # ``event_driven=True`` in registry parameters lets a fina factor pull
-    # its own per-event data via ``MarketStorage.get_fina_event_panel``
-    # rather than receiving the materialised per-(date, symbol) panel.
-    # Slope / TTM / ratio factors only change on f_ann_date events
-    # (~22k events/year) so computing in event-space and ffill-ing once
-    # is 60× cheaper than the per-(date, symbol) materialisation.
+    # its own per-(symbol, f_ann_date) panel via
+    # ``MarketStorage.get_fina_event_panel`` and skip the per-(date, symbol)
+    # injection + chunking machinery entirely.
     event_driven = bool(params.get("event_driven", False))
 
-    # Long fina ranges: split into calendar-year slices. Each slice's
-    # PIT-snapshot panel and groupby-apply working set fits comfortably in
-    # memory; concatenating per-slice outputs preserves the math.
-    # Event-driven factors don't materialise a heavy panel, so they don't
-    # need the chunking dispatcher.
     if needs_fina and not needs_factor_store and not event_driven:
         start_dt = datetime.strptime(start_date, "%Y%m%d")
         end_dt = datetime.strptime(end_date, "%Y%m%d")

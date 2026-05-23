@@ -179,12 +179,7 @@ def barra_liquidity(
     variant=NONE_VARIANT,
     frequency="D",
     parameters={
-        # Event-driven: factor pulls its own per-(symbol, announcement)
-        # event panel via MarketStorage.get_fina_event_panel rather than
-        # consuming the per-(date, symbol) injection. Slope only changes
-        # on f_ann_date events (~4/year/symbol), so doing math in event
-        # space and ffill-ing once is 60× cheaper than the materialised
-        # per-(date, symbol) path.
+        # See compute.py for what event_driven does.
         "event_driven": True,
     },
 )
@@ -259,10 +254,7 @@ def barra_value(
     variant=NONE_VARIANT,
     frequency="D",
     parameters={
-        # Event-driven: ROA / GP / AGRO each only change on a new
-        # f_ann_date announcement. The factor pulls its own per-event
-        # panels via MarketStorage.get_fina_event_panel and ffills onto
-        # trade dates after computing scalar values per event.
+        # See compute.py for what event_driven does.
         "event_driven": True,
     },
 )
@@ -273,18 +265,25 @@ def barra_quality(
     start_date: str,
     end_date: str,
 ) -> pd.Series:
-    roa = barra_quality_roa(
-        panel, market_storage=market_storage,
+    # Single inc / bs fetch shared across ROA, GP, AGRO — sub-factors
+    # accept pre-fetched panels so we don't re-run the same SQL three
+    # times per backfill call.
+    inc_events = market_storage.get_fina_event_panel(
+        start=start_date, end=end_date,
+        columns=["inc_n_income_attr_p", "inc_revenue", "inc_oper_cost"],
+        last_n_quarters=5,
+    )
+    bs_events = market_storage.get_fina_event_panel(
+        start=start_date, end=end_date,
+        columns=["bs_total_assets"], last_n_quarters=20,
+    )
+    kwargs = dict(
+        market_storage=market_storage,
         start_date=start_date, end_date=end_date,
     )
-    gp = barra_quality_gp(
-        panel, market_storage=market_storage,
-        start_date=start_date, end_date=end_date,
-    )
-    agro = barra_quality_agro(
-        panel, market_storage=market_storage,
-        start_date=start_date, end_date=end_date,
-    )
+    roa = barra_quality_roa(inc_events=inc_events, bs_events=bs_events, **kwargs)
+    gp = barra_quality_gp(inc_events=inc_events, bs_events=bs_events, **kwargs)
+    agro = barra_quality_agro(bs_events=bs_events, **kwargs)
     roa_z = _z(roa, market_storage, start_date=start_date, end_date=end_date)
     gp_z = _z(gp, market_storage, start_date=start_date, end_date=end_date)
     agro_z = _z(agro, market_storage, start_date=start_date, end_date=end_date)

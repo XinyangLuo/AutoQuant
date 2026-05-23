@@ -7,10 +7,15 @@
 
 **Event-driven**: all three sub-factors only change on f_ann_date
 announcements (~4 events/year/symbol). Compute one scalar per event
-per sub-factor, then range-join to trade dates.
+per sub-factor, then range-join to trade dates. The composite
+:func:`barra_quality` fetches the inc / bs event panels once and shares
+them across ROA/GP/AGRO — without sharing each sub-factor re-runs the
+same SQL.
 """
 
 from __future__ import annotations
+
+from typing import Callable
 
 import numpy as np
 import pandas as pd
@@ -25,126 +30,101 @@ from backtest.factor.builtin.barra._common import (
 )
 
 
-def _merge_inc_bs_events(
-    inc_events: pd.DataFrame, bs_per_event: pd.DataFrame,
-) -> pd.DataFrame:
-    """Join an inc event panel with one row-per-event of bs ``total_assets``.
+def _ttm_over_assets(
+    inc_events: pd.DataFrame,
+    bs_events: pd.DataFrame,
+    ttm_cols: list[str],
+    numerator: Callable[[pd.DataFrame], pd.Series],
+    *,
+    market_storage: MarketStorage,
+    start_date: str,
+    end_date: str,
+    name: str,
+) -> pd.Series:
+    """Shared body of ROA / GP: TTM of one or more income cols, then divide
+    by latest total_assets, then expand events to trade dates.
 
-    Matches on (symbol, announce_end_date). The two tables have separate
-    PIT histories — Tushare can publish income and balancesheet on
-    different f_ann_dates for the same end_date — but our event scaffold
-    sources both from each table's own ``get_fina_event_panel`` and
-    aligns on ``announce_end_date``. The result inherits inc's
-    ``(f_ann_date, next_f_ann_date)`` interval since that's the timing
-    that decides when ROA/GP are recomputed for the alpha pipeline.
+    ``numerator(df)`` is invoked on the per-event frame after every TTM
+    column has been added (``f"{c}_ttm"``) and produces the numerator
+    Series (e.g. ``df['inc_revenue_ttm'] - df['inc_oper_cost_ttm']``).
     """
-    bs_per_event = bs_per_event[[
-        "symbol", "announce_end_date", "value",
-    ]].rename(columns={"value": "bs_total_assets"})
-    return inc_events.merge(
-        bs_per_event, on=["symbol", "announce_end_date"], how="left",
+    if inc_events.empty or bs_events.empty:
+        return pd.Series(dtype=float, name=name).rename_axis(["date", "symbol"])
+
+    panel = inc_events
+    for col in ttm_cols:
+        panel = event_ttm(panel, col)
+
+    # Collapse to one row per (symbol, announce_end_date): the row whose
+    # history end_date IS the announcement quarter carries the current
+    # TTM values for that event.
+    cur_mask = panel["announce_end_date"].to_numpy() == panel["end_date"].to_numpy()
+    keep_cols = ["symbol", "announce_end_date", "f_ann_date", "next_f_ann_date"]
+    keep_cols += [f"{c}_ttm" for c in ttm_cols]
+    per_event = panel.loc[cur_mask, keep_cols].reset_index(drop=True)
+
+    ta = event_latest_value(bs_events, "bs_total_assets").rename(
+        columns={"value": "bs_total_assets"},
+    )[["symbol", "announce_end_date", "bs_total_assets"]]
+    merged = per_event.merge(ta, on=["symbol", "announce_end_date"], how="left")
+
+    assets = merged["bs_total_assets"].where(merged["bs_total_assets"] > 0, np.nan)
+    merged["value"] = numerator(merged) / assets
+
+    trade_dates = get_trade_dates(start_date, end_date)
+    return expand_events_to_dates(
+        merged[["symbol", "f_ann_date", "next_f_ann_date", "value"]],
+        pd.Series(trade_dates),
+        market_storage=market_storage, name=name,
     )
 
 
 def barra_quality_roa(
-    panel: pd.DataFrame,
     *,
+    inc_events: pd.DataFrame,
+    bs_events: pd.DataFrame,
     market_storage: MarketStorage,
     start_date: str,
     end_date: str,
 ) -> pd.Series:
-    """Event-driven ROA = TTM net income / latest total assets."""
-    inc_events = market_storage.get_fina_event_panel(
-        start=start_date, end=end_date,
-        columns=["inc_n_income_attr_p"], last_n_quarters=5,
-    )
-    bs_events = market_storage.get_fina_event_panel(
-        start=start_date, end=end_date,
-        columns=["bs_total_assets"], last_n_quarters=1,
-    )
-    if inc_events.empty or bs_events.empty:
-        return pd.Series(dtype=float, name="roa").rename_axis(["date", "symbol"])
-
-    ni_ttm = event_ttm(inc_events, "inc_n_income_attr_p")
-    # Reduce to one row per event (announce_end_date == end_date row).
-    cur_mask = ni_ttm["announce_end_date"].to_numpy() == ni_ttm["end_date"].to_numpy()
-    ni_per_event = ni_ttm.loc[cur_mask, [
-        "symbol", "announce_end_date", "f_ann_date", "next_f_ann_date",
-        "inc_n_income_attr_p_ttm",
-    ]].reset_index(drop=True)
-
-    ta = event_latest_value(bs_events, "bs_total_assets")
-    merged = _merge_inc_bs_events(ni_per_event, ta)
-
-    assets = merged["bs_total_assets"].where(merged["bs_total_assets"] > 0, np.nan)
-    merged["value"] = merged["inc_n_income_attr_p_ttm"] / assets
-
-    trade_dates = get_trade_dates(start_date, end_date)
-    return expand_events_to_dates(
-        merged[["symbol", "f_ann_date", "next_f_ann_date", "value"]],
-        pd.Series(trade_dates), name="roa",
+    return _ttm_over_assets(
+        inc_events, bs_events,
+        ttm_cols=["inc_n_income_attr_p"],
+        numerator=lambda df: df["inc_n_income_attr_p_ttm"],
+        market_storage=market_storage,
+        start_date=start_date, end_date=end_date, name="roa",
     )
 
 
 def barra_quality_gp(
-    panel: pd.DataFrame,
     *,
+    inc_events: pd.DataFrame,
+    bs_events: pd.DataFrame,
     market_storage: MarketStorage,
     start_date: str,
     end_date: str,
 ) -> pd.Series:
-    """Event-driven GP = (TTM revenue − TTM oper_cost) / latest total assets."""
-    inc_events = market_storage.get_fina_event_panel(
-        start=start_date, end=end_date,
-        columns=["inc_revenue", "inc_oper_cost"], last_n_quarters=5,
-    )
-    bs_events = market_storage.get_fina_event_panel(
-        start=start_date, end=end_date,
-        columns=["bs_total_assets"], last_n_quarters=1,
-    )
-    if inc_events.empty or bs_events.empty:
-        return pd.Series(dtype=float, name="gp").rename_axis(["date", "symbol"])
-
-    rev_ttm = event_ttm(inc_events, "inc_revenue")
-    cost_ttm = event_ttm(rev_ttm, "inc_oper_cost")
-    cur_mask = cost_ttm["announce_end_date"].to_numpy() == cost_ttm["end_date"].to_numpy()
-    inc_per_event = cost_ttm.loc[cur_mask, [
-        "symbol", "announce_end_date", "f_ann_date", "next_f_ann_date",
-        "inc_revenue_ttm", "inc_oper_cost_ttm",
-    ]].reset_index(drop=True)
-
-    ta = event_latest_value(bs_events, "bs_total_assets")
-    merged = _merge_inc_bs_events(inc_per_event, ta)
-
-    assets = merged["bs_total_assets"].where(merged["bs_total_assets"] > 0, np.nan)
-    merged["value"] = (
-        merged["inc_revenue_ttm"] - merged["inc_oper_cost_ttm"]
-    ) / assets
-
-    trade_dates = get_trade_dates(start_date, end_date)
-    return expand_events_to_dates(
-        merged[["symbol", "f_ann_date", "next_f_ann_date", "value"]],
-        pd.Series(trade_dates), name="gp",
+    return _ttm_over_assets(
+        inc_events, bs_events,
+        ttm_cols=["inc_revenue", "inc_oper_cost"],
+        numerator=lambda df: df["inc_revenue_ttm"] - df["inc_oper_cost_ttm"],
+        market_storage=market_storage,
+        start_date=start_date, end_date=end_date, name="gp",
     )
 
 
 def barra_quality_agro(
-    panel: pd.DataFrame,
     *,
+    bs_events: pd.DataFrame,
     market_storage: MarketStorage,
     start_date: str,
     end_date: str,
 ) -> pd.Series:
-    """Event-driven AGRO = -slope(20 quarterly total_assets) / |mean|."""
-    bs_events = market_storage.get_fina_event_panel(
-        start=start_date, end=end_date,
-        columns=["bs_total_assets"], last_n_quarters=20,
-    )
     if bs_events.empty:
         return pd.Series(dtype=float, name="agro").rename_axis(["date", "symbol"])
-
-    scored = event_slope_over_mean(
-        bs_events, "bs_total_assets", n=20, sign=-1.0,
-    )
+    scored = event_slope_over_mean(bs_events, "bs_total_assets", n=20, sign=-1.0)
     trade_dates = get_trade_dates(start_date, end_date)
-    return expand_events_to_dates(scored, pd.Series(trade_dates), name="agro")
+    return expand_events_to_dates(
+        scored, pd.Series(trade_dates),
+        market_storage=market_storage, name="agro",
+    )

@@ -46,4 +46,7 @@ def barra_growth_egro(
         history_with_ttm, "inc_basic_eps_ttm", n=20, sign=1.0,
     )
     trade_dates = get_trade_dates(start_date, end_date)
-    return expand_events_to_dates(scored, pd.Series(trade_dates), name="egro")
+    return expand_events_to_dates(
+        scored, pd.Series(trade_dates),
+        market_storage=market_storage, name="egro",
+    )

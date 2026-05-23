@@ -344,19 +344,12 @@ class MarketStorage:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.db_path = DB_PATH
         self.conn = duckdb.connect(str(DB_PATH))
-        # Cap DuckDB's working set well below the OS memory ceiling. The
-        # default (≈ 80% of RAM) lets large analytical queries — notably
-        # range-joins inside get_fina_snapshot_range — bunch up across
-        # back-to-back chunks and OOM the worker before the engine spills.
-        # 6 GiB leaves room for pandas + Python objects on a 16 GB machine
-        # and triggers DuckDB's own spill-to-disk on overshoot.
+        # Cap DuckDB working set + spill to disk on overshoot. Default
+        # is ≈ 80% of RAM which lets range-joins OOM before spilling.
         self.conn.execute("PRAGMA memory_limit='6GB'")
-        # Direct DuckDB to spill query intermediates to disk when memory
-        # pressure rises. This is database-level state — setting it twice
-        # in the same DB file (e.g. when a second MarketStorage opens
-        # mid-process) raises "Cannot switch temporary directory after the
-        # current one has been used"; swallow that and rely on whatever
-        # the first connection configured.
+        # temp_directory is database-level and not re-settable in the
+        # same process; a second MarketStorage in the same run inherits
+        # whatever the first set.
         try:
             self.conn.execute("PRAGMA temp_directory='/tmp/duckdb_spill'")
         except duckdb.NotImplementedException:
@@ -756,14 +749,9 @@ class MarketStorage:
         - **Output size**: a QUALIFY trims final rows to top-N per
           ``(date, symbol)``.
 
-        Internally the date range is split into 2-year sub-windows. A single
-        range-join over ``trade_calendar × versions`` materializes ``N_dates
-        × N_versions`` intermediate rows before QUALIFY trims, and full
-        history (35y × 250 dates × 20 q × 5500 symbols ≈ 1B intermediate
-        rows) crashes DuckDB's planner with OOM even when the final output
-        would be modest. Sub-windowing keeps the planner's working set
-        bounded; concat across windows is cheap (DuckDB writes columnar
-        chunks, pandas does one pass on the result).
+        Internally the date range is split into half-year sub-windows so a
+        single range-join's intermediate (``N_dates × N_versions`` rows
+        before QUALIFY trims) stays under DuckDB's memory limit.
 
         Output columns: ``date, symbol, end_date, <requested cols...>``
         (long format, one row per ``(date, symbol, end_date)``). The three
@@ -773,10 +761,6 @@ class MarketStorage:
         """
         from datetime import datetime as _dt, timedelta as _td
 
-        # Half-year chunks. DuckDB's range-join intermediate for a year of
-        # A-share fina (5500 symbols × 250 dates × 20 quarters ≈ 27M rows)
-        # can push the buffer pool past the 6 GiB limit on chunk 1; halving
-        # makes each chunk easily fit, and concat overhead is negligible.
         _CHUNK_MONTHS = 6
 
         start_dt = _dt.strptime(start, "%Y%m%d")
@@ -864,11 +848,9 @@ class MarketStorage:
         dfs: dict[str, pd.DataFrame] = {}
         for prefix, table in tables.items():
             wanted = per_table_cols[prefix]
-            # Skip tables the caller didn't request any columns from. A
-            # Growth-only factor asking for inc_basic_eps shouldn't pay
-            # for the bs/cf range-join + outer-join (~110s out of the
-            # 175s end-to-end spent in pandas merges per cProfile on a
-            # 1-year window).
+            # Skip tables the caller didn't request any columns from —
+            # avoids the SQL + outer-join cost when only one of inc/bs/cf
+            # is needed.
             if wanted == []:
                 dfs[prefix] = pd.DataFrame()
                 continue
