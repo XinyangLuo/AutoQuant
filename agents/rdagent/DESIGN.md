@@ -1,8 +1,8 @@
 # RD-Agent × AutoQuant 集成设计
 
-> **状态：纯设计稿，代码未落地。**
-> 当前目录除了本文件只有 `prompts/`。`core/` / `scenario.py` / `runner.py` 等全部待实现。
-> 实施顺序见文末「实施顺序」节；总体优先级在根目录 `TODO.md` P3。
+> **状态：代码已落地。**
+> `core/` / `scenario.py` / `runner.py` / `evaluator.py` / `hypothesis.py` / `knowledge.py` / `run.py` / `config.py` 均已完成实现。
+> 实施顺序见文末「实施顺序」节；总体优先级在根目录 `TODO.md` P1。
 
 ## 定位
 

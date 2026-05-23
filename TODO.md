@@ -27,16 +27,36 @@
 - [ ] **P0.6** 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
 - [ ] **P0.7** 端到端验证：用已 admitted 的 Barra L1 因子跑通全链路
 - [ ] **P0.8** `run-all` 中 retry 逻辑落地（step6/7 失败后自动调参重试）
-- [ ] **P0.9** Agent stub (`_agent_stub.py`) 从确定性 fallback 替换为实际 Agent 调用接口
+- [x] **P0.9** Agent 调用接口已落地（`agents.rdagent.run`）
 
 ---
 
 ## P1
 
+### Agent 因子投研系统（`agents/rdagent/`）
+
+> **代码已落地。** 7 个 Phase 全部完成实现。
+> 准入策略：半自动 —— Agent 生成候选列表和审核报告，人工最终确认后 `admit()`。
+> 前置依赖：P0.6~P0.8（pipeline 集成测试 + retry 逻辑）。
+
+- [x] **P1.1** Phase 1: 复制 rdagent/core 抽象基类（Scenario / Proposal / Experiment / Evaluator / Trace / KnowledgeBase）
+- [x] **P1.2** Phase 2: 实现 `AShareQuantScenario` + Prompt 模板（scenario_desc.md）
+- [x] **P1.3** Phase 3: 实现 `AutoQuantFactorExperiment` + `AutoQuantFactorRunner`（对接 compute / evaluate / strategy / simulation / evaluation）
+- [x] **P1.4** Phase 4: 实现 `AutoQuantFactorEvaluator`（指标 → `QuantFeedback`）
+- [x] **P1.5** Phase 5: 实现 `AutoQuantFactorHypothesisGen` + `Hypothesis2Experiment` + 4 个 Prompt 模板
+- [x] **P1.6** Phase 6: 实现 `AShareKnowledgeBase`（经验积累 + 相似案例检索）
+- [x] **P1.7** Phase 7: 实现主循环 `run.py` + CLI 入口 + 审核报告生成
+- [ ] **P1.8** 集成测试：用已知简单因子验证 Runner + Evaluator 全流程
+- [ ] **P1.9** 端到端测试：跑一次 3-round Agent 循环，验证假设 → 代码 → 回测 → 反馈链路
+- [ ] **P1.10** PDF 研报作为种子输入：Claude 多模态 API 读取研报 → 提取因子假设 → 作为 Round-1 seed（`--seed-pdf` / `--seed-pages` CLI）
+- [ ] **P1.11** 文集/批量研报输入：支持目录批量读取多篇研报，提取多因子想法队列逐个跑 Agent 循环（`--seed-dir` CLI）
+
 ### 基础设施
 
 - `pyproject.toml` 落地：便于 `pip install -e .`
-- `environment.yml` 完善：补 ruff/black/matplotlib/httpx/lxml/feedparser 等缺失依赖
+- [x] `environment.yml` 已补 `anthropic` SDK（Agent 投研依赖）
+- `pyproject.toml` 落地：便于 `pip install -e .`
+- `environment.yml` 其他缺失依赖：ruff/black/matplotlib/httpx/lxml/feedparser
 - CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`
 - `allow_short` 默认值改 `False`：A 股不支持做空
 
@@ -66,18 +86,6 @@
 ---
 
 ## P3
-
-### Agent 投研系统 (`agents/rdagent/`)
-
-> 当前只有 DESIGN.md + prompts，代码未实现。
-
-- Phase 1: 复制 `rdagent/core/` 抽象基类到 `agents/rdagent/core/`
-- Phase 2: 实现 `AShareQuantScenario` + Prompt 模板
-- Phase 3: 实现 `AutoQuantFactorExperiment` + `AutoQuantFactorRunner`
-- Phase 4: 实现 `AutoQuantFactorEvaluator`（指标转换）
-- Phase 5: 实现 `HypothesisGen` + `Hypothesis2Experiment`
-- Phase 6: 实现 `AShareKnowledgeBase`
-- Phase 7: 实现主循环 `run.py` + 集成测试
 
 ### 交易模块（第一阶段：信号推送 + 仓位跟踪）
 
