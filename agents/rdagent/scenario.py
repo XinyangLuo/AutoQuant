@@ -107,7 +107,7 @@ class AShareQuantScenario(Scenario):
                 "min_monotonicity": pipe["monotonicity"]["min_monotonicity"],
             },
             "high_bar": {
-                "min_simple_sharpe": 1.0,
+                "min_sharpe_simple": 1.0,
             },
             "primary_horizon": adm["primary_horizon"],
             "ret_type": adm["ret_type"],

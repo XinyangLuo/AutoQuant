@@ -1,0 +1,100 @@
+# AutoQuant 全局配置
+# 回测参数、门控阈值、Agent 投研参数的统一 YAML 配置。
+# 各模块通过 backtest.config_loader 读取，避免在代码中硬编码阈值。
+
+# ---------------------------------------------------------------------------
+# 阈值（单一事实来源）
+# ---------------------------------------------------------------------------
+thresholds:
+
+  # 因子评估参考阈值（admission 人工审核用）
+  admission:
+    min_rankicir: 0.25
+    min_ic_positive_ratio: 0.52
+    max_turnover: 0.50
+    max_corr: 0.85
+    primary_horizon: 20
+    ret_type: open
+    exclude_limit_up: true
+
+  # Pipeline 各 step 自动门控阈值
+  pipeline:
+    # step1: 覆盖率检查
+    coverage:
+      max_missing_rate_pv: 0.10
+      max_missing_rate_fin: 0.30
+
+    # step3: ICIR 检查
+    icir:
+      min_abs_ic: 0.01
+      min_annual_icir: 1.0
+      min_ic_tstat: 2.0
+      min_ic_positive_ratio: 0.55
+
+    # step4: 单调性检查
+    monotonicity:
+      min_monotonicity: 0.7
+
+    # step6: 简单回测
+    simple_backtest:
+      min_sharpe: 0.8
+      min_annual_return: 0.10
+      max_max_drawdown: 0.40
+      min_calmar: 0.5
+      max_annual_turnover: 20.0
+
+    # step7: 详细回测
+    detailed_backtest:
+      min_sharpe: 0.4
+      min_annual_return: 0.08
+      min_calmar: 0.5
+
+  # Agent thresholds are intentionally NOT duplicated here.
+  # Candidate thresholds (rankicir / ic_positive_ratio / turnover / max_corr /
+  # primary_horizon / ret_type / exclude_limit_up) are read from thresholds.admission.
+  # Backtest thresholds (sharpe / drawdown / calmar / turnover) are read from thresholds.pipeline.
+  # Agent-only knobs (high_bar_sharpe / LLM settings) live under the root `agent:` key below.
+
+# ---------------------------------------------------------------------------
+# Pipeline 配置
+# ---------------------------------------------------------------------------
+pipeline:
+  # 评估周期
+  eval_horizons: [1, 5, 10, 20, 60]
+  icir_check_horizons: [1, 5]
+
+  # step2: 中性化验证
+  max_corr_size: 0.05
+  max_corr_industry: 0.05
+  max_corr_existing: 0.5
+
+  # step5: 默认策略配置
+  default_top_pct: 0.1
+  default_decay: 5
+  default_rebalance: 1D
+
+  # retry
+  max_retries: 3
+
+  # 输出
+  ret_type: open
+  benchmark: "000300.SH"
+
+# ---------------------------------------------------------------------------
+# Agent 投研配置
+# ---------------------------------------------------------------------------
+agent:
+  # LLM
+  model: deepseek-chat
+  max_tokens: 4096
+  temperature_hypothesis: 0.7
+  temperature_code: 0.3
+
+  # 运行
+  max_rounds: 10
+  start_date: "20160101"
+  end_date: "20251231"
+  output_dir: results/agent/run_001
+
+  # 因子 ID 命名
+  factor_id_prefix: f_auto

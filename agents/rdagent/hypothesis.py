@@ -95,7 +95,8 @@ def _inject_factor_id(code: str, factor_id: str) -> str:
     modified = False
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef):
-            for dec in node.decorator_list:
+            for i, dec in enumerate(node.decorator_list):
+                # Handle @register("...") or @register(factor_id="...")
                 if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name) and dec.func.id == "register":
                     if dec.args and isinstance(dec.args[0], ast.Constant):
                         dec.args[0] = ast.Constant(value=factor_id)
@@ -106,6 +107,15 @@ def _inject_factor_id(code: str, factor_id: str) -> str:
                                 kw.value = ast.Constant(value=factor_id)
                                 modified = True
                                 break
+                    break
+                # Handle bare @register (no parentheses)
+                elif isinstance(dec, ast.Name) and dec.id == "register":
+                    node.decorator_list[i] = ast.Call(
+                        func=ast.Name(id="register", ctx=ast.Load()),
+                        args=[ast.Constant(value=factor_id)],
+                        keywords=[],
+                    )
+                    modified = True
                     break
             if modified:
                 break

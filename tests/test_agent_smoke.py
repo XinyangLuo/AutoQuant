@@ -242,7 +242,7 @@ def test_checkpoint_save_and_load():
         trace.add(exp, fb)
         candidates = [exp]
 
-        _save_checkpoint(trace, kb, candidates, 3, output_dir)
+        _save_checkpoint(trace, candidates, 3, output_dir)
 
         loaded = _load_checkpoint(output_dir)
         assert loaded is not None

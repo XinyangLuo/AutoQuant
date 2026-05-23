@@ -178,7 +178,13 @@ class AutoQuantFactorRunner:
         # Ensure generated/ is a valid Python package for dynamic imports
         init_file = gen_dir / "__init__.py"
         if not init_file.exists():
-            init_file.write_text("# Auto-generated factor modules\n", encoding="utf-8")
+            try:
+                init_file.write_text("# Auto-generated factor modules\n", encoding="utf-8")
+            except (PermissionError, OSError) as e:
+                raise RuntimeError(
+                    f"Cannot write {init_file}: {e}. "
+                    f"Ensure the directory is writable."
+                )
         file_path = gen_dir / f"{experiment.factor_id}.py"
 
         # Clean up stale module from sys.modules if reusing a factor_id

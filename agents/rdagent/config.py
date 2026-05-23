@@ -65,8 +65,20 @@ def _pipe(section: str, key: str):
         try:
             return get_section("thresholds", "pipeline", section, key)
         except (KeyError, FileNotFoundError):
-            return _PIPELINE_FALLBACKS[section][key]
+            try:
+                return _PIPELINE_FALLBACKS[section][key]
+            except KeyError:
+                raise KeyError(
+                    f"Config key thresholds.pipeline.{section}.{key} not found "
+                    f"and no fallback defined"
+                )
     return _factory
+
+
+# Agent-specific fallback defaults.
+_AGENT_FALLBACKS: dict[str, Any] = {
+    "high_bar_sharpe": 1.0,
+}
 
 
 def _agent_root(key: str):
@@ -75,7 +87,7 @@ def _agent_root(key: str):
         try:
             return get_section("agent", key)
         except (KeyError, FileNotFoundError):
-            return None
+            return _AGENT_FALLBACKS.get(key)
     return _factory
 
 

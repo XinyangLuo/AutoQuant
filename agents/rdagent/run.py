@@ -124,7 +124,6 @@ def run_agent_loop(
         # Try resume from checkpoint
         trace = Trace()
         candidates: list[AutoQuantFactorExperiment] = []
-        round_num = 0
         completed_rounds = 0
 
         if resume:
@@ -183,7 +182,7 @@ def run_agent_loop(
                 )
                 trace.add(experiment, feedback)
                 kb.add_experience(experiment, feedback)
-                _save_checkpoint(trace, kb, candidates, round_num, output_dir)
+                _save_checkpoint(trace, candidates, round_num, output_dir)
                 continue
 
             # 4. Evaluate
@@ -194,7 +193,7 @@ def run_agent_loop(
             kb.add_experience(experiment, feedback)
 
             # 6. Save checkpoint
-            _save_checkpoint(trace, kb, candidates, round_num, output_dir)
+            _save_checkpoint(trace, candidates, round_num, output_dir)
 
             # 7. Print results
             print(f"  RankICIR: {feedback.rankicir:.3f}")
@@ -218,8 +217,9 @@ def run_agent_loop(
     _generate_review_report(candidates, output_dir)
     _save_run_metadata(output_dir, max_rounds, start_date, end_date, len(candidates))
 
+    total_rounds = max(completed_rounds, round_num)
     print(f"\n{'='*60}")
-    print(f"  Run complete: {len(candidates)} candidates from {round_num} rounds")
+    print(f"  Run complete: {len(candidates)} candidates from {total_rounds} rounds")
     print(f"  Report: {output_dir / 'candidates.md'}")
     print(f"{'='*60}")
 
@@ -233,23 +233,27 @@ def run_agent_loop(
 
 def _save_checkpoint(
     trace: Trace,
-    kb: AShareKnowledgeBase,
     candidates: list[AutoQuantFactorExperiment],
     round_num: int,
     output_dir: Path,
 ) -> None:
-    """Save a checkpoint of the current state."""
+    """Save a checkpoint of the current state (atomic write)."""
     checkpoint_dir = output_dir / "checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save trace
-    save_json(trace.to_dict(), checkpoint_dir / f"trace_round_{round_num:03d}.json")
+    # Atomic write for trace
+    trace_path = checkpoint_dir / f"trace_round_{round_num:03d}.json"
+    trace_tmp = trace_path.with_suffix(".tmp")
+    with trace_tmp.open("w", encoding="utf-8") as f:
+        json.dump(trace.to_dict(), f, ensure_ascii=False, indent=2, default=str)
+    os.replace(str(trace_tmp), str(trace_path))
 
-    # Save candidates
-    save_json(
-        [c.to_dict() for c in candidates],
-        checkpoint_dir / f"candidates_round_{round_num:03d}.json",
-    )
+    # Atomic write for candidates
+    cand_path = checkpoint_dir / f"candidates_round_{round_num:03d}.json"
+    cand_tmp = cand_path.with_suffix(".tmp")
+    with cand_tmp.open("w", encoding="utf-8") as f:
+        json.dump([c.to_dict() for c in candidates], f, ensure_ascii=False, indent=2, default=str)
+    os.replace(str(cand_tmp), str(cand_path))
 
 
 def _load_checkpoint(
@@ -271,10 +275,17 @@ def _load_checkpoint(
 
     latest_trace_file = trace_files[-1]
     # Extract round number from filename: trace_round_NNN.json
-    completed_rounds = int(latest_trace_file.stem.split("_")[-1])
+    import re
+    m = re.search(r"_(\d{3,})$", latest_trace_file.stem)
+    if not m:
+        return None
+    completed_rounds = int(m.group(1))
 
     # Load trace with correct factories for subclass round-trip
-    trace_data = json.loads(latest_trace_file.read_text(encoding="utf-8"))
+    try:
+        trace_data = json.loads(latest_trace_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
     trace = Trace.from_dict(
         trace_data,
         experiment_factory=AutoQuantFactorExperiment.from_dict,
@@ -285,8 +296,11 @@ def _load_checkpoint(
     candidates: list[AutoQuantFactorExperiment] = []
     candidate_file = checkpoint_dir / f"candidates_round_{completed_rounds:03d}.json"
     if candidate_file.exists():
-        candidate_data = json.loads(candidate_file.read_text(encoding="utf-8"))
-        candidates = [AutoQuantFactorExperiment.from_dict(c) for c in candidate_data]
+        try:
+            candidate_data = json.loads(candidate_file.read_text(encoding="utf-8"))
+            candidates = [AutoQuantFactorExperiment.from_dict(c) for c in candidate_data]
+        except json.JSONDecodeError:
+            candidates = []
 
     return trace, candidates, completed_rounds
 
@@ -496,6 +510,26 @@ def cmd_admit(args: argparse.Namespace) -> int:
         print(f"Admit failed: {e}", file=sys.stderr)
         return 1
     return 0
+
+
+def _find_factor_code(factor_id: str, run_dir: Path | None = None) -> str | None:
+    """Locate generated factor code on disk.
+
+    Searches the standard generated/ directory and optionally a run-specific dir.
+    """
+    from pathlib import Path
+
+    search_paths: list[Path] = []
+    if run_dir is not None:
+        search_paths.append(run_dir)
+    # Default generated directory
+    search_paths.append(Path(__file__).parent / "generated")
+
+    for base in search_paths:
+        candidate = base / f"{factor_id}.py"
+        if candidate.exists():
+            return candidate.read_text(encoding="utf-8")
+    return None
 
 
 def cmd_reject(args: argparse.Namespace) -> int:

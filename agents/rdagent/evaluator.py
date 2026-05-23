@@ -59,8 +59,9 @@ class QuantFeedback(Feedback):
             "monotonicity": self.monotonicity,
             "ridge_tier": self.ridge_tier,
         }
+        import math
         for k, v in extras.items():
-            if v is not None and v != float("-inf") and v != float("inf"):
+            if v is not None and v != float("-inf") and v != float("inf") and not math.isnan(v):
                 base[k] = v
         return base
 
@@ -131,11 +132,11 @@ class AutoQuantFactorEvaluator(Evaluator):
         sm = experiment.simple_bt_metrics or {}
         dm = experiment.detailed_bt_metrics
 
-        # Extract metrics
-        rankicir = er.get("rankicir", float("-inf"))
-        ic_pos = er.get("ic_positive_ratio", 0.0)
-        turnover = er.get("turnover", float("inf"))
-        max_corr = er.get("max_corr", 0.0)
+        # Extract metrics (guard against explicit None values in dict)
+        rankicir = er.get("rankicir") if er.get("rankicir") is not None else float("-inf")
+        ic_pos = er.get("ic_positive_ratio") if er.get("ic_positive_ratio") is not None else 0.0
+        turnover = er.get("turnover") if er.get("turnover") is not None else float("inf")
+        max_corr = er.get("max_corr") if er.get("max_corr") is not None else 0.0
 
         simple_sharpe = sm.get("sharpe")
         simple_mdd = sm.get("max_drawdown")
