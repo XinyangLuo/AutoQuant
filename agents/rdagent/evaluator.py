@@ -43,9 +43,14 @@ class QuantFeedback(Feedback):
 
     def to_dict(self) -> dict[str, Any]:
         base = super().to_dict()
-        # Add scalar fields that are NOT already in metrics to avoid duplication
-        metrics_keys = set(base.get("metrics", {}).keys())
+        # Always serialize scalar fields at the top level so round-trip works
+        # even when metrics dict was constructed separately (e.g. direct init).
         extras = {
+            "rankicir": self.rankicir,
+            "ic_positive_ratio": self.ic_positive_ratio,
+            "turnover": self.turnover,
+            "max_corr": self.max_corr,
+            "simple_sharpe": self.simple_sharpe,
             "simple_mdd": self.simple_mdd,
             "simple_calmar": self.simple_calmar,
             "detailed_sharpe": self.detailed_sharpe,
@@ -55,7 +60,7 @@ class QuantFeedback(Feedback):
             "ridge_tier": self.ridge_tier,
         }
         for k, v in extras.items():
-            if k not in metrics_keys and v is not None:
+            if v is not None and v != float("-inf") and v != float("inf"):
                 base[k] = v
         return base
 

@@ -57,6 +57,7 @@ def run_agent_loop(
     *,
     agent_config: AgentConfig | None = None,
     seed_hypothesis: Hypothesis | None = None,
+    resume: bool = False,
 ) -> list[AutoQuantFactorExperiment]:
     """Run the agent factor research loop using DeepSeek.
 
@@ -75,6 +76,8 @@ def run_agent_loop(
         If provided, use this as the Round-1 hypothesis instead of asking the
         LLM to generate one.  The LLM will still generate code from your idea.
         Subsequent rounds iterate based on feedback as usual.
+    resume : bool
+        If True, resume from the latest checkpoint in ``output_dir``.
 
     Returns
     -------
@@ -109,7 +112,7 @@ def run_agent_loop(
         min_ic_positive_ratio=cfg.min_ic_positive_ratio,
         max_turnover=cfg.max_turnover,
         max_corr=cfg.max_corr,
-        min_simple_sharpe=cfg.min_simple_sharpe,
+        min_simple_sharpe=cfg.min_sharpe_simple,
     )
 
     with AutoQuantFactorRunner(
@@ -118,12 +121,25 @@ def run_agent_loop(
         results_root=output_dir,
         agent_config=cfg,
     ) as runner:
+        # Try resume from checkpoint
         trace = Trace()
-
         candidates: list[AutoQuantFactorExperiment] = []
         round_num = 0
+        completed_rounds = 0
 
-        for round_num in range(1, max_rounds + 1):
+        if resume:
+            checkpoint = _load_checkpoint(output_dir)
+            if checkpoint:
+                trace, candidates, completed_rounds = checkpoint
+                round_num = completed_rounds
+                print(
+                    f"\n[RESUME] Loaded checkpoint from round {completed_rounds} "
+                    f"with {len(candidates)} candidates"
+                )
+            else:
+                print("\n[RESUME] No checkpoint found, starting from scratch")
+
+        for round_num in range(completed_rounds + 1, max_rounds + 1):
             print(f"\n{'='*60}")
             print(f"  Round {round_num} / {max_rounds}")
             print(f"{'='*60}")
@@ -236,6 +252,45 @@ def _save_checkpoint(
     )
 
 
+def _load_checkpoint(
+    output_dir: Path,
+) -> tuple[Trace, list[AutoQuantFactorExperiment], int] | None:
+    """Load latest checkpoint if exists.
+
+    Returns
+    -------
+    (trace, candidates, completed_rounds) or None
+    """
+    checkpoint_dir = output_dir / "checkpoints"
+    if not checkpoint_dir.exists():
+        return None
+
+    trace_files = sorted(checkpoint_dir.glob("trace_round_*.json"))
+    if not trace_files:
+        return None
+
+    latest_trace_file = trace_files[-1]
+    # Extract round number from filename: trace_round_NNN.json
+    completed_rounds = int(latest_trace_file.stem.split("_")[-1])
+
+    # Load trace with correct factories for subclass round-trip
+    trace_data = json.loads(latest_trace_file.read_text(encoding="utf-8"))
+    trace = Trace.from_dict(
+        trace_data,
+        experiment_factory=AutoQuantFactorExperiment.from_dict,
+        feedback_factory=QuantFeedback.from_dict,
+    )
+
+    # Load candidates from the same round
+    candidates: list[AutoQuantFactorExperiment] = []
+    candidate_file = checkpoint_dir / f"candidates_round_{completed_rounds:03d}.json"
+    if candidate_file.exists():
+        candidate_data = json.loads(candidate_file.read_text(encoding="utf-8"))
+        candidates = [AutoQuantFactorExperiment.from_dict(c) for c in candidate_data]
+
+    return trace, candidates, completed_rounds
+
+
 def _generate_review_report(
     candidates: list[AutoQuantFactorExperiment],
     output_dir: Path,
@@ -334,6 +389,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--min-sharpe", type=float, default=None)
     p_run.add_argument("--high-bar-sharpe", type=float, default=None)
     p_run.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the latest checkpoint in --output-dir.",
+    )
+    p_run.add_argument(
         "--seed",
         default=None,
         help="Seed hypothesis text for Round 1 (e.g. '20-day momentum x volume spike deviation'). "
@@ -368,7 +428,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.max_turnover is not None:
         cfg.max_turnover = args.max_turnover
     if args.min_sharpe is not None:
-        cfg.min_simple_sharpe = args.min_sharpe
+        cfg.min_sharpe_simple = args.min_sharpe
     if args.high_bar_sharpe is not None:
         cfg.high_bar_sharpe = args.high_bar_sharpe
 
@@ -392,6 +452,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             output_dir=Path(args.output_dir),
             agent_config=cfg,
             seed_hypothesis=seed,
+            resume=args.resume,
         )
     except RuntimeError as e:
         print(f"Error: {e}", file=sys.stderr)

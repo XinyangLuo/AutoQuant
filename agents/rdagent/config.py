@@ -5,12 +5,13 @@ with the pipeline / admission configs.  Callers can override any field at
 construction time.
 
 **Candidate thresholds** (RankICIR / IC+ / turnover / max-corr / horizon /
-ret-type) are drawn from ``thresholds.admission`` — the agent's candidate bar
-is the same as the admission reference bar, so they are not duplicated in
-``thresholds.agent``.
+ret-type) are drawn from ``thresholds.admission``.
 
 **Backtest thresholds** (Sharpe / drawdown / Calmar / turnover) are drawn from
-``thresholds.agent`` where they align with the pipeline gates.
+``thresholds.pipeline`` — the agent uses the same gates as the pipeline.
+
+There is **no** ``thresholds.agent`` section; agent-specific knobs (high bar,
+LLM settings) live under the root ``agent:`` key.
 """
 
 from __future__ import annotations
@@ -28,18 +29,23 @@ _ADM_FALLBACKS: dict[str, Any] = {
     "max_turnover": 0.5,
     "max_corr": 0.85,
     "primary_horizon": 20,
-    "ret_type": "close",
+    "ret_type": "open",
     "exclude_limit_up": True,
 }
 
-_AGENT_FALLBACKS: dict[str, Any] = {
-    "min_sharpe_simple": 0.5,
-    "min_sharpe_detailed": 0.5,
-    "min_annual_return_detailed": 0.05,
-    "max_max_drawdown": 0.25,
-    "min_calmar_simple": 0.5,
-    "max_annual_turnover": 10.0,
-    "high_bar_sharpe": 1.0,
+_PIPELINE_FALLBACKS: dict[str, Any] = {
+    "simple_backtest": {
+        "min_sharpe": 0.8,
+        "min_annual_return": 0.10,
+        "max_max_drawdown": 0.40,
+        "min_calmar": 0.5,
+        "max_annual_turnover": 20.0,
+    },
+    "detailed_backtest": {
+        "min_sharpe": 0.4,
+        "min_annual_return": 0.08,
+        "min_calmar": 0.5,
+    },
 }
 
 
@@ -53,13 +59,13 @@ def _adm(key: str):
     return _factory
 
 
-def _agent_th(key: str):
-    """Helper: read from ``config.yaml thresholds.agent``."""
+def _pipe(section: str, key: str):
+    """Helper: read from ``config.yaml thresholds.pipeline.<section>``."""
     def _factory():
         try:
-            return get_section("thresholds", "agent", key)
+            return get_section("thresholds", "pipeline", section, key)
         except (KeyError, FileNotFoundError):
-            return _AGENT_FALLBACKS[key]
+            return _PIPELINE_FALLBACKS[section][key]
     return _factory
 
 
@@ -77,8 +83,9 @@ def _agent_root(key: str):
 class AgentConfig:
     """Top-level agent configuration.
 
-    Candidate thresholds come from ``thresholds.admission`` (single source).
-    Backtest / agent-specific thresholds come from ``thresholds.agent``.
+    Candidate thresholds  → ``thresholds.admission``.
+    Backtest thresholds   → ``thresholds.pipeline``.
+    Agent-only knobs      → root ``agent`` key.
     """
 
     # ---- candidate thresholds (from thresholds.admission) -----------------
@@ -90,20 +97,23 @@ class AgentConfig:
     ret_type: str = field(default_factory=_adm("ret_type"))
     exclude_limit_up: bool = field(default_factory=_adm("exclude_limit_up"))
 
-    # ---- backtest thresholds (from thresholds.agent) ----------------------
-    min_sharpe_simple: float = field(default_factory=_agent_th("min_sharpe_simple"))
-    min_sharpe_detailed: float = field(default_factory=_agent_th("min_sharpe_detailed"))
-    min_annual_return_detailed: float = field(default_factory=_agent_th("min_annual_return_detailed"))
-    max_max_drawdown: float = field(default_factory=_agent_th("max_max_drawdown"))
-    min_calmar_simple: float = field(default_factory=_agent_th("min_calmar_simple"))
-    max_annual_turnover: float = field(default_factory=_agent_th("max_annual_turnover"))
+    # ---- backtest thresholds (from thresholds.pipeline) -------------------
+    min_sharpe_simple: float = field(default_factory=_pipe("simple_backtest", "min_sharpe"))
+    min_sharpe_detailed: float = field(default_factory=_pipe("detailed_backtest", "min_sharpe"))
+    min_annual_return_detailed: float = field(
+        default_factory=_pipe("detailed_backtest", "min_annual_return")
+    )
+    max_max_drawdown: float = field(
+        default_factory=_pipe("simple_backtest", "max_max_drawdown")
+    )
+    min_calmar_simple: float = field(default_factory=_pipe("simple_backtest", "min_calmar"))
+    max_annual_turnover: float = field(
+        default_factory=_pipe("simple_backtest", "max_annual_turnover")
+    )
 
     # ---- agent-specific ---------------------------------------------------
-    #: Candidate threshold for simple Sharpe (alias, same as pipeline step6).
-    min_simple_sharpe: float = field(default_factory=_agent_th("min_sharpe_simple"))
-
-    #: High-bar early-stop threshold.
-    high_bar_sharpe: float = field(default_factory=_agent_th("high_bar_sharpe"))
+    #: High-bar early-stop threshold (from root ``agent:`` key).
+    high_bar_sharpe: float = field(default_factory=_agent_root("high_bar_sharpe"))
 
     #: Frequency-aware factory — see ``PipelineConfig.for_frequency``.
     frequency: str = "D"
@@ -119,6 +129,12 @@ class AgentConfig:
             except (KeyError, FileNotFoundError):
                 return _ADM_FALLBACKS[key]
 
+        def _safe_pipe(section: str, key: str):
+            try:
+                return get_section("thresholds", "pipeline", section, key)
+            except (KeyError, FileNotFoundError):
+                return _PIPELINE_FALLBACKS[section][key]
+
         return cls(
             min_rankicir=_safe_adm("min_rankicir"),
             min_ic_positive_ratio=_safe_adm("min_ic_positive_ratio"),
@@ -126,12 +142,11 @@ class AgentConfig:
             max_corr=pipeline_config.max_corr_existing,
             primary_horizon=_safe_adm("primary_horizon"),
             ret_type=pipeline_config.ret_type,
-            min_sharpe_simple=th.min_sharpe_simple,
-            min_simple_sharpe=th.min_sharpe_simple,
-            max_max_drawdown=th.max_max_drawdown,
-            min_calmar_simple=th.min_calmar_simple,
-            max_annual_turnover=th.max_annual_turnover,
-            min_sharpe_detailed=th.min_sharpe_detailed,
-            min_annual_return_detailed=th.min_annual_return_detailed,
+            min_sharpe_simple=_safe_pipe("simple_backtest", "min_sharpe"),
+            min_sharpe_detailed=_safe_pipe("detailed_backtest", "min_sharpe"),
+            min_annual_return_detailed=_safe_pipe("detailed_backtest", "min_annual_return"),
+            max_max_drawdown=_safe_pipe("simple_backtest", "max_max_drawdown"),
+            min_calmar_simple=_safe_pipe("simple_backtest", "min_calmar"),
+            max_annual_turnover=_safe_pipe("simple_backtest", "max_annual_turnover"),
             frequency=pipeline_config.frequency,
         )

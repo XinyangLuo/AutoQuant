@@ -175,6 +175,10 @@ class AutoQuantFactorRunner:
         # Write to generated/ directory
         gen_dir = Path(__file__).parent / "generated"
         gen_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure generated/ is a valid Python package for dynamic imports
+        init_file = gen_dir / "__init__.py"
+        if not init_file.exists():
+            init_file.write_text("# Auto-generated factor modules\n", encoding="utf-8")
         file_path = gen_dir / f"{experiment.factor_id}.py"
 
         # Clean up stale module from sys.modules if reusing a factor_id
@@ -328,12 +332,12 @@ class AutoQuantFactorRunner:
         """Run detailed backtest only if factor passes initial thresholds."""
         cfg = self.agent_config
         min_rankicir = getattr(cfg, "min_rankicir", 0.25) if cfg else 0.25
-        min_simple_sharpe = getattr(cfg, "min_simple_sharpe", 0.5) if cfg else 0.5
+        min_sharpe_simple = getattr(cfg, "min_sharpe_simple", 0.5) if cfg else 0.5
 
         rankicir = experiment.eval_result.get("rankicir", float("-inf"))
         simple_sharpe = (experiment.simple_bt_metrics or {}).get("sharpe", 0.0)
 
-        if rankicir < min_rankicir or simple_sharpe < min_simple_sharpe:
+        if rankicir < min_rankicir or simple_sharpe < min_sharpe_simple:
             return  # Skip detailed backtest
 
         config = self._build_strategy_config(strategy_config, experiment.factor_id)
