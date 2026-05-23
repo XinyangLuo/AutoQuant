@@ -178,6 +178,7 @@ def barra_liquidity(
     ),
     variant=NONE_VARIANT,
     frequency="D",
+    parameters={"fina_columns": ["inc_basic_eps"]},
 )
 def barra_growth(
     panel: pd.DataFrame,
@@ -208,6 +209,10 @@ def barra_growth(
     ),
     variant=NONE_VARIANT,
     frequency="D",
+    parameters={"fina_columns": [
+        "inc_n_income_attr_p",
+        "bs_total_hldr_eqy_inc_min_int",
+    ]},
 )
 def barra_value(
     panel: pd.DataFrame,
@@ -242,6 +247,12 @@ def barra_value(
     ),
     variant=NONE_VARIANT,
     frequency="D",
+    parameters={"fina_columns": [
+        "inc_n_income_attr_p",
+        "inc_revenue",
+        "inc_oper_cost",
+        "bs_total_assets",
+    ]},
 )
 def barra_quality(
     panel: pd.DataFrame,

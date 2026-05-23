@@ -84,10 +84,17 @@ def compute_factor(
             # Financial data requires per-date PIT snapshots.
             # We fetch the snapshot for each trade date in the range and
             # concatenate them into a single (date, symbol) panel.
+            # Optional ``fina_columns`` in registry parameters lets the factor
+            # restrict the snapshot to the columns it actually reads — without
+            # it each snapshot pulls all ~330 fina columns and the concatenated
+            # panel blows up memory on long ranges.
+            fina_cols = params.get("fina_columns")
             trade_dates = get_trade_dates(start_date, end_date)
             fina_dfs: list[pd.DataFrame] = []
             for date in trade_dates:
-                snap = market_storage.get_fina_snapshot(as_of_date=date)
+                snap = market_storage.get_fina_snapshot(
+                    as_of_date=date, columns=fina_cols,
+                )
                 if not snap.empty:
                     snap["date"] = pd.Timestamp(date)
                     fina_dfs.append(snap)

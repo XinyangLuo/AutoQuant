@@ -606,12 +606,32 @@ class MarketStorage:
         end_type / update_flag`` 等 meta 与数值列)自动加 ``inc_/bs_/cf_`` 前缀。
         三表 outer-join 仅依据 ``(symbol, end_date)``,因为多 ``report_type`` 共存下
         三表各自的 meta 不必相同(例如 inc 取到 type=4 而 bs 仍是 type=1)。
+
+        ``columns`` 按 ``inc_/bs_/cf_`` 前缀指定要返回的数值列,推到 SQL 层只读
+        必要列(避免每个快照都加载 330 列)。``end_date`` 永远保留。
         """
         tables = {
             "inc": "income_q",
             "bs": "balancesheet_q",
             "cf": "cashflow_q",
         }
+
+        # Decide per-table column whitelist from the requested prefixed names.
+        # If columns is None we keep the SELECT * behaviour for back-compat.
+        per_table_cols: dict[str, list[str] | None] = {}
+        if columns:
+            for prefix in tables:
+                wanted = [
+                    c.removeprefix(f"{prefix}_") for c in columns
+                    if c.startswith(f"{prefix}_")
+                ]
+                # Always need the join keys and end_date is part of them already.
+                # f_ann_date / update_flag are needed for the QUALIFY; we pull
+                # them then drop afterwards if the caller didn't ask.
+                per_table_cols[prefix] = wanted
+        else:
+            for prefix in tables:
+                per_table_cols[prefix] = None
 
         symbol_filter = ""
         params = [as_of_date]
@@ -623,8 +643,23 @@ class MarketStorage:
         join_keys = set(_FINA_JOIN_KEYS)
         dfs: dict[str, pd.DataFrame] = {}
         for prefix, table in tables.items():
+            wanted = per_table_cols[prefix]
+            if wanted is None:
+                select_clause = "*"
+            else:
+                # Always include join keys + QUALIFY-required columns.
+                # f_ann_date and update_flag drive the row-number window.
+                needed = list(_FINA_JOIN_KEYS) + ["f_ann_date", "update_flag"] + wanted
+                # Dedupe while preserving order.
+                seen: set[str] = set()
+                kept: list[str] = []
+                for c in needed:
+                    if c not in seen:
+                        kept.append(c)
+                        seen.add(c)
+                select_clause = ", ".join(f'"{c}"' for c in kept)
             sql = f"""
-                SELECT *
+                SELECT {select_clause}
                 FROM {table}
                 WHERE f_ann_date <= ? {symbol_filter}
                 QUALIFY ROW_NUMBER() OVER (
