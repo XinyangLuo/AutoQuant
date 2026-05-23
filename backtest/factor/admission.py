@@ -54,17 +54,21 @@ from backtest.factor.registry import (
 from backtest.factor.storage import FactorLibrary, FactorStorage
 from backtest.factor.variants import CATEGORY_BARRA_L1
 
-# Reference thresholds — purely informational. ``evaluation`` may print
-# "passes / does not pass" relative to these to help a human decide, but
-# nothing in admission gates against them. Adjust freely.
+# Reference thresholds — read from config.yaml (single source of truth).
+# ``evaluation`` may print "passes / does not pass" relative to these to
+# help a human decide, but nothing in admission gates against them.
+from backtest.config_loader import get_admission_thresholds
+
+_RECOMMENDED = get_admission_thresholds()
+
 RECOMMENDED_THRESHOLDS: dict[str, float | int | str | bool] = {
-    "min_rankicir": 0.25,
-    "min_ic_positive_ratio": 0.52,
-    "max_turnover": 0.5,
-    "max_corr": 0.85,
-    "primary_horizon": 20,
-    "ret_type": "open",
-    "exclude_limit_up": True,
+    "min_rankicir": _RECOMMENDED["min_rankicir"],
+    "min_ic_positive_ratio": _RECOMMENDED["min_ic_positive_ratio"],
+    "max_turnover": _RECOMMENDED["max_turnover"],
+    "max_corr": _RECOMMENDED["max_corr"],
+    "primary_horizon": _RECOMMENDED["primary_horizon"],
+    "ret_type": _RECOMMENDED["ret_type"],
+    "exclude_limit_up": _RECOMMENDED["exclude_limit_up"],
 }
 
 STATUS_ADMITTED = "admitted"
