@@ -2,57 +2,48 @@
 
 > 临时工单池。每项完成后从本文件删除；全部完成后删除整份 TODO.md。
 > 分级：P0=立刻/阻塞，P1=依赖 P0，P2=有价值但不紧急，P3=维护/锦上添花，P4=远期/想法池
-> 创建时间: 2026-05-18
-> 上次整理: 2026-05-22
+> 上次整理: 2026-05-23
 
 ---
 
 ## P0
 
-### 基本面因子修正 (Shi Chuan 4-case framework)
+### 完成 Barra L1 风险因子全量入库
 
-> 设计文档：[`backtest/data/DESIGN.md`](backtest/data/DESIGN.md) §"财报数据使用指南"。
-> 实证表明 `update_flag` 不可靠（920522.BJ / 920663.BJ 案例），`f_ann_date` 才是唯一可靠版本时间戳。只要 fetch 入库 `report_type ∈ {1,2,3,4,5}` + PK 加 `report_type` 不互覆盖，按 `f_ann_date DESC` 取最新即自然实现石川 4-case 框架。单季度推导 / TTM / YoY 不在 data 层完成，由因子层 `transforms.py` 助手函数承担。
+> 7 个 Barra L1 中 5 个已 admitted（Size / Beta / Momentum / Liquidity / Value），Growth / Quality 当前正在跑全历史 chunked backfill（PID 50582）。
+> 完成判定：`registry.json` 7 个均 `status=admitted`；`factor_library.duckdb` 含 7 列。
 
-**Round 1 — data 层（fetch + storage + snapshot）**
+- [ ] **P0.1** 等 `f_barra_growth` + `f_barra_quality` 全量 backfill 完成
+- [ ] **P0.2** 跑 admission：`for f in f_barra_growth f_barra_quality; do python -m backtest.factor.admission admit "$f"; done`
+- [ ] **P0.3** 验证 `python -m backtest.factor.admission status` 7/7 admitted；smoke test 一个 alpha 走 `barra_ind_size` pipeline
 
-- [x] **P0.1 fetch 放宽 report_type**：`backtest/data/fetcher/fundamentals_fetcher.py` `_keep_consolidated` 改为保留 `report_type ∈ {1, 2, 3, 4, 5}`（合并口径全集，剔除母公司 6 / 11 / 12）。
-- [x] **P0.2 PK 加 report_type**：`backtest/data/storage.py` 三张表 PK 改为 `(symbol, end_date, f_ann_date, update_flag, report_type)`。DuckDB 不支持 `ALTER PRIMARY KEY`，init 时检测旧 schema 则 drop 三表，由 backfill 重拉。
-- [x] **P0.3 snapshot 保持现状**：`get_fina_snapshot` 维持 `WHERE f_ann_date <= ? + QUALIFY ROW_NUMBER OVER (... ORDER BY f_ann_date DESC, update_flag DESC) = 1`，不引入 CASE-rank。同步把 outer-join key 从 8 列收窄到 `(symbol, end_date)`，避免 multi-type 共存时三表 meta 不同导致 join 裂行。
-- [ ] **P0.4 backfill 全量重拉**：代码提交后由用户手动跑 `python -m backtest.data.backfill.fundamentals`（或重新 `cold_start`）。
+### 基本面因子测试覆盖
 
-**Round 2 — factor 层（助手函数 + 因子迁移）**
+- [ ] **P0.4** Round 1 测试：multi-type fetch + 5-列 PK + snapshot 行为
+- [ ] **P0.5** Round 2 测试：`transforms.single_quarter` / `ttm` / `yoy` 三个助手函数
 
-- [x] **P0.5 transforms 助手**：`backtest/factor/transforms.py` 新增 `single_quarter(panel, value_col)` / `ttm(panel, value_col, kind='flow'|'stock')` / `yoy(panel, value_col)`，基于 PIT 多期快照。
-- [x] **P0.6 Barra 因子迁移**：`quality.py` ROA / GP、`value.py` ETOP 从 `annualize_ytd` 改用 `ttm`；`growth.py` EGRO 改为 TTM EPS → slope（修复累计 EPS 锯齿对 OLS 的扰动）。同时删除 `_common.py:annualize_ytd`（无引用）。
-- [ ] **P0.7 测试覆盖**：Round 1 验证 multi-type fetch + 5-列 PK + snapshot 行为；Round 2 验证 transforms 助手（单季度公式 / TTM 公式 / YoY）。
+### 因子挖掘 pipeline 剩余项
 
-### 因子挖掘流程优化 — 剩余项
-
-- [ ] 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
-- [ ] 端到端验证：用已有 Barra L1 因子跑通全链路
-- [ ] retry 逻辑在 `run-all` 中落地（step6/7 失败后自动调参重试）
-- [ ] Agent stub (`_agent_stub.py`) 从确定性 fallback 替换为实际 Agent 调用接口
+- [ ] **P0.6** 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
+- [ ] **P0.7** 端到端验证：用已 admitted 的 Barra L1 因子跑通全链路
+- [ ] **P0.8** `run-all` 中 retry 逻辑落地（step6/7 失败后自动调参重试）
+- [ ] **P0.9** Agent stub (`_agent_stub.py`) 从确定性 fallback 替换为实际 Agent 调用接口
 
 ---
 
 ## P1
 
-### 文档更新，目录整理
-- 整理下目录结构，使其更合理
-- 更新所有文档使其与代码匹配，删掉已经废弃的功能
-
 ### 基础设施
 
 - `pyproject.toml` 落地：便于 `pip install -e .`
-- `environment.yml` 完善：补充 ruff/black/matplotlib/httpx/lxml/feedparser 等缺失依赖
+- `environment.yml` 完善：补 ruff/black/matplotlib/httpx/lxml/feedparser 等缺失依赖
 - CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`
 - `allow_short` 默认值改 `False`：A 股不支持做空
 
 ### 数据模块扩展
 
-- 指数成分股表：`index_members`(symbol, index_code, trade_date, weight)
-- `get_fina_snapshot_range(start, end)`：区间批量 join，替换当前每个 trade_date 单查再 concat 的模式
+- 指数成分股表：`index_members(symbol, index_code, trade_date, weight)`
+- `get_fina_snapshot_range(start, end)`：区间批量 join，替换当前每个 trade_date 单查再 concat 的模式（性能瓶颈，全量 backfill 一个因子 30+ 分钟主因）
 
 ---
 
@@ -62,7 +53,7 @@
 
 - `FactorStorage.get_factors_wide(factor_ids, start, end)`：单次 SQL 出 7 列对齐宽表，消除 Ridge check 6× DuckDB 往返 + ~5× 1.4GB 峰值
 - `_pooled_r2` 用 numpy 切 aligned arrays 替代 `merge + dropna` 双拷贝（依赖 `get_factors_wide`）
-- `compute.py` 财务因子 panel 拼接走流式（或 `get_fina_snapshot_range`）
+- `compute.py` 财务因子 panel 拼接走流式（依赖 `get_fina_snapshot_range`）
 - `momentum.py:_ewm_log_return_sum` 的 `rolling.apply` 用 `sliding_window_view` 向量化
 - backfill 多因子并行：`ProcessPoolExecutor` 并发跑独立因子
 - `cs_mad_winsorize` / `cs_zscore` 等从 `groupby.apply` 改为 `groupby.transform` + numpy 直算
@@ -71,13 +62,15 @@
 
 ### 因子库可视化
 
-- 所有因子报告整合成 web 浏览页面。详见 PLAN.md §5。
+- 所有因子报告整合成 web 浏览页面
 
 ---
 
 ## P3
 
-### Agent 投研系统（`agents/rdagent/`）
+### Agent 投研系统 (`agents/rdagent/`)
+
+> 当前只有 DESIGN.md + prompts，代码未实现。
 
 - Phase 1: 复制 `rdagent/core/` 抽象基类到 `agents/rdagent/core/`
 - Phase 2: 实现 `AShareQuantScenario` + Prompt 模板
@@ -101,10 +94,14 @@
 - 滚动 IS/OOS
 - Brinson 归因（依赖 sw_industry + index_members）
 
+---
+
+## P4
+
 ### 数据模块远期
 
 - 分钟级数据：parquet 格式设计与接入
-- 分钟级数据 → 天级因子合成（PLAN.md §6，依赖上一项）
+- 分钟级数据 → 天级因子合成（依赖上一项）
 
 ### 因子挖掘 pipeline 第二阶段
 

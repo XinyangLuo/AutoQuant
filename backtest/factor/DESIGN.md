@@ -48,27 +48,17 @@ backtest/factor/
 
 ### 中性化变体（variant）
 
-每个因子在 registry 中声明若干「中性化变体」`(industry, cap)`，backfill 时按声明做 fan-out，各 variant **并存** 于 `factors_daily`（PK 加 `variant`）。
+每个因子在 registry 中记录**一个** `variant` 标签 —— 它描述了 compute → apply pipeline 用的是哪条后处理路径。值已经 baked-in，存 `factors_daily` 只占一列。
 
-variant 是因子的一部分 —— 不同 variant 是不同的「因子样貌」，评测、admission、策略消费都按 variant 独立进行，不跨 variant 转换。
-
-| 维度 | 取值 | variant token |
+| variant | pipeline | 用途 |
 |---|---|---|
-| industry | `None` / `"SW-L1"` / `"SW-L2"` | `none` / `swl1` / `swl2` |
-| cap | `None` / `"circ_mv-q5"` / `"circ_mv-q10"` / `"total_mv-q5"` / `"total_mv-q10"` | `none` / `capq5` / `capq10` / `totalq5` / `totalq10` |
+| `none` | 直通：compute 返回什么就存什么 | Barra L1 composite（内部对每个 L3 分量自己跑过 L3 pipeline 再等权平均） |
+| `barra_l3` | MAD winsorize → SW-L1 行业中位数填充 → cs_zscore | 风格暴露因子。Barra L1 composite 内部即时调用，**不**留库 |
+| `barra_ind_size` | 上面三步 + 截面 OLS 对 (industry dummies + Size_z) 取残差 → 再 cs_zscore | **用户 alpha 默认** —— 剥离行业 + 市值风格暴露，剩纯 alpha |
 
-variant 字符串 = `"<industry>_<cap>"`，例：`swl2_capq5` / `swl1_totalq10`。特例：`"raw"` ≡ `"none_none"`。
+`DEFAULT_VARIANT = "barra_ind_size"`，未显式声明的 `@register` 因子自动走这条路径。Size_z 来自 `f_barra_size`（已 admitted 到 library），因此 `f_barra_size` 是 alpha pipeline 的硬依赖。
 
-合法组合数：3 × 5 = **15**。`@register` 通过 `neutralizations=[...]` 声明子集，**默认 2 个**：
-
-```python
-[
-    {"industry": None,    "cap": None},          # → "raw"
-    {"industry": "SW-L2", "cap": "circ_mv-q5"},  # → "swl2_capq5"，baseline
-]
-```
-
-`BASELINE_VARIANT = "swl2_capq5"`（申万 2 级 + 流通市值 5 等分）是 evaluation / strategy 默认消费的口径。要加变体就改 registry 重跑 backfill，不会预先把 15 种都算。
+要切换 variant：重跑 `backfill`，列上的值被覆盖即可（PK 是 `(date, symbol)`，没有 variant 维度）。
 
 ### 因子定义
 
@@ -82,15 +72,14 @@ from backtest.factor import register
     data_sources=["market_daily"],
     description="20日收益率动量因子",
     parameters={"window": 20},
-    neutralizations=[
-        {"industry": None,    "cap": None},
-        {"industry": "SW-L2", "cap": "circ_mv-q5"},
-    ],  # 可省，省略时用默认 2 变体
+    # variant 默认 "barra_ind_size"，alpha 因子无需声明。
+    # 风格因子（Barra L1 composite）显式声明 variant="none"。
 )
 def momentum_20d(panel: pd.DataFrame) -> pd.Series:
     """
     panel: get_bars() 返回的宽 DataFrame，含 'close' 等列
-    返回: MultiIndex (date, symbol) 的 Series（raw 值，中性化由 backfill 做）
+    返回: MultiIndex (date, symbol) 的 Series（raw 值；中性化 pipeline 由
+          apply_variant_pipeline 在 backfill 后做，不是 compute 函数自己做）
     """
     return panel["close"] / panel["close"].shift(20) - 1
 ```
@@ -151,7 +140,7 @@ z60 = z_score(raw_series, window=60, min_periods=20)
 
 #### 中性化算子
 
-由 `backfill.fan_out` 内部调用，用户通常**不直接调用** —— 在 `@register(neutralizations=[...])` 中声明即可。
+`industry_neutralize` / `cap_neutralize` 是历史算子，**当前 pipeline 已不用**——`barra_l3` / `barra_ind_size` 直接走 `cs_mad_winsorize` + `industry_median_fill` + `cs_zscore` + `cs_ols_residualize`，逻辑都在 `compute.apply_variant_pipeline` 里。这两个算子保留作为低阶工具，写非标准 pipeline 时仍可用：
 
 ```python
 ind_neutral = industry_neutralize(raw_series, industry_panel)
@@ -163,52 +152,50 @@ cap_neutral = cap_neutralize(raw_series, cap_panel, cap_field='circ_mv', quantil
 ```
 ┌──────────────────────────────────────────────────────┐
 │ data/duckdb/factors_pending.duckdb                   │  ← FactorStorage (work)
-│                                                      │     · backfill / compute 写入（各 variant 并存）
+│                                                      │     · backfill / compute 写入
 │  factors_daily                                       │     · evaluation 读取
-│  (date, symbol, factor_id, variant,                  │     · admit(variant) 后清空该 variant 行
-│   value, ann_date, f_ann_date)                       │     · 没有 status='admitted' 的概念
-│  PK (date, symbol, factor_id, variant)               │
+│  (date DATE, symbol VARCHAR,                         │     · admit() 后该列被迁移走
+│   f_xxx_1 DOUBLE, f_xxx_2 DOUBLE, ...)              │     · 任意代码可写
+│  PK (date, symbol)                                   │
+│  每个 factor_id 一列。加因子 = ALTER TABLE ADD COLUMN│
 └──────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────┐
 │ data/duckdb/factor_library.duckdb                    │  ← FactorLibrary (library)
-│                                                      │     · 只有 admit(variant) 写入
-│  factors_daily (same schema)                         │     · evaluation 的 corr 比较读这里
+│                                                      │     · 只有 admit() 写入
+│  factors_daily (same schema)                         │     · FactorLibrary.insert_factors
+│                                                      │       强制 status='admitted' 不变量
+│                                                      │     · evaluation 的 corr 比较读这里
 │                                                      │     · update 增量维护
-│                                                      │     · delete_factor() 被禁用 (append-only)
+│                                                      │     · delete_factor 被禁用 (append-only)
 └──────────────────────────────────────────────────────┘
 ```
 
-**Schema 完全一致**，区别只在数据生命周期：work 是研究 churn，library 是已稳定的事实。
-
-`ann_date` / `f_ann_date` 仅用于财务因子溯源，非财务因子留空。
+**Schema 完全一致**（宽表，PK `(date, symbol)`，每个 factor_id 占一列），区别只在数据生命周期：work 是研究 churn，library 是已稳定的事实。PIT 元数据（`ann_date` / `f_ann_date`）不在因子表里——隔离由 `compute.py` 调 `get_fina_snapshot(D)` 时上游保证，审计追溯走 market.duckdb 的财报表。
 
 ## 使用方式
 
 ### 1. 回填（写 work DB）
 
 ```bash
-# 单因子回填所有声明的变体（默认 raw + swl2_capq5）
+# 单因子回填
 python -m backtest.factor.backfill f_001
 
 # 测试模式（最近 60 个交易日）
 python -m backtest.factor.backfill f_001 --test-days 60
 
-# 所有 pending 因子（任一 variant 未 admit、未 reject）批量回填到 work
+# 所有 pending 因子（未 admit、未 reject）批量回填到 work
 python -m backtest.factor.backfill --pending
 ```
 
 ### 2. 离线评测（读 work + library）
 
 ```bash
-# 默认评测 baseline variant（swl2_capq5）：拿入库的值算 IC/RankIC/turnover/corr
+# 拿入库的因子值算 IC/RankIC/turnover/corr
 python -m backtest.factor.evaluation f_001 --start 20210101 --end 20241231 --plot
-
-# 评测其他 variant，例如 raw
-python -m backtest.factor.evaluation f_001 --start 20210101 --end 20241231 --variant raw
 ```
 
-corr 比较在 **同 variant 内** 进行（候选与 library 因子都各自读 variant 的入库值）—— 因为入库的值就是该 variant 自己的「纯净因子值」，跨 variant 不互比。
+corr 比较只读 library DB —— 候选因子拿自己的 pipeline 输出去比已 admitted 的稳定因子。
 
 输出末尾会打印对照 `RECOMMENDED_THRESHOLDS` 的 4 项检查（informational only，不 gate）：
 
@@ -240,32 +227,26 @@ python scripts/run_factor_pipeline.py f_001 \
     --direction desc --benchmark 000300.SH
 ```
 
-输出到 `results/<factor_id>/<variant>/{factor_eval, <tag>/{simple, detailed}}/`。新版 pipeline 已覆盖此场景，旧脚本保留兼容。
+输出到 `results/<factor_id>/<tag>/{factor_eval, simple, detailed}/`。新版 pipeline 已覆盖此场景，旧脚本保留兼容。
 
-### 4. 入库 / 拒绝（人工触发）
+### 5. 入库 / 拒绝（人工触发）
 
-看完三层报告后，人工运行。`admit` / `reject` 的单位是 **(factor_id, variant)** —— 同一因子的不同 variant 可以独立 admit 或 reject。
+看完三层报告后，人工运行。`admit` / `reject` 按因子整体操作（一个 factor_id 对应 registry 中的一个 variant 标签）。
 
 ```bash
-# admit baseline variant（默认 swl2_capq5）：把该 variant 从 work → library
+# admit：把因子从 work → library，清 work，registry 标 admitted
 python -m backtest.factor.admission admit f_001 \
     --notes "Sharpe 1.45, IR 0.92 vs 000300"
 
-# 也可以 admit 别的 variant，例如 raw
-python -m backtest.factor.admission admit f_001 --variant raw \
-    --notes "raw 信号在小盘 universe 更强"
-
-# 清掉某 variant 的 work 数据，标记 variant_status[swl2_capq5]=rejected
+# reject：清 work，registry 标 rejected（不动 library）
 python -m backtest.factor.admission reject f_001 --notes "RankICIR 仅 0.18"
 
-# 查看所有因子状态（按 variant 展开）
+# 查看所有因子状态
 python -m backtest.factor.admission status
 python -m backtest.factor.admission status f_001
 ```
 
-`registry.json` 中状态以 `variant_status: {variant: 'admitted' | 'rejected'}` 嵌套字典存储；顶层 `status` 字段作为汇总（所有 variant 都 admitted → `admitted`，全 rejected → `rejected`，混合 → `mixed`，其余 → `pending`）。
-
-### 5. 临时数据清理
+### 6. 临时数据清理
 
 ```bash
 # 单因子清空 work，不改 status（保持 pending）
@@ -278,7 +259,7 @@ python -m backtest.factor.cleanup --all
 python -m backtest.factor.cleanup --orphans
 ```
 
-### 6. 增量更新（library DB）
+### 7. 增量更新（library DB）
 
 ```bash
 python -m backtest.factor.update    # 把 admitted 因子追平到 market_daily 最新一天
@@ -293,32 +274,32 @@ from backtest.factor import (
     compute_factor, evaluate, FactorStorage, FactorLibrary,
     admit, reject, get_admitted_factor_ids,
 )
-from backtest.factor.compute import apply_neutralizations
-from backtest.factor.variants import BASELINE_VARIANT
+from backtest.factor.compute import apply_variant_pipeline
 
 # 1. 计算 raw 因子值
 raw_df = compute_factor("f_001", "20210101", "20241231")
-# 2. fan-out 到所有声明的 variant
-all_variants_df = apply_neutralizations(raw_df, "f_001")
+
+# 2. 应用 registry 声明的 variant pipeline（barra_ind_size / barra_l3 / none）
+processed_df = apply_variant_pipeline(raw_df, "f_001")
+
 # 3. 写 work
 with FactorStorage() as fs:
-    fs.insert_factors(all_variants_df)
+    fs.insert_factors(processed_df)
 
-# 评测 baseline variant
-result = evaluate("f_001", "20210101", "20241231",
-                  variant=BASELINE_VARIANT, ret_type="open")
+# 4. 评测
+result = evaluate("f_001", "20210101", "20241231", ret_type="open")
 print(result.summary())
 print(result.threshold_metrics(20))
 
-# 看完回测人工决定后:
-admit("f_001", variant=BASELINE_VARIANT, notes="Sharpe 1.45")
+# 5. 看完回测人工决定后
+admit("f_001", notes="Sharpe 1.45")
 # 或
-reject("f_001", variant="raw", notes="raw 口径 IC 偏低")
+reject("f_001", notes="RankICIR 偏低")
 ```
 
 ## 评测指标
 
-`evaluate(factor_id, variant=...)` 直接拉入库的该 variant 因子值，所有指标都基于这份值算 —— 不在 evaluation 层做二次中性化。
+`evaluate(factor_id)` 直接拉入库的因子值（先 work 后 library，按 admission 状态选），所有指标都基于这份值算 —— 不在 evaluation 层做二次中性化。
 
 | 指标 | 定义 |
 |---|---|
@@ -330,9 +311,9 @@ reject("f_001", variant="raw", notes="raw 口径 IC 偏低")
 | **Turnover** | 相邻两期因子排名的换手率 |
 | **Decay** | 不同 horizon 的 IC 衰减曲线 |
 | **分组收益** | 按因子值分10组，检验单调性 |
-| **与现有因子相关性** | 与 **library DB** 中**同 variant** 因子的逐日截面 RankIC，按日均值排序输出 top-K。同 variant 内比 —— 因为入库的值已是该 variant 自己的「纯净因子值」，跨 variant 不互比 |
+| **与现有因子相关性** | 与 **library DB** 中已 admitted 因子的逐日截面 RankIC，按日均值排序输出 top-K |
 
-CLI 同步提供 `--variant <name>` / `--corr-top-k N`（0 表示跳过 corr 检查）。
+CLI 提供 `--corr-top-k N`（0 表示跳过 corr 检查）。
 
 ## 参考阈值（不强制 gate）
 

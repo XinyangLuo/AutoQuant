@@ -44,8 +44,7 @@ universe:
   min_avg_amount: 1e7
 
 factors:
-  - id: "f_001"
-    variant: "swl2_capq5"        # 选哪个中性化变体 (factor 层),默认 swl2_capq5
+  - id: "f_001"                  # 因子的 variant (中性化 pipeline) 在因子 registry 中固定
     direction: "desc"
     weight: 1.0
 
@@ -58,8 +57,7 @@ weighting:
   method: "equal"               # equal / market_cap / factor_value
 
 # `neutralize` 配置项已 deprecated：中性化由因子层完成，
-# 通过上面 factors[].variant 选择已中性化的因子值。
-# 旧 yaml 仍可解析（保留 dataclass），但策略层不再使用其字段。
+# 策略层不感知。旧 yaml 仍可解析，字段不生效。
 ```
 
 Python 加载：
@@ -112,11 +110,11 @@ signals = strategy.run("20200101", "20241231")
 
 ### 中性化（已下沉到因子层）
 
-策略层**不再做中性化**。中性化是因子的一部分:在因子注册阶段通过 `@register(neutralizations=[...])` 声明,backfill 时按变体 fan-out 写入 `factors_daily`(PK 加 `variant` 列),策略层只需通过 `FactorConfig.variant` 选择消费哪个 variant。
+策略层**不再做中性化**。中性化是因子的一部分：在因子注册阶段通过 `@register(variant=...)` 声明 pipeline（默认 `barra_ind_size`），backfill 后由 `apply_variant_pipeline` 应用，结果写入 `factors_daily` 对应列（PK `(date, symbol)`，每个 factor_id 一列，单 variant）。策略层直接消费该列。
 
-- 行业中性化 / 市值中性化的算子见 `backtest/factor/transforms.py`(`industry_neutralize` / `cap_neutralize`)
-- 命名规范见 `backtest/factor/variants.py`,默认 baseline = `swl2_capq5`(申万 2 级 + 流通市值 5 等分)
-- `strategy/neutralize.py` 与 `strategy/config.py:NeutralizeConfig` 均已 deprecated,仅保留兼容旧 yaml,不再实际生效
+- 后处理算子（`cs_mad_winsorize` / `industry_median_fill` / `cs_zscore` / `cs_ols_residualize`）见 `backtest/factor/transforms.py`
+- variant 标签见 `backtest/factor/variants.py`：`none` / `barra_l3` / `barra_ind_size`，默认 `barra_ind_size`
+- `strategy/neutralize.py` 与 `strategy/config.py:NeutralizeConfig` 已 deprecated，仅保留兼容旧 yaml，不再实际生效
 
 ### 再平衡频率
 
@@ -203,7 +201,7 @@ config = StrategyConfig(
     strategy_type="single_factor_topk",
     rebalance_freq="1D",
     universe=UniverseConfig(exclude_st=True, include_kcb=False),
-    factors=[FactorConfig(id="f_001", variant="swl2_capq5", direction="desc")],
+    factors=[FactorConfig(id="f_001", direction="desc")],
     selection=SelectionConfig(method="topk", top_pct=0.1),
     weighting=WeightingConfig(method="equal"),
 )
@@ -217,11 +215,11 @@ signals = strategy.run("20200101", "20241231")
 ### 上游（因子模块）
 
 ```python
-FactorStorage.get_factor(factor_id, start, end, variant='swl2_capq5')   # 单因子时序，按 variant 取
-FactorStorage.get_factor_panel(factor_ids, date, variant='swl2_capq5')  # 多因子宽截面（pivot）
+FactorStorage.get_factor(factor_id, start, end)            # 单因子时序
+FactorStorage.get_factor_panel(factor_ids, date)           # 多因子宽截面（pivot）
 ```
 
-`base.py` 的 `_load_factor_panel(factor_configs)` 接收 `FactorConfig` 列表，按各自声明的 `variant` 分别拉数据再合并为宽表 `(date, symbol, f_001, f_002, ...)`。
+`base.py` 的 `_load_factor_panel(factor_configs)` 接收 `FactorConfig` 列表，每个因子拉自己的列再合并为宽表 `(date, symbol, f_001, f_002, ...)`。variant 是因子注册时固定的，策略层不感知。
 
 ### 下游（回测引擎）
 
