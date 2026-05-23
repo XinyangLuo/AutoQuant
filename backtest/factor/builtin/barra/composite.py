@@ -171,7 +171,7 @@ def barra_liquidity(
     "f_barra_growth",
     name="Barra L1 — Growth",
     category=CATEGORY_BARRA_L1,
-    data_sources=["market_daily", "income_q"],
+    data_sources=["income_q"],
     description=(
         "z-scored slope of last 20 quarterly TTM EPS on time / |mean|. "
         "Single-input composite (= EGRO)."
@@ -179,9 +179,13 @@ def barra_liquidity(
     variant=NONE_VARIANT,
     frequency="D",
     parameters={
-        "fina_columns": ["inc_basic_eps"],
-        # pit_quarterly_slope(n=20) — keep panel size bounded.
-        "last_n_quarters": 20,
+        # Event-driven: factor pulls its own per-(symbol, announcement)
+        # event panel via MarketStorage.get_fina_event_panel rather than
+        # consuming the per-(date, symbol) injection. Slope only changes
+        # on f_ann_date events (~4/year/symbol), so doing math in event
+        # space and ffill-ing once is 60× cheaper than the materialised
+        # per-(date, symbol) path.
+        "event_driven": True,
     },
 )
 def barra_growth(
@@ -191,7 +195,10 @@ def barra_growth(
     start_date: str,
     end_date: str,
 ) -> pd.Series:
-    raw = barra_growth_egro(panel)
+    raw = barra_growth_egro(
+        panel, market_storage=market_storage,
+        start_date=start_date, end_date=end_date,
+    )
     return _z(raw, market_storage, start_date=start_date, end_date=end_date)
 
 
@@ -241,7 +248,7 @@ def barra_value(
     "f_barra_quality",
     name="Barra L1 — Quality",
     category=CATEGORY_BARRA_L1,
-    data_sources=["market_daily", "income_q", "balancesheet_q"],
+    data_sources=["income_q", "balancesheet_q"],
     description=(
         "Equal-weight average of z-scored {ROA, GP, AGRO}. "
         "ROA = TTM net_income / total_assets. "
@@ -252,16 +259,11 @@ def barra_value(
     variant=NONE_VARIANT,
     frequency="D",
     parameters={
-        "fina_columns": [
-            "inc_n_income_attr_p",
-            "inc_revenue",
-            "inc_oper_cost",
-            "bs_total_assets",
-        ],
-        # AGRO's pit_quarterly_slope(n=20); ROA/GP use latest_quarter_per_day
-        # (single end_date per row) — 20 is the strictest bound across the
-        # three so trimming at this depth is safe for all three components.
-        "last_n_quarters": 20,
+        # Event-driven: ROA / GP / AGRO each only change on a new
+        # f_ann_date announcement. The factor pulls its own per-event
+        # panels via MarketStorage.get_fina_event_panel and ffills onto
+        # trade dates after computing scalar values per event.
+        "event_driven": True,
     },
 )
 def barra_quality(
@@ -271,7 +273,19 @@ def barra_quality(
     start_date: str,
     end_date: str,
 ) -> pd.Series:
-    roa_z = _z(barra_quality_roa(panel), market_storage, start_date=start_date, end_date=end_date)
-    gp_z = _z(barra_quality_gp(panel), market_storage, start_date=start_date, end_date=end_date)
-    agro_z = _z(barra_quality_agro(panel), market_storage, start_date=start_date, end_date=end_date)
+    roa = barra_quality_roa(
+        panel, market_storage=market_storage,
+        start_date=start_date, end_date=end_date,
+    )
+    gp = barra_quality_gp(
+        panel, market_storage=market_storage,
+        start_date=start_date, end_date=end_date,
+    )
+    agro = barra_quality_agro(
+        panel, market_storage=market_storage,
+        start_date=start_date, end_date=end_date,
+    )
+    roa_z = _z(roa, market_storage, start_date=start_date, end_date=end_date)
+    gp_z = _z(gp, market_storage, start_date=start_date, end_date=end_date)
+    agro_z = _z(agro, market_storage, start_date=start_date, end_date=end_date)
     return _average([roa_z, gp_z, agro_z])

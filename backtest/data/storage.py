@@ -344,6 +344,23 @@ class MarketStorage:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.db_path = DB_PATH
         self.conn = duckdb.connect(str(DB_PATH))
+        # Cap DuckDB's working set well below the OS memory ceiling. The
+        # default (≈ 80% of RAM) lets large analytical queries — notably
+        # range-joins inside get_fina_snapshot_range — bunch up across
+        # back-to-back chunks and OOM the worker before the engine spills.
+        # 6 GiB leaves room for pandas + Python objects on a 16 GB machine
+        # and triggers DuckDB's own spill-to-disk on overshoot.
+        self.conn.execute("PRAGMA memory_limit='6GB'")
+        # Direct DuckDB to spill query intermediates to disk when memory
+        # pressure rises. This is database-level state — setting it twice
+        # in the same DB file (e.g. when a second MarketStorage opens
+        # mid-process) raises "Cannot switch temporary directory after the
+        # current one has been used"; swallow that and rely on whatever
+        # the first connection configured.
+        try:
+            self.conn.execute("PRAGMA temp_directory='/tmp/duckdb_spill'")
+        except duckdb.NotImplementedException:
+            pass
         self._init_tables()
 
     def _init_tables(self):
@@ -644,6 +661,10 @@ class MarketStorage:
         dfs: dict[str, pd.DataFrame] = {}
         for prefix, table in tables.items():
             wanted = per_table_cols[prefix]
+            # Skip tables the caller didn't request any columns from.
+            if wanted == []:
+                dfs[prefix] = pd.DataFrame()
+                continue
             if wanted is None:
                 select_clause = "*"
             else:
@@ -750,16 +771,24 @@ class MarketStorage:
         so a single row carries ``inc_/bs_/cf_`` values aligned. ``date`` is
         a ``DATE`` column ready for downstream merge with ``market_daily``.
         """
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timedelta as _td
 
-        _CHUNK_YEARS = 2
+        # Half-year chunks. DuckDB's range-join intermediate for a year of
+        # A-share fina (5500 symbols × 250 dates × 20 quarters ≈ 27M rows)
+        # can push the buffer pool past the 6 GiB limit on chunk 1; halving
+        # makes each chunk easily fit, and concat overhead is negligible.
+        _CHUNK_MONTHS = 6
 
         start_dt = _dt.strptime(start, "%Y%m%d")
         end_dt = _dt.strptime(end, "%Y%m%d")
         pieces: list[pd.DataFrame] = []
         cur = start_dt
         while cur <= end_dt:
-            sub_end = _dt(cur.year + _CHUNK_YEARS - 1, 12, 31)
+            # Walk forward _CHUNK_MONTHS months keeping the day at 1 then
+            # subtract 1 day for the inclusive end. Avoids dateutil dep.
+            next_year = cur.year + (cur.month - 1 + _CHUNK_MONTHS) // 12
+            next_month = (cur.month - 1 + _CHUNK_MONTHS) % 12 + 1
+            sub_end = _dt(next_year, next_month, 1) - _td(days=1)
             if sub_end > end_dt:
                 sub_end = end_dt
             sub = self._get_fina_snapshot_window(
@@ -771,7 +800,7 @@ class MarketStorage:
             )
             if not sub.empty:
                 pieces.append(sub)
-            cur = _dt(sub_end.year + 1, 1, 1)
+            cur = sub_end + _td(days=1)
 
         if not pieces:
             # Maintain the stable-column contract even on empty results.
@@ -835,6 +864,14 @@ class MarketStorage:
         dfs: dict[str, pd.DataFrame] = {}
         for prefix, table in tables.items():
             wanted = per_table_cols[prefix]
+            # Skip tables the caller didn't request any columns from. A
+            # Growth-only factor asking for inc_basic_eps shouldn't pay
+            # for the bs/cf range-join + outer-join (~110s out of the
+            # 175s end-to-end spent in pandas merges per cProfile on a
+            # 1-year window).
+            if wanted == []:
+                dfs[prefix] = pd.DataFrame()
+                continue
             if wanted is None:
                 version_select = "*"
             else:
@@ -909,6 +946,142 @@ class MarketStorage:
                     merged[c] = pd.NA
 
         return merged
+
+    def get_fina_event_panel(
+        self,
+        start: str,
+        end: str,
+        columns: list[str],
+        last_n_quarters: int = 20,
+        symbols: list[str] | None = None,
+    ) -> pd.DataFrame:
+        """Per-(symbol, end_date) event panel for event-driven fina factors.
+
+        Replaces the per-trade-date materialisation pattern used by
+        :meth:`get_fina_snapshot_range` for factors whose value only
+        changes when a new announcement supersedes the previous one
+        (Growth EGRO, Quality AGRO/ROA/GP). The naive per-(date, symbol)
+        panel duplicates the same N-quarter history once per trade date
+        — 60× output amplification on a daily backtest universe — so TTM
+        / slope are re-computed redundantly.
+
+        Returns a long-format frame with one row per ``(symbol,
+        announce_end_date, history_end_date)``:
+
+        ============     ===========================================
+        column           meaning
+        ============     ===========================================
+        symbol           A-share ticker
+        announce_end_date  end_date of the **announcement** (event)
+        f_ann_date       publication date of this announcement (PIT)
+        next_f_ann_date  publication date of the next announcement
+                         for this symbol (or NULL); together with
+                         ``f_ann_date`` defines the trade-date
+                         interval this view is current for
+        end_date         end_date of one historical quarter visible
+                         at this announcement (≤ announce_end_date)
+        <fina cols>      numeric values at end_date
+        ============     ===========================================
+
+        Downstream usage::
+
+            df.groupby(['symbol', 'announce_end_date']) gives one group
+            per event, each carrying the last_n_quarters history rows.
+            Compute per-event scalar (TTM, slope, ratio) once on the
+            ~22k events/year, then expand_events_to_dates to materialise
+            (date, symbol, value) at full 1.3M-row resolution.
+
+        Currently single-table: ``columns`` must all share one prefix
+        (``inc_`` / ``bs_`` / ``cf_``). Multi-table composites (Quality)
+        call this once per source table and merge on
+        ``(symbol, announce_end_date, end_date)``.
+        """
+        if not columns:
+            raise ValueError("get_fina_event_panel requires explicit columns")
+
+        prefix_table = {
+            "inc_": "income_q", "bs_": "balancesheet_q", "cf_": "cashflow_q",
+        }
+        prefixes = {c.split("_", 1)[0] + "_" for c in columns}
+        if len(prefixes) != 1:
+            raise ValueError(
+                "get_fina_event_panel requires all columns from one table; "
+                f"got prefixes {sorted(prefixes)}"
+            )
+        prefix = next(iter(prefixes))
+        if prefix not in prefix_table:
+            raise ValueError(f"Unknown column prefix {prefix!r}")
+        table = prefix_table[prefix]
+        bare_cols = [c.removeprefix(prefix) for c in columns]
+
+        # Quarters-of-history floor so the version CTE stays small. 20q
+        # ≈ 5y back; +2y cushion for late restatements with old end_dates.
+        lookback_years = int(last_n_quarters / 4) + 2
+        floor_year = max(int(start[:4]) - lookback_years, 1990)
+
+        symbol_clause = ""
+        symbol_params: list[str] = []
+        if symbols:
+            placeholders = ", ".join("?" for _ in symbols)
+            symbol_clause = f"AND symbol IN ({placeholders})"
+            symbol_params = list(symbols)
+
+        col_select = ", ".join(f'"{c}"' for c in bare_cols)
+        v_col_select = ", ".join(f'v."{c}"' for c in bare_cols)
+
+        # Two-step plan:
+        # 1) `latest` = newest visible version per (symbol, end_date)
+        #    (the QUALIFY ROW_NUMBER pattern from get_fina_snapshot).
+        # 2) `events` = the announcements whose [f_ann_date, next) interval
+        #    overlaps [start, end], with `next_f_ann_date` computed as
+        #    LEAD(f_ann_date) over the per-symbol announcement sequence.
+        # 3) Cross-join each event with the up-to-N preceding latest
+        #    versions (history) on (symbol, end_date <= announce_end_date),
+        #    QUALIFY ROW_NUMBER <= N to cap.
+        sql = f"""
+            WITH latest AS (
+                SELECT symbol, end_date, f_ann_date, update_flag, {col_select}
+                FROM {table}
+                WHERE end_date >= '{floor_year}0101' {symbol_clause}
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY symbol, end_date
+                    ORDER BY f_ann_date DESC, update_flag DESC
+                ) = 1
+            ),
+            ordered AS (
+                SELECT symbol, end_date AS announce_end_date,
+                       f_ann_date,
+                       LEAD(f_ann_date) OVER (
+                           PARTITION BY symbol
+                           ORDER BY f_ann_date ASC, end_date ASC
+                       ) AS next_f_ann_date
+                FROM latest
+            ),
+            events AS (
+                SELECT * FROM ordered
+                WHERE f_ann_date <= ?
+                  AND (next_f_ann_date IS NULL OR next_f_ann_date > ?)
+            )
+            SELECT e.symbol, e.announce_end_date, e.f_ann_date,
+                   e.next_f_ann_date,
+                   v.end_date,
+                   {v_col_select}
+            FROM events e
+            JOIN latest v
+              ON v.symbol = e.symbol
+             AND v.end_date <= e.announce_end_date
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY e.symbol, e.announce_end_date
+                ORDER BY v.end_date DESC
+            ) <= {int(last_n_quarters)}
+            ORDER BY e.symbol, e.announce_end_date, v.end_date ASC
+        """
+        params = list(symbol_params) + [end, start]
+        df = self.conn.execute(sql, params).fetchdf()
+        if df.empty:
+            return df
+        df = df.rename(columns={c: prefix + c for c in bare_cols})
+        return df
 
     # -- dividends ------------------------------------------------------------
 

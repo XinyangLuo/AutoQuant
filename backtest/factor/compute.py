@@ -21,6 +21,50 @@ from backtest.factor.variants import (
 )
 
 
+# Fina-heavy factors (Growth, Quality) build a multi-quarter PIT panel for
+# every (trade_date, symbol) and then groupby-apply Python regressions over
+# it. Even with get_fina_snapshot_range's batched SQL, materializing
+# the full 35-year history in one pandas frame (≈ 40M rows × N columns)
+# pushes peak memory past the OS cap. We chunk the compute window into
+# calendar-year slices and concat the per-chunk outputs — math identical,
+# peak memory bounded to one chunk worth.
+_FINA_CHUNK_YEARS = 1
+
+
+def _compute_factor_chunked(
+    factor_id: str,
+    start_date: str,
+    end_date: str,
+    *,
+    market_storage: MarketStorage | None,
+    factor_storage: FactorStorage | None,
+) -> pd.DataFrame:
+    """Run compute_factor in calendar-year slices and concat."""
+    start_dt = datetime.strptime(start_date, "%Y%m%d")
+    end_dt = datetime.strptime(end_date, "%Y%m%d")
+
+    pieces: list[pd.DataFrame] = []
+    cur = start_dt
+    while cur <= end_dt:
+        chunk_end = datetime(cur.year + _FINA_CHUNK_YEARS - 1, 12, 31)
+        if chunk_end > end_dt:
+            chunk_end = end_dt
+        sub = compute_factor(
+            factor_id,
+            cur.strftime("%Y%m%d"),
+            chunk_end.strftime("%Y%m%d"),
+            market_storage=market_storage,
+            factor_storage=factor_storage,
+        )
+        if not sub.empty:
+            pieces.append(sub)
+        cur = datetime(chunk_end.year + 1, 1, 1)
+
+    if not pieces:
+        return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
+    return pd.concat(pieces, ignore_index=True)
+
+
 def compute_factor(
     factor_id: str,
     start_date: str,
@@ -64,6 +108,30 @@ def compute_factor(
     )
     needs_factor_store = any(src == "factors_daily" for src in data_sources)
 
+    # ``event_driven=True`` in registry parameters lets a fina factor pull
+    # its own per-event data via ``MarketStorage.get_fina_event_panel``
+    # rather than receiving the materialised per-(date, symbol) panel.
+    # Slope / TTM / ratio factors only change on f_ann_date events
+    # (~22k events/year) so computing in event-space and ffill-ing once
+    # is 60× cheaper than the per-(date, symbol) materialisation.
+    event_driven = bool(params.get("event_driven", False))
+
+    # Long fina ranges: split into calendar-year slices. Each slice's
+    # PIT-snapshot panel and groupby-apply working set fits comfortably in
+    # memory; concatenating per-slice outputs preserves the math.
+    # Event-driven factors don't materialise a heavy panel, so they don't
+    # need the chunking dispatcher.
+    if needs_fina and not needs_factor_store and not event_driven:
+        start_dt = datetime.strptime(start_date, "%Y%m%d")
+        end_dt = datetime.strptime(end_date, "%Y%m%d")
+        years_span = (end_dt - start_dt).days / 365.25
+        if years_span > _FINA_CHUNK_YEARS:
+            return _compute_factor_chunked(
+                factor_id, start_date, end_date,
+                market_storage=market_storage,
+                factor_storage=factor_storage,
+            )
+
     own_market = market_storage is None
     own_factor = factor_storage is None
 
@@ -90,7 +158,7 @@ def compute_factor(
                 return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
             input_panel = bars
 
-        if needs_fina:
+        if needs_fina and not event_driven:
             # PIT snapshots for every trade date in [start, end]. Use the
             # range function — one range-join SQL per fina table replaces
             # N_dates × 3 independent QUALIFY scans. ``fina_columns`` (from
@@ -122,8 +190,10 @@ def compute_factor(
                 return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
 
         # Composites (e.g. Barra L1) read L3 values directly from factor_storage
-        # and don't need market_daily / fina. Skip the empty-panel guard for them.
-        if input_panel.empty and not needs_factor_store:
+        # and event-driven fina factors pull their own data from market_storage
+        # — both fall through with an empty input_panel; skip the empty-panel
+        # guard so the factor function still runs.
+        if input_panel.empty and not needs_factor_store and not event_driven:
             return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
 
         # Bind parameters and call the registered compute function. Pass
