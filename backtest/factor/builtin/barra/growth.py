@@ -32,16 +32,29 @@ def barra_growth_egro(
     start_date: str,
     end_date: str,
 ) -> pd.Series:
-    """Event-driven EGRO. ``panel`` is unused (kept for signature parity)."""
+    """Event-driven EGRO. ``panel`` is unused (kept for signature parity).
+
+    TTM flow needs LY_FY and LY_same end_dates (≤ 1 year prior to each
+    history quarter). Fetch 20 + 4 quarters so the earliest of the 20
+    slope inputs still has its LY lookups inside the panel, then trim
+    to 20 TTM values per event before regressing.
+    """
     events = market_storage.get_fina_event_panel(
         start=start_date, end=end_date,
-        columns=["inc_basic_eps"], last_n_quarters=20,
+        columns=["inc_basic_eps"], last_n_quarters=24,
     )
     if events.empty:
         return pd.Series(dtype=float, name="egro").rename_axis(["date", "symbol"])
 
-    # TTM-EPS for every (event × history end_date) row.
     history_with_ttm = event_ttm(events, "inc_basic_eps")
+    # Keep the most recent 20 TTM quarters per event for the regression.
+    history_with_ttm = history_with_ttm.sort_values(
+        ["symbol", "announce_end_date", "end_date"]
+    )
+    history_with_ttm = history_with_ttm.groupby(
+        ["symbol", "announce_end_date"], sort=False,
+    ).tail(20)
+
     scored = event_slope_over_mean(
         history_with_ttm, "inc_basic_eps_ttm", n=20, sign=1.0,
     )
