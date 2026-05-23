@@ -8,6 +8,9 @@
 ### Required Data Sources
 {{data_sources}}
 
+### Available Panel Columns (for this factor)
+{{panel_columns}}
+
 ### Rationale
 {{rationale}}
 

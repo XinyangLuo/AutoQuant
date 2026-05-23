@@ -63,6 +63,13 @@ logs/
 # 私有因子代码（候选 alpha / rd-agent 产出，不公开到 GitHub）
 alphas/
 
+# Agent 投研系统生成物
+agents/rdagent/generated/
+agents/rdagent/kb.json
+agents/rdagent/__pycache__/
+agents/rdagent/core/__pycache__/
+agents/rdagent/prompts/__pycache__/
+
 # 因子注册元数据（含私有 alpha 名称/描述，不公开）
 data/factor_library/registry.json
 .claude/scheduled_tasks.lock

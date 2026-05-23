@@ -125,6 +125,7 @@ def run_agent_loop(
         trace = Trace()
         candidates: list[AutoQuantFactorExperiment] = []
         completed_rounds = 0
+        round_num = completed_rounds  # safe lower bound; overridden by loop
 
         if resume:
             checkpoint = _load_checkpoint(output_dir)
@@ -174,6 +175,7 @@ def run_agent_loop(
                 experiment = runner.run(experiment)
             except (RuntimeError, ValueError, ImportError, SyntaxError) as e:
                 print(f"  Pipeline execution failed: {e}")
+                runner.cleanup_work_db(experiment.factor_id)
                 feedback = QuantFeedback(
                     decision=False,
                     observation=f"Execution error: {type(e).__name__}: {e}",
@@ -212,6 +214,9 @@ def run_agent_loop(
                 if feedback.simple_sharpe is not None and feedback.simple_sharpe > cfg.high_bar_sharpe:
                     print(f"  --> High bar reached (Sharpe {feedback.simple_sharpe:.3f} > {cfg.high_bar_sharpe}), stopping early.")
                     break
+            else:
+                # Rejected — clean up work DB to prevent indefinite growth
+                runner.cleanup_work_db(experiment.factor_id)
 
     # Generate final review report
     _generate_review_report(candidates, output_dir)

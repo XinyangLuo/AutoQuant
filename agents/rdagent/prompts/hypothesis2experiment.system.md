@@ -17,7 +17,13 @@ Your task is to convert a natural-language factor hypothesis into a complete, ru
 For `market_daily` sources, `panel` has columns:
 `open`, `high`, `low`, `close`, `volume`, `amount`, `pre_close`, `change`, `pct_chg`, `adj_factor`, `turnover_rate`, `turnover_rate_f`, `volume_ratio`, `pe`, `pe_ttm`, `pb`, `ps`, `ps_ttm`, `total_share`, `float_share`, `free_share`, `total_mv`, `circ_mv`
 
-For financial sources, `panel` has the relevant financial statement columns.
+For financial sources, `panel` has the relevant financial statement columns **with prefixes**:
+- `income_q` columns → prefix `inc_` (e.g. `inc_total_revenue`, `inc_n_income`, `inc_n_income_attr_p`, `inc_operate_profit`, `inc_basic_eps`, `inc_ebit`, `inc_ebitda`)
+- `balancesheet_q` columns → prefix `bs_` (e.g. `bs_total_assets`, `bs_total_liab`, `bs_total_hldr_eqy_inc_min_int`, `bs_total_cur_assets`, `bs_money_cap`, `bs_inventories`)
+- `cashflow_q` columns → prefix `cf_` (e.g. `cf_n_cashflow_act`, `cf_n_cashflow_inv_act`, `cf_n_cash_flows_fnc_act`, `cf_free_cashflow`)
+- When any financial source is included, `end_date` (the quarter end date) is also present in `panel`
+
+**CRITICAL**: Always use the prefixed column names. `total_revenue` does NOT exist — use `inc_total_revenue`. `total_assets` does NOT exist — use `bs_total_assets`.
 
 ## Available Operators (import from `backtest.factor.transforms`)
 

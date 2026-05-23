@@ -8,37 +8,34 @@
 
 ## P0
 
-### Barra L1 收尾
+> 严格「立刻 / 阻塞其他工作」。
 
-- [ ] **P0.1** smoke test 一个 alpha 走 `barra_ind_size` pipeline，验证 7/7 admitted 的 Barra L1 能被读出来做中性化
-
-### 测试覆盖
-
-- [ ] **P0.2** data 模块测试：multi-type fetch + 5-列 PK + snapshot 行为
-- [ ] **P0.3** transforms 测试：`single_quarter` / `ttm` / `yoy` 三个助手函数（函数已实现，缺测试覆盖）
-- [ ] **P0.4** strategy 模块测试：`SingleFactorStrategy` + `MultiFactorStrategy` 基础路径
-
-### 因子挖掘 pipeline 剩余项
-
-- [ ] **P0.5** 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
-- [ ] **P0.6** 端到端验证：用一个因子跑通全链路
-- [ ] **P0.7** `run-all` 中 retry 逻辑落地（step6/7 失败后自动调参重试，state.retry_count/retry_params 已定义但从未写入）
-
-### 缺失基础设施
-
-- [ ] **P0.8** `backtest/data/__init__.py`：模块缺少公共 API 入口
-- [ ] **P0.9** `backtest/data/index_fetcher.py` + `backfill_indices.py`：evaluation 模块的 benchmark 功能依赖这两个文件（`benchmark.py` 报错信息已引用不存在的脚本）
-- [ ] **P0.10** strategy CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`（`run.py` / `__main__.py` 不存在）
+- [ ] **P0.1** `run-all` 中 retry 逻辑落地（step6/7 失败后自动调参重试，`state.retry_count` / `retry_params` 已定义但从未写入）
 
 ---
 
 ## P1
 
+### 测试覆盖
+
+- [ ] **P1.01** Barra L1 smoke test：一个 alpha 走 `barra_ind_size` pipeline，验证 7/7 admitted 的 Barra L1 能被读出来做中性化
+- [ ] **P1.02** data 模块测试：multi-type fetch + 5-列 PK + snapshot 行为
+- [ ] **P1.03** transforms 测试：`single_quarter` / `ttm` / `yoy` 三个助手函数（函数已实现，缺测试覆盖）
+- [ ] **P1.04** strategy 模块测试：`SingleFactorStrategy` + `MultiFactorStrategy` 基础路径
+- [ ] **P1.05** pipeline 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
+- [ ] **P1.06** pipeline 端到端验证：用一个因子跑通全链路
+
+### 缺失基础设施
+
+- [ ] **P1.07** `backtest/data/__init__.py`：模块缺少公共 API 入口
+- [ ] **P1.08** `backtest/data/index_fetcher.py` + `backfill_indices.py`：evaluation 模块的 benchmark 功能依赖这两个文件（`benchmark.py` 报错信息已引用不存在的脚本）
+- [ ] **P1.09** strategy CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`（`run.py` / `__main__.py` 不存在）
+
 ### Agent 因子投研系统（`agents/rdagent/`）
 
 > **代码已落地。** 7 个 Phase 全部完成实现。
 > 准入策略：半自动 —— Agent 生成候选列表和审核报告，人工最终确认后 `admit()`。
-> 前置依赖：P0.5~P0.7（pipeline 集成测试 + retry 逻辑）。
+> 前置依赖：P0.1（pipeline retry 逻辑）。
 
 - [x] **P1.1** Phase 1: 复制 rdagent/core 抽象基类（Scenario / Proposal / Experiment / Evaluator / Trace / KnowledgeBase）
 - [x] **P1.2** Phase 2: 实现 `AShareQuantScenario` + Prompt 模板（scenario_desc.md）
@@ -47,10 +44,10 @@
 - [x] **P1.5** Phase 5: 实现 `AutoQuantFactorHypothesisGen` + `Hypothesis2Experiment` + 4 个 Prompt 模板
 - [x] **P1.6** Phase 6: 实现 `AShareKnowledgeBase`（经验积累 + 相似案例检索）
 - [x] **P1.7** Phase 7: 实现主循环 `run.py` + CLI 入口 + 审核报告生成
-- [ ] **P1.8** 集成测试：用已知简单因子验证 Runner + Evaluator 全流程
-- [ ] **P1.9** 端到端测试：跑一次 3-round Agent 循环，验证假设 → 代码 → 回测 → 反馈链路
-- [ ] **P1.10** PDF 研报作为种子输入：Claude 多模态 API 读取研报 → 提取因子假设 → 作为 Round-1 seed（`--seed-pdf` / `--seed-pages` CLI）
-- [ ] **P1.11** 文集/批量研报输入：支持目录批量读取多篇研报，提取多因子想法队列逐个跑 Agent 循环（`--seed-dir` CLI）
+- [ ] **P1.10** 集成测试：用已知简单因子验证 Runner + Evaluator 全流程
+- [ ] **P1.11** 端到端测试：跑一次 3-round Agent 循环，验证假设 → 代码 → 回测 → 反馈链路
+- [ ] **P1.12** PDF 研报作为种子输入：Claude 多模态 API 读取研报 → 提取因子假设 → 作为 Round-1 seed（`--seed-pdf` / `--seed-pages` CLI）
+- [ ] **P1.13** 文集/批量研报输入：支持目录批量读取多篇研报，提取多因子想法队列逐个跑 Agent 循环（`--seed-dir` CLI）
 
 ### 基础设施
 
@@ -61,10 +58,10 @@
 
 ### 仿真模块补全
 
-- [ ] **P1.12** benchmark 字段实现：`SimulationConfig.benchmark` 已定义但无功能逻辑
-- [x] **P1.13** T+1 结算：日频调仓天然满足（T 日收盘算因子 → T+1 开盘调仓），无需额外逻辑
-- [ ] **P1.14** DetailedSimulator 输入校验：检查 market_data 包含 `open/close/low/high/limit_up/limit_down` 列
-- [ ] **P1.15** Daily metrics fee 一致性：`detailed.py` 中 transfer_fee/stamp_duty 从 `t.amount * rate` 重算，与 `Trade.commission` 可能不一致
+- [ ] **P1.14** benchmark 字段实现：`SimulationConfig.benchmark` 已定义但无功能逻辑
+- [x] **P1.15** T+1 结算：日频调仓天然满足（T 日收盘算因子 → T+1 开盘调仓），无需额外逻辑
+- [ ] **P1.16** DetailedSimulator 输入校验：检查 market_data 包含 `open/close/low/high/limit_up/limit_down` 列
+- [ ] **P1.17** Daily metrics fee 一致性：`detailed.py` 中 transfer_fee/stamp_duty 从 `t.amount * rate` 重算，与 `Trade.commission` 可能不一致
 
 ---
 

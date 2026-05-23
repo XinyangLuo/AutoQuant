@@ -110,6 +110,23 @@ class AutoQuantFactorRunner:
             self.factor_storage.close()
             self.factor_storage = None
 
+    def cleanup_work_db(self, factor_id: str) -> None:
+        """Remove a factor's column from the work (pending) DB.
+
+        Called automatically when a factor is rejected or fails during the
+        agent loop so ``factors_pending.duckdb`` does not grow indefinitely.
+        Only modifies storage owned by this runner.
+        """
+        if self.factor_storage is None:
+            return
+        if not self._factor_storage_owned:
+            return
+        try:
+            self.factor_storage.delete_factor(factor_id)
+        except Exception as exc:
+            # Swallow — cleanup failure must not mask the original error.
+            print(f"  [cleanup] WARN: failed to drop {factor_id} from work DB: {exc}")
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -254,17 +271,21 @@ class AutoQuantFactorRunner:
 
     def _evaluate_factor(self, experiment: AutoQuantFactorExperiment) -> None:
         """Run static factor evaluation (IC / RankIC / turnover / corr)."""
+        cfg = self.agent_config
+        ret_type = getattr(cfg, "ret_type", "open") if cfg else "open"
+        exclude_limit_up = getattr(cfg, "exclude_limit_up", True) if cfg else True
+        primary_horizon = getattr(cfg, "primary_horizon", 20) if cfg else 20
         eval_result = factor_evaluate(
             experiment.factor_id,
             self.start_date,
             self.end_date,
-            ret_type="open",
+            ret_type=ret_type,
             corr_top_k=5,
-            exclude_limit_up=True,
+            exclude_limit_up=exclude_limit_up,
         )
 
         # Flatten to dict
-        thresholds = eval_result.threshold_metrics(primary_horizon=20)
+        thresholds = eval_result.threshold_metrics(primary_horizon=primary_horizon)
         experiment.eval_result = {
             "factor_id": eval_result.factor_id,
             "variant": eval_result.variant,

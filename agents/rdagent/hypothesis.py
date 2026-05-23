@@ -356,12 +356,35 @@ class AutoQuantFactorHypothesis2Experiment(Hypothesis2Experiment):
 
     def _build_user_prompt(self, hypothesis: Hypothesis) -> str:
         template_path = self._prompt_dir / "hypothesis2experiment.user.md"
+
+        # Build data-source-specific panel column documentation
+        panel_cols = self.scenario.get_panel_columns_for_data_sources(
+            hypothesis.data_sources
+        )
+        panel_lines: list[str] = []
+        for src, cols in panel_cols.items():
+            if src.startswith("_"):
+                panel_lines.append(f"- **{src[1:]}**: {', '.join(cols)}")
+            else:
+                panel_lines.append(f"- **{src}**:")
+                # Show first 10 + "..." to avoid overwhelming the prompt
+                display = cols[:10]
+                if len(cols) > 10:
+                    display.append(f"... ({len(cols) - 10} more)")
+                for c in display:
+                    panel_lines.append(f"  - `{c}`")
+        panel_columns_md = "\n".join(panel_lines) if panel_lines else (
+            "_No data sources specified. Use only basic market daily columns "
+            "(open, close, volume, etc.)._"
+        )
+
         if template_path.exists():
             return render_prompt(
                 template_path,
                 hypothesis_text=hypothesis.hypothesis_text,
                 category=hypothesis.category,
                 data_sources=", ".join(hypothesis.data_sources),
+                panel_columns=panel_columns_md,
                 rationale=hypothesis.rationale,
                 expected_behavior=hypothesis.expected_behavior,
             )
@@ -371,5 +394,6 @@ class AutoQuantFactorHypothesis2Experiment(Hypothesis2Experiment):
             f"## Factor Hypothesis\n\n{hypothesis.hypothesis_text}\n\n"
             f"### Category\n{hypothesis.category}\n\n"
             f"### Data Sources\n{', '.join(hypothesis.data_sources)}\n\n"
+            f"### Available Panel Columns\n{panel_columns_md}\n\n"
             f"Generate the Python implementation."
         )
