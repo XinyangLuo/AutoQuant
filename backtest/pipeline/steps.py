@@ -172,11 +172,12 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
     end = factor_df["date"].max().strftime("%Y%m%d")
 
     # 1. Correlation with size_z
-    from backtest.factor.builtin.barra.size import SIZE_LNCAP_ID
+    from backtest.factor.storage import FactorLibrary
+    from backtest.factor.variants import SIZE_L1_ID
 
     size_corr = 0.0
-    with FactorStorage() as fs:
-        size_df = fs.get_factor(SIZE_LNCAP_ID, start=start, end=end)
+    with FactorLibrary() as lib:
+        size_df = lib.get_factor(SIZE_L1_ID, start=start, end=end)
     if not size_df.empty:
         merged = factor_df.merge(
             size_df.rename(columns={"value": "size_z"}),

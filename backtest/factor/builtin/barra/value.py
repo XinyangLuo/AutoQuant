@@ -1,4 +1,4 @@
-"""Barra Value factor — BTOP, ETOP, DTOP.
+"""Barra Value factor — internal helpers for ``f_barra_value`` composite.
 
 * **BTOP** ``= book_equity / circ_mv``. Book equity = ``bs_total_hldr_eqy_inc_min_int``
   (公司全部所有者权益, includes minority interest, as Barra does).
@@ -7,6 +7,9 @@
   annualize for the first year of history).
 * **DTOP** ``= ttm_cash_dividend_per_share / prev_close``. Sum of cash_div
   with ``ex_date`` in the trailing 365 days, divided by ``pre_close``.
+
+The L1 composite ``f_barra_value`` z-scores each via the standard L3
+pipeline (MAD → industry median fill → cs_zscore) and equal-weight averages.
 """
 
 from __future__ import annotations
@@ -19,22 +22,11 @@ from backtest.factor.builtin.barra._common import (
     latest_quarter_per_day,
     to_panel_series,
 )
-from backtest.factor.registry import register
 from backtest.factor.transforms import ttm
-from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 DIVIDEND_LOOKBACK_DAYS = 400
 
 
-@register(
-    "f_barra_value_btop",
-    name="Barra Value — BTOP",
-    category=CATEGORY_BARRA_L3,
-    data_sources=["market_daily", "balancesheet_q"],
-    description="Book equity (incl. minority interest) / floating market cap.",
-    variant=BARRA_L3_VARIANT,
-    frequency="D",
-)
 def barra_value_btop(panel: pd.DataFrame) -> pd.Series:
     df = latest_quarter_per_day(
         panel[["date", "symbol", "circ_mv", "bs_total_hldr_eqy_inc_min_int", "end_date"]]
@@ -46,15 +38,6 @@ def barra_value_btop(panel: pd.DataFrame) -> pd.Series:
     return to_panel_series(df, btop.values, name="btop")
 
 
-@register(
-    "f_barra_value_etop",
-    name="Barra Value — ETOP",
-    category=CATEGORY_BARRA_L3,
-    data_sources=["market_daily", "income_q"],
-    description="TTM net income attributable to parent / floating market cap.",
-    variant=BARRA_L3_VARIANT,
-    frequency="D",
-)
 def barra_value_etop(panel: pd.DataFrame) -> pd.Series:
     cols = ["date", "symbol", "circ_mv", "inc_n_income_attr_p", "end_date"]
     sub = panel[cols].copy()
@@ -65,21 +48,10 @@ def barra_value_etop(panel: pd.DataFrame) -> pd.Series:
     return to_panel_series(df, etop.values, name="etop")
 
 
-@register(
-    "f_barra_value_dtop",
-    name="Barra Value — DTOP",
-    category=CATEGORY_BARRA_L3,
-    data_sources=["market_daily"],
-    description=(
-        "Trailing-12m cash dividend / pre_close. Reads dividends event table "
-        "directly from MarketStorage rather than through panel."
-    ),
-    variant=BARRA_L3_VARIANT,
-    frequency="D",
-)
 def barra_value_dtop(
     panel: pd.DataFrame,
     *,
+    market_storage: MarketStorage,
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> pd.Series:
@@ -95,8 +67,7 @@ def barra_value_dtop(
             pd.Timestamp(start_date) - pd.Timedelta(days=DIVIDEND_LOOKBACK_DAYS)
         ).strftime("%Y%m%d")
 
-    with MarketStorage() as ms:
-        div = ms.get_dividends(start=div_start, end=end_date)
+    div = market_storage.get_dividends(start=div_start, end=end_date)
     if div.empty:
         return to_panel_series(df, np.nan, name="dtop")
 

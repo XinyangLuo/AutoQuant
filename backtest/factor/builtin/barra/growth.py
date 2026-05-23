@@ -1,4 +1,4 @@
-"""Barra Growth factor — EGRO.
+"""Barra Growth factor — internal helper for ``f_barra_growth``.
 
 ``EGRO = slope(last 20 quarterly TTM EPS on time) / |mean(TTM EPS)|``.
 Positive direction so faster earnings growth ⇒ higher quality (opposite
@@ -13,23 +13,9 @@ from __future__ import annotations
 import pandas as pd
 
 from backtest.factor.builtin.barra._common import pit_quarterly_slope, to_panel_series
-from backtest.factor.registry import register
 from backtest.factor.transforms import ttm
-from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 
-@register(
-    "f_barra_growth_egro",
-    name="Barra Growth — EGRO",
-    category=CATEGORY_BARRA_L3,
-    data_sources=["market_daily", "income_q"],
-    description=(
-        "Slope of last 20 quarterly TTM basic_eps on time, divided by |mean|. "
-        "Positive direction: faster EPS growth ⇒ higher score."
-    ),
-    variant=BARRA_L3_VARIANT,
-    frequency="D",
-)
 def barra_growth_egro(panel: pd.DataFrame) -> pd.Series:
     sub = panel[["date", "symbol", "inc_basic_eps", "end_date"]].copy()
     sub["inc_basic_eps_ttm"] = ttm(sub, "inc_basic_eps", kind="flow")

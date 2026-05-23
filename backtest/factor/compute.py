@@ -10,19 +10,15 @@ import pandas as pd
 
 from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
-from backtest.factor.builtin.barra.size import SIZE_LNCAP_ID
+from backtest.factor.builtin.barra._common import apply_l3_pipeline
 from backtest.factor.registry import get_factor_function, get_factor_meta
-from backtest.factor.storage import FactorStorage
-from backtest.factor.transforms import (
-    cs_mad_winsorize,
-    cs_ols_residualize,
-    cs_zscore,
-    industry_median_fill,
-)
+from backtest.factor.storage import FactorLibrary, FactorStorage
+from backtest.factor.transforms import cs_ols_residualize, cs_zscore
 from backtest.factor.variants import (
     BARRA_IND_SIZE_VARIANT,
     BARRA_L3_VARIANT,
     NONE_VARIANT,
+    SIZE_L1_ID,
 )
 
 
@@ -110,12 +106,13 @@ def compute_factor(
             return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
 
         # Bind parameters and call the registered compute function. Pass
-        # factor_storage / start_date / end_date as kwargs only if the
-        # function declares them — plain bar-only factors stay unaware of
-        # the storage layer.
+        # market_storage / factor_storage / start_date / end_date as kwargs
+        # only if the function declares them — plain bar-only factors stay
+        # unaware of the storage layer.
         bound_fn = partial(compute_fn, **params) if params else compute_fn
         sig_params = inspect.signature(compute_fn).parameters
         candidates = (
+            ("market_storage", market_storage),
             ("factor_storage", factor_storage),
             ("start_date", start_date),
             ("end_date", end_date),
@@ -161,18 +158,18 @@ def apply_variant_pipeline(
     The factor's ``variant`` (from registry) selects the pipeline:
 
     * ``"none"`` — pass-through, factor values untouched. Used by Barra L1
-      composites (built from already-z-scored L3 exposures) and by any factor
-      that opts out of post-processing.
+      composites (which apply the L3 pipeline to each component internally)
+      and by any factor that opts out of post-processing.
     * ``"barra_l3"`` — CNE6 L3 style-exposure pipeline: MAD winsorize →
       SW-L1 industry median fill → cs_zscore. Output is a z-scored style
-      exposure, **not** a residual against other styles. Used by all 11
-      Barra L3 factors (Size/Beta/Momentum/Value/Quality/Liquidity/Growth).
+      exposure, **not** a residual against other styles. Used internally by
+      Barra L1 composites and available as a variant label for ad-hoc style
+      factors that want the same treatment.
     * ``"barra_ind_size"`` — full PLAN.md §2.2 alpha-neutralization pipeline:
       MAD winsorize → SW-L1 industry median fill → cs_zscore → cross-section
-      OLS residual against industry dummies + ``f_barra_size_lncap`` (already
-      z-scored under barra_l3) → re-cs_zscore. Strips industry and Size
-      exposure so what remains is pure alpha. Requires ``factor_storage`` to
-      read the Size_z column.
+      OLS residual against industry dummies + ``f_barra_size`` Size_z (read
+      from :class:`FactorLibrary`) → re-cs_zscore. Strips industry and Size
+      exposure so what remains is pure alpha.
 
     Returns
     -------
@@ -193,31 +190,25 @@ def apply_variant_pipeline(
         series = raw_series
     elif variant in (BARRA_L3_VARIANT, BARRA_IND_SIZE_VARIANT):
         own_market = market_storage is None
-        own_factor = factor_storage is None
         try:
             if market_storage is None:
                 market_storage = MarketStorage()
             start = raw_df["date"].min().strftime("%Y%m%d")
             end = raw_df["date"].max().strftime("%Y%m%d")
-            industry_panel = market_storage.get_industry_panel_range(
-                start=start, end=end, level="L1",
-            )
-            series = cs_mad_winsorize(raw_series, k=3.0)
-            series = industry_median_fill(series, industry_panel)
-            series = cs_zscore(series)
+            series = apply_l3_pipeline(raw_series, market_storage, start=start, end=end)
 
             if variant == BARRA_IND_SIZE_VARIANT:
-                if factor_storage is None:
-                    factor_storage = FactorStorage()
-                size_df = factor_storage.get_factor(
-                    SIZE_LNCAP_ID, start=start, end=end,
-                )
+                with FactorLibrary() as lib:
+                    size_df = lib.get_factor(SIZE_L1_ID, start=start, end=end)
                 if size_df.empty:
                     raise RuntimeError(
-                        f"barra_ind_size pipeline requires {SIZE_LNCAP_ID} to "
-                        "be backfilled first; got empty Size_z panel."
+                        f"barra_ind_size pipeline requires {SIZE_L1_ID} to be "
+                        f"admitted into the factor library first; got empty Size_z panel."
                     )
                 size_df = size_df.rename(columns={"value": "size_z"})
+                industry_panel = market_storage.get_industry_panel_range(
+                    start=start, end=end, level="L1",
+                )
                 design = industry_panel.merge(
                     size_df, on=["date", "symbol"], how="outer",
                 )
@@ -231,8 +222,6 @@ def apply_variant_pipeline(
         finally:
             if own_market and market_storage is not None:
                 market_storage.close()
-            if own_factor and factor_storage is not None:
-                factor_storage.close()
     else:
         raise ValueError(f"Unknown variant {variant!r} for {factor_id}")
 

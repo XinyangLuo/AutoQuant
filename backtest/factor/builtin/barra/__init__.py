@@ -1,20 +1,20 @@
-"""Barra-style risk factors (CNE6 trimmed subset).
+"""Barra-style risk factors (CNE6 trimmed subset) — 7 L1 composites.
 
-11 L3 (style-exposure) factors → 7 L1 composites. See PLAN.md §2.1 for the
-canonical formula table and ``backtest/factor/DESIGN.md`` for storage layout.
+Only the 7 L1 composites are registered factors that land in
+``factor_library.duckdb``: Size, Beta, Momentum, Value, Quality, Liquidity,
+Growth. The 11 underlying L3 building blocks (LNCAP / BTOP / ETOP / DTOP /
+BETA / RSTR / STOM / EGRO / ROA / GP / AGRO) are internal Python helpers
+living in this package — they are NOT registered, NOT in the registry,
+and NOT in either work or library DB.
 
-L3 factors (``variant="barra_l3"``)
-    Pipeline: MAD winsorize → SW-L1 industry median fill → cs_zscore.
-    The stored value is the z-scored style exposure, ready to act as a
-    regressor in alpha-neutralization (``variant="barra_ind_size"``).
+Each L1 composite:
+    1. Calls its L3 helper(s) on the input panel.
+    2. z-scores each L3 series via the L3 pipeline
+       (MAD winsorize → SW-L1 industry median fill → cs_zscore).
+    3. Equal-weight averages the z-scored components.
 
-L1 composites (``variant="none"``)
-    Equal-weight averages of pre-z-scored L3 inputs read directly from
-    ``factors_daily``. No further post-processing.
-
-Naming:
-    L3 ``f_barra_<l1>_<l3>``  e.g. ``f_barra_size_lncap``
-    L1 ``f_barra_<l1>``       e.g. ``f_barra_size``
+Composite-side ``variant="none"`` — the L3 pipeline already happened
+on each component.
 """
 
 from backtest.factor.builtin.barra import (

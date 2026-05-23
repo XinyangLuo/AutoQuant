@@ -1,4 +1,4 @@
-"""Barra Liquidity factor — STOM (Share Turnover, Monthly).
+"""Barra Liquidity factor — internal helper for ``f_barra_liquidity``.
 
 ``STOM = ln(sum over last 21 trade days of amount_t / circ_mv_t)``.
 
@@ -13,22 +13,10 @@ import numpy as np
 import pandas as pd
 
 from backtest.factor.builtin.barra._common import to_panel_series
-from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 STOM_WINDOW = 21
 
 
-@register(
-    "f_barra_liquidity_stom",
-    name="Barra Liquidity — STOM",
-    category=CATEGORY_BARRA_L3,
-    data_sources=["market_daily"],
-    description=f"ln(rolling-{STOM_WINDOW}d sum of amount/circ_mv).",
-    variant=BARRA_L3_VARIANT,
-    frequency="D",
-    parameters={"window": STOM_WINDOW},
-)
 def barra_liquidity_stom(panel: pd.DataFrame, window: int = STOM_WINDOW) -> pd.Series:
     df = panel[["date", "symbol", "amount", "circ_mv"]].copy()
     df = df.sort_values(["symbol", "date"])

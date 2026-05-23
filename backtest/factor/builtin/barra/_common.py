@@ -10,6 +10,36 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from backtest.data.storage import MarketStorage
+from backtest.factor.transforms import (
+    cs_mad_winsorize,
+    cs_zscore,
+    industry_median_fill,
+)
+
+
+def apply_l3_pipeline(
+    raw_series: pd.Series,
+    market_storage: MarketStorage,
+    *,
+    start: str,
+    end: str,
+) -> pd.Series:
+    """The CNE6 L3 style-exposure pipeline.
+
+    ``MAD winsorize (k=3) → SW-L1 industry median fill → cs_zscore``.
+    Both ``apply_variant_pipeline`` (for any factor with ``variant='barra_l3'``)
+    and the Barra L1 composites call this on each L3 sub-component before
+    averaging — keeping the math in one place.
+    """
+    industry_panel = market_storage.get_industry_panel_range(
+        start=start, end=end, level="L1",
+    )
+    series = cs_mad_winsorize(raw_series, k=3.0)
+    series = industry_median_fill(series, industry_panel)
+    series = cs_zscore(series)
+    return series
+
 
 def to_panel_series(df: pd.DataFrame, values, name: str) -> pd.Series:
     """Build a ``(date, symbol)``-indexed Series from a frame plus a value column.

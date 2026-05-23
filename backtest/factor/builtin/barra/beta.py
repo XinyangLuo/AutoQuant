@@ -1,5 +1,6 @@
-"""Barra Beta factor — WLS regression of daily returns on CSI 300.
+"""Barra Beta factor — internal helper for ``f_barra_beta``.
 
+WLS regression of daily log-returns on CSI 300 daily log-returns.
 Window 252d, half-life 63d (so weight ``w_t = 0.5^{(T-t)/63}``). Returns
 the slope coefficient β; intercept and residual are discarded.
 
@@ -21,8 +22,6 @@ from backtest.factor.builtin.barra._common import (
     log_return,
     to_panel_series,
 )
-from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 BETA_WINDOW = 252
 BETA_HALFLIFE = 63
@@ -75,21 +74,11 @@ def _vectorized_wls_beta(
     return out
 
 
-@register(
-    "f_barra_beta_beta",
-    name="Barra Beta — BETA",
-    category=CATEGORY_BARRA_L3,
-    data_sources=["market_daily"],
-    description=(
-        "WLS slope of daily log-returns on CSI 300 daily log-returns. "
-        f"Window={BETA_WINDOW}, half-life={BETA_HALFLIFE} days."
-    ),
-    variant=BARRA_L3_VARIANT,
-    frequency="D",
-    parameters={"window": BETA_WINDOW + 22},
-)
-def barra_beta_beta(panel: pd.DataFrame, window: int | None = None) -> pd.Series:
-    del window
+def barra_beta_beta(
+    panel: pd.DataFrame,
+    *,
+    market_storage: MarketStorage,
+) -> pd.Series:
     df = panel[["date", "symbol", "close", "adj_factor"]].copy()
     df["adj_close"] = df["close"] * df["adj_factor"]
     df = df.sort_values(["symbol", "date"])
@@ -97,8 +86,9 @@ def barra_beta_beta(panel: pd.DataFrame, window: int | None = None) -> pd.Series
 
     start = df["date"].min().strftime("%Y%m%d")
     end = df["date"].max().strftime("%Y%m%d")
-    with MarketStorage() as ms:
-        bench = ms.get_index_bars([_CSI300], start=start, end=end, columns=["close"])
+    bench = market_storage.get_index_bars(
+        [_CSI300], start=start, end=end, columns=["close"],
+    )
     if bench.empty:
         return pd.Series(dtype=float, name="beta")
     bench = bench.sort_values("date")

@@ -52,7 +52,7 @@ from backtest.factor.registry import (
     sync_registry,
 )
 from backtest.factor.storage import FactorLibrary, FactorStorage
-from backtest.factor.variants import CATEGORY_BARRA_L1, CATEGORY_BARRA_L3
+from backtest.factor.variants import CATEGORY_BARRA_L1
 
 # Reference thresholds — purely informational. ``evaluation`` may print
 # "passes / does not pass" relative to these to help a human decide, but
@@ -98,9 +98,10 @@ def _now_iso() -> str:
 
 # Categories that bootstrap the library — they ARE the regressors used by
 # the ridge R² check, so they're admitted before the check exists for anything
-# else. Always-skip these from the gate.
+# else. Always-skip these from the gate. Only the 7 Barra L1 composites are
+# library-resident; the L3 helpers live in code, not in any DB.
 _BOOTSTRAP_CATEGORIES: frozenset[str] = frozenset({
-    CATEGORY_BARRA_L3, CATEGORY_BARRA_L1,
+    CATEGORY_BARRA_L1,
 })
 
 

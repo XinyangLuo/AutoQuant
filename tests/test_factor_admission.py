@@ -349,11 +349,11 @@ class TestAdmitRidgeGate:
         # force still records the verdict — caller chose to override knowingly.
 
     def test_bootstrap_categories_skip_ridge_check(self, patched_storage, sample_rows):
-        """barra_l3 / barra_l1 factors don't trigger the ridge gate."""
+        """barra_l1 factors don't trigger the ridge gate (they ARE the regressors)."""
         with FactorStorage() as work:
             work.insert_factors(sample_rows)
         registry = _seed_registry()
-        registry["f_test"]["category"] = "barra_l3"
+        registry["f_test"]["category"] = "barra_l1"
 
         action = admit("f_test", registry=registry)
         assert action.action == "admitted"

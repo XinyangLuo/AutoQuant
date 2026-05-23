@@ -139,10 +139,10 @@ class MockMarketStorage:
 class TestApplyVariantPipeline:
     """Verify barra_ind_size pipeline strips industry and Size_z exposure."""
 
-    def test_barra_ind_size_residualizes(self, tmp_path):
+    def test_barra_ind_size_residualizes(self, tmp_path, monkeypatch):
         from backtest.factor.compute import apply_variant_pipeline
         from backtest.factor.registry import register
-        from backtest.factor.storage import FactorStorage
+        from backtest.factor.storage import FactorLibrary
         from backtest.factor.variants import BARRA_IND_SIZE_VARIANT
 
         @register(
@@ -176,7 +176,7 @@ class TestApplyVariantPipeline:
             for sym in symbols:
                 y = ind_effect[industries[sym]] + 1.2 * sz[sym] + 0.4 * rng.standard_normal()
                 raw_rows.append({"date": d, "symbol": sym, "value": y, "factor_id": "f_alpha_test"})
-                size_rows.append({"date": d, "symbol": sym, "factor_id": "f_barra_size_lncap", "value": sz[sym]})
+                size_rows.append({"date": d, "symbol": sym, "factor_id": "f_barra_size", "value": sz[sym]})
                 ind_rows.append({"date": d, "symbol": sym, "industry_code": industries[sym]})
 
         raw_df = pd.DataFrame(raw_rows)
@@ -189,14 +189,18 @@ class TestApplyVariantPipeline:
             def close(self):
                 pass
 
-        fs_path = tmp_path / "factors.duckdb"
-        with FactorStorage(db_path=fs_path) as fs:
-            fs.insert_factors(size_df)
-            out = apply_variant_pipeline(
-                raw_df, "f_alpha_test",
-                market_storage=_MS(),
-                factor_storage=fs,
-            )
+        # Seed Size_z into a tmp library DB and point FactorLibrary at it.
+        lib_path = tmp_path / "factor_library.duckdb"
+        monkeypatch.setattr(
+            "backtest.factor.storage.FACTOR_LIBRARY_DB_PATH", lib_path,
+        )
+        with FactorLibrary() as lib:
+            lib.insert_factors(size_df, allow_unadmitted=True)
+
+        out = apply_variant_pipeline(
+            raw_df, "f_alpha_test",
+            market_storage=_MS(),
+        )
 
         # Residualized values should be ~orthogonal to size_z and industry dummies.
         merged = out.merge(

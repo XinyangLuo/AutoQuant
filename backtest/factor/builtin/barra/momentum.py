@@ -1,4 +1,4 @@
-"""Barra Momentum factor — RSTR.
+"""Barra Momentum factor — internal helper for ``f_barra_momentum``.
 
 CNE6 definition: every day compute ``ln(1 + r_t)``, take an EWMA with
 half-life 126 days over the trailing 252 days, lag the result by 11
@@ -17,8 +17,6 @@ from backtest.factor.builtin.barra._common import (
     log_return,
     to_panel_series,
 )
-from backtest.factor.registry import register
-from backtest.factor.variants import BARRA_L3_VARIANT, CATEGORY_BARRA_L3
 
 RSTR_WINDOW = 252
 RSTR_HALFLIFE = 126
@@ -50,21 +48,7 @@ def _ewm_log_return_sum(log_ret: pd.Series, window: int, halflife: int) -> pd.Se
     return log_ret.rolling(window, min_periods=window).apply(_kernel, raw=True)
 
 
-@register(
-    "f_barra_momentum_rstr",
-    name="Barra Momentum — RSTR",
-    category=CATEGORY_BARRA_L3,
-    data_sources=["market_daily"],
-    description=(
-        f"EWMA(window={RSTR_WINDOW}, half-life={RSTR_HALFLIFE}) of ln(1+r_t), "
-        f"lagged {RSTR_LAG}d then {RSTR_SMOOTH}d equal-weight smoothed."
-    ),
-    variant=BARRA_L3_VARIANT,
-    frequency="D",
-    parameters={"window": RSTR_WINDOW + RSTR_LAG + RSTR_SMOOTH},
-)
-def barra_momentum_rstr(panel: pd.DataFrame, window: int | None = None) -> pd.Series:
-    del window
+def barra_momentum_rstr(panel: pd.DataFrame) -> pd.Series:
     df = panel[["date", "symbol", "close", "adj_factor"]].copy()
     df["adj_close"] = df["close"] * df["adj_factor"]
     df = df.sort_values(["symbol", "date"])
