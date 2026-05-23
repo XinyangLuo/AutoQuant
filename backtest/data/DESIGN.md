@@ -74,6 +74,16 @@
   - `get_industry_panel(date, level='L1')` —— D 日横截面 `[symbol, industry_code, industry_name]`(按 `in_date <= D AND (out_date IS NULL OR out_date > D)` 过滤)
   - `get_industry_history(symbol, level=None)` —— 某股票的全历史归属
 
+### `index_members`(宽基指数成分股, 已密集化到每个交易日)
+
+- **数据源**：Tushare `pro.index_weight`(月度再平衡日的权重快照,每月一次)
+- **Schema**：`(index_code VARCHAR, symbol VARCHAR, trade_date DATE, weight DOUBLE)`
+- **主键**：`(index_code, symbol, trade_date)`
+- **入库语义**：月度快照展开到下次发布日前的每个交易日,日期等值查询直接可用,不需要 as-of 逻辑
+- **默认指数**：`000300.SH` / `000905.SH` / `000852.SH` / `932000.CSI`(配置在 `backfill/index_members.py:DEFAULT_INDICES`)。创业板指 `399006.SZ` 因 Tushare 账户权限限制暂未含
+- **入库脚本**：`python -m backtest.data.backfill.index_members`(增量从 `get_max_index_member_date(idx)+1` 开始,日更走 `update_daily.py` Phase 5)
+- **查询路径**：`get_index_members(date, index_code) -> set[symbol]`,用于策略层 universe 过滤(`backtest/strategy/universe.py` line 77)
+
 ## Fetch/Merge 模式
 
 ### 日频数据 (`market_daily`)

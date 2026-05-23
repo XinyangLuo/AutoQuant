@@ -42,7 +42,6 @@
 
 ### 数据模块扩展
 
-- 指数成分股表：`index_members(symbol, index_code, trade_date, weight)`
 - `get_fina_snapshot_range(start, end)`：区间批量 join，替换当前每个 trade_date 单查再 concat 的模式（性能瓶颈，全量 backfill 一个因子 30+ 分钟主因）
 
 ---

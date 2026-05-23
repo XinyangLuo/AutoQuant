@@ -103,7 +103,7 @@ AutoQuant/
 
 ## 4. 数据存储（已敲定）
 
-DuckDB，三个物理库 + 七张表：
+DuckDB，三个物理库 + 八张表：
 
 | DB | 表 | 主键 | 说明 |
 |---|---|---|---|
@@ -111,6 +111,7 @@ DuckDB，三个物理库 + 七张表：
 | | `income_q` / `balancesheet_q` / `cashflow_q` | `(symbol, end_date, f_ann_date, update_flag, report_type)` | Tushare 原始三表，物理保留所有版本，查询时 `get_fina_snapshot(D)` 按 `f_ann_date <= D` + QUALIFY 取 PIT 快照 |
 | | `dividends` | `(symbol, end_date)` | 仅 `div_proc='实施'` |
 | | `index_daily` | `(date, symbol)` | 6 大宽基指数 |
+| | `index_members` | `(index_code, symbol, trade_date)` | 月度成分股权重 densify 到每个交易日；默认 4 大宽基（HS300/CSI500/CSI1000/CSI2000） |
 | | `sw_industry` | `(symbol, level, industry_code, in_date)` | SW2021 行业归属历史，L1/L2 |
 | | `trade_calendar` | `(date)` | 交易日历 |
 | `data/duckdb/factors_pending.duckdb` | `factors_daily` | `(date, symbol)` | **work DB**：研究中/未 admit 因子。宽表，每个 factor_id 一列。`FactorStorage` 读写 |

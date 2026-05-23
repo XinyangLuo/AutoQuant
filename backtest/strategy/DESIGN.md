@@ -91,7 +91,7 @@ signals = strategy.run("20200101", "20241231")
 1. **ST/*ST 过滤**：`is_st == 0`
 2. **新股过滤**：`list_date` 到当前日期的交易日数 ≥ 配置值（calendar days 近似）
 3. **板块过滤**：创业板（30xxxx）、科创板（68xxxx）可选开关
-4. **指数成分股过滤**：查 `index_members` 表（需 data 模块扩展）
+4. **指数成分股过滤**：查 `index_members` 表（`MarketStorage.get_index_members`，月度快照已 densify 到每个交易日）
 5. **流动性过滤**：最小流通市值、最小20日平均成交额
 
 ### 选股方式
@@ -243,13 +243,12 @@ signals_df = strategy.run(start, end)
 
 | 需求 | 状态 | 说明 |
 |---|---|---|
-| 指数成分股 | 待实现 | `index_members` 表：`symbol, index_code, trade_date, weight`。Tushare `pro.index_weight`。支持 000300.SH / 000905.SH / 000852.SH / 932000.CSI / 399006.SZ |
+| 指数成分股 | 已实现 | `index_members` 表 + `MarketStorage.get_index_members()`。月度快照 densify 到每个交易日。默认覆盖 000300.SH / 000905.SH / 000852.SH / 932000.CSI |
 | 申万行业分类 | 已实现 | `sw_industry` 表 + `get_industry_panel_range()`。见 `backtest/data/DESIGN.md` |
 | 20日平均成交额 | 中 | 策略层用 `get_bars()` 自行计算，或 market_daily 预计算 |
 
 ## 待实现 / 预留
 
-- [ ] 指数成分股过滤：待 `index_members` 表落地后，在 `universe.py` 中接入
 - [ ] CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`
 
 ---
