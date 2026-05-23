@@ -2,32 +2,26 @@
 
 > 临时工单池。每项完成后从本文件删除；全部完成后删除整份 TODO.md。
 > 分级：P0=立刻/阻塞，P1=依赖 P0，P2=有价值但不紧急，P3=维护/锦上添花，P4=远期/想法池
-> 上次整理: 2026-05-23
+> 上次整理: 2026-05-24
 
 ---
 
 ## P0
 
-### 完成 Barra L1 风险因子全量入库
+### Barra L1 收尾
 
-> 7 个 Barra L1 中 5 个已 admitted（Size / Beta / Momentum / Liquidity / Value），Growth / Quality 当前正在跑全历史 chunked backfill（PID 50582）。
-> 完成判定：`registry.json` 7 个均 `status=admitted`；`factor_library.duckdb` 含 7 列。
-
-- [ ] **P0.1** 等 `f_barra_growth` + `f_barra_quality` 全量 backfill 完成
-- [ ] **P0.2** 跑 admission：`for f in f_barra_growth f_barra_quality; do python -m backtest.factor.admission admit "$f"; done`
-- [ ] **P0.3** 验证 `python -m backtest.factor.admission status` 7/7 admitted；smoke test 一个 alpha 走 `barra_ind_size` pipeline
+- [ ] **P0.1** smoke test 一个 alpha 走 `barra_ind_size` pipeline，验证 7/7 admitted 的 Barra L1 能被读出来做中性化
 
 ### 基本面因子测试覆盖
 
-- [ ] **P0.4** Round 1 测试：multi-type fetch + 5-列 PK + snapshot 行为
-- [ ] **P0.5** Round 2 测试：`transforms.single_quarter` / `ttm` / `yoy` 三个助手函数
+- [ ] **P0.2** Round 1 测试：multi-type fetch + 5-列 PK + snapshot 行为
+- [ ] **P0.3** Round 2 测试：`transforms.single_quarter` / `ttm` / `yoy` 三个助手函数
 
 ### 因子挖掘 pipeline 剩余项
 
-- [ ] **P0.6** 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
-- [ ] **P0.7** 端到端验证：用已 admitted 的 Barra L1 因子跑通全链路
-- [ ] **P0.8** `run-all` 中 retry 逻辑落地（step6/7 失败后自动调参重试）
-- [x] **P0.9** Agent 调用接口已落地（`agents.rdagent.run`）
+- [ ] **P0.4** 集成测试：CLI step1~step9 顺序调用 + state JSON 累积验证
+- [ ] **P0.5** 端到端验证：用一个因子跑通全链路
+- [ ] **P0.6** `run-all` 中 retry 逻辑落地（step6/7 失败后自动调参重试）
 
 ---
 
