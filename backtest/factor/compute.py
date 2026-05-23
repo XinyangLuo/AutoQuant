@@ -22,6 +22,50 @@ from backtest.factor.variants import (
 )
 
 
+# Multi-year fina factor compute panels grow as O(trade_dates × symbols ×
+# end_dates_visible). For factors like Growth / Quality whose helpers retain
+# the multi-quarter history per (date, symbol), a 35-year single-shot panel
+# exceeds RAM and the OS SIGKILLs the worker. Chunking the range into
+# manageable windows keeps each compute call's peak memory bounded; outputs
+# are concatenated so the caller sees the full range. Picked 2 years as a
+# compromise between memory bound and number of round-trips.
+_FINA_CHUNK_YEARS = 1
+
+
+def _compute_factor_chunked(
+    factor_id: str,
+    start_date: str,
+    end_date: str,
+    *,
+    market_storage: MarketStorage | None,
+    factor_storage: FactorStorage | None,
+    chunk_years: int,
+) -> pd.DataFrame:
+    """Split a fina-heavy compute_factor call into calendar-year chunks."""
+    start_dt = datetime.strptime(start_date, "%Y%m%d")
+    end_dt = datetime.strptime(end_date, "%Y%m%d")
+
+    pieces: list[pd.DataFrame] = []
+    cur = start_dt
+    while cur <= end_dt:
+        chunk_end_year = cur.year + chunk_years - 1
+        chunk_end = min(datetime(chunk_end_year, 12, 31), end_dt)
+        sub = compute_factor(
+            factor_id,
+            cur.strftime("%Y%m%d"),
+            chunk_end.strftime("%Y%m%d"),
+            market_storage=market_storage,
+            factor_storage=factor_storage,
+        )
+        if not sub.empty:
+            pieces.append(sub)
+        cur = datetime(chunk_end_year + 1, 1, 1)
+
+    if not pieces:
+        return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
+    return pd.concat(pieces, ignore_index=True)
+
+
 def compute_factor(
     factor_id: str,
     start_date: str,
@@ -41,6 +85,12 @@ def compute_factor(
     The caller is responsible for writing the result to FactorStorage.
     Only the raw factor is computed here. To apply the registry-declared
     neutralization, pass the result to :func:`apply_variant_pipeline`.
+
+    For factors that read PIT financial snapshots over multi-year ranges,
+    the per-date-snapshot concat panel can exceed RAM. ``_FINA_CHUNK_YEARS``
+    auto-splits the range into calendar-year chunks for such factors and
+    concatenates the per-chunk outputs — keeping the math identical while
+    bounding peak memory.
     """
     meta = get_factor_meta(factor_id)
     compute_fn = get_factor_function(factor_id)
@@ -53,6 +103,22 @@ def compute_factor(
         for src in data_sources
     )
     needs_factor_store = any(src == "factors_daily" for src in data_sources)
+
+    # Auto-chunk fina-heavy factors over long ranges. Each chunk loads its own
+    # bounded PIT-concat panel; the factor function runs once per chunk. Safe
+    # because the factor's output for date D depends only on the snapshot at
+    # D + lookback already inside compute_factor's window calculation.
+    if needs_fina and not needs_factor_store:
+        start_dt = datetime.strptime(start_date, "%Y%m%d")
+        end_dt = datetime.strptime(end_date, "%Y%m%d")
+        years_span = (end_dt - start_dt).days / 365.25
+        if years_span > _FINA_CHUNK_YEARS:
+            return _compute_factor_chunked(
+                factor_id, start_date, end_date,
+                market_storage=market_storage,
+                factor_storage=factor_storage,
+                chunk_years=_FINA_CHUNK_YEARS,
+            )
 
     own_market = market_storage is None
     own_factor = factor_storage is None
@@ -106,6 +172,12 @@ def compute_factor(
                     input_panel = input_panel.merge(
                         fina_all, on=["date", "symbol"], how="left"
                     )
+            else:
+                # No fina snapshot is visible in this date range (e.g. early
+                # 1990s chunk before listing). The factor function would crash
+                # looking up missing fina columns — return empty so the chunk
+                # contributes nothing instead of erroring out.
+                return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
 
         # Composites (e.g. Barra L1) read L3 values directly from factor_storage
         # and don't need market_daily / fina. Skip the empty-panel guard for them.

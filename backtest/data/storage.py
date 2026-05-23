@@ -691,7 +691,13 @@ class MarketStorage:
         if columns:
             keep = list(_FINA_JOIN_KEYS)
             keep += [c for c in columns if c in merged.columns]
-            merged = merged[[c for c in keep if c in merged.columns]]
+            merged = merged[[c for c in keep if c in merged.columns]].copy()
+            # Backfill any requested columns that weren't present (e.g. early-
+            # period queries with no balancesheet rows yet) as all-NaN. Callers
+            # rely on stable column shape.
+            for c in columns:
+                if c not in merged.columns:
+                    merged[c] = pd.NA
 
         return merged
 

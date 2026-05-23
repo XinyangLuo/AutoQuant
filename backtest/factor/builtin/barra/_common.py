@@ -31,7 +31,15 @@ def apply_l3_pipeline(
     Both ``apply_variant_pipeline`` (for any factor with ``variant='barra_l3'``)
     and the Barra L1 composites call this on each L3 sub-component before
     averaging — keeping the math in one place.
+
+    On an empty ``raw_series`` (e.g. an early-history chunk where the L3
+    helper produced no rows), return the empty Series unchanged. Without the
+    short-circuit, pandas' ``groupby(...).apply`` inside ``cs_mad_winsorize``
+    collapses the empty (date, symbol) MultiIndex to a single-level Index,
+    which the next step's panel-series check then rejects.
     """
+    if raw_series.empty:
+        return raw_series
     industry_panel = market_storage.get_industry_panel_range(
         start=start, end=end, level="L1",
     )
