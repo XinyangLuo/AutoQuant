@@ -10,6 +10,8 @@ from __future__ import annotations
 import ast
 import json
 import re
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .core.proposal import Hypothesis, Hypothesis2Experiment, HypothesisGen
@@ -33,16 +35,71 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
+def _log_llm_response(
+    content: str,
+    log_dir: Path | None,
+    prefix: str,
+    print_to_terminal: bool = True,
+    print_limit: int = 0,
+) -> Path | None:
+    """Save LLM raw response to disk and optionally echo to terminal.
+
+    Parameters
+    ----------
+    content : str
+        Raw LLM response text.
+    log_dir : Path | None
+        Directory to write the log file.  If None, only prints.
+    prefix : str
+        Filename prefix (e.g. ``hypothesis``, ``codegen``).
+    print_to_terminal : bool
+        Whether to ``print()`` the content (or a preview).
+    print_limit : int
+        If > 0, print only first *N* lines; 0 means print everything.
+
+    Returns
+    -------
+    Path | None
+        Path to the saved file, or None if log_dir was None.
+    """
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname = f"{prefix}_{ts}.txt"
+
+    if log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        fpath = log_dir / fname
+        fpath.write_text(content, encoding="utf-8")
+    else:
+        fpath = None
+
+    if print_to_terminal:
+        if print_limit > 0:
+            lines = content.splitlines()
+            preview = "\n".join(lines[:print_limit])
+            if len(lines) > print_limit:
+                preview += f"\n... ({len(lines) - print_limit} more lines)"
+            print(f"\n[LLM {prefix.upper()}] {fpath.name if fpath else ''}\n{preview}")
+        else:
+            print(f"\n[LLM {prefix.upper()}] {fpath.name if fpath else ''}\n{content}")
+
+    return fpath
+
+
 def _generate_factor_id(batch: str | None = None, seq: int | None = None) -> str:
     """Generate a unique factor ID for AI-generated factors.
 
-    Format: ``f_auto_{batch}_{seq}`` — distinct from human factors ``f_###``.
+    Format: ``f_auto_{batch}_{seq:03d}`` — distinct from human factors ``f_###``.
+    When ``batch`` is omitted, falls back to a timestamp-based run label so
+    every ID remains ordered and human-readable.
     """
     import uuid
+    from datetime import datetime
 
     if batch and seq is not None:
         return f"f_auto_{batch}_{seq:03d}"
-    return f"f_auto_{uuid.uuid4().hex[:8]}"
+    # Fallback for standalone / test use
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"f_auto_{ts}"
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -98,38 +155,135 @@ def _validate_python_code(code: str) -> None:
     ast.parse(code)
 
 
-def _inject_factor_id(code: str, factor_id: str) -> str:
-    """Replace the factor_id in the @register decorator using AST.
+_VALID_VARIANTS: set[str] = {"none", "barra_l3", "barra_ind_size"}
+_DEFAULT_VARIANT: str = "barra_ind_size"
 
-    The LLM may generate a placeholder ID; we force the actual generated ID.
+# Semantic factor_id pattern: f_auto_<slug> where slug is lowercase words/numbers/underscores.
+_SEMANTIC_ID_RE: re.Pattern[str] = re.compile(r"^f_auto_[a-z0-9_]+$")
+
+# Exact names exported by ``backtest.factor.transforms`` (keep in sync).
+_VALID_TRANSFORMS: set[str] = {
+    "abs_", "cap_neutralize", "cs_demean", "cs_mad_winsorize",
+    "cs_ols_residualize", "cs_winsorize", "cs_zscore", "if_else",
+    "industry_median_fill", "industry_neutralize", "inverse", "log",
+    "rank", "sign", "signed_power", "single_quarter", "sqrt",
+    "ts_argmax", "ts_argmin", "ts_corr", "ts_covariance", "ts_decay_exp",
+    "ts_decay_linear", "ts_delay", "ts_delta", "ts_ir", "ts_kurtosis",
+    "ts_max", "ts_mean", "ts_min", "ts_pct_change", "ts_product",
+    "ts_rank", "ts_skewness", "ts_std", "ts_sum", "ttm", "yoy", "z_score",
+}
+
+
+def _validate_transforms_imports(code: str) -> None:
+    """Check that every name imported from ``backtest.factor.transforms`` exists.
+
+    Raises ``ValueError`` with a descriptive message if an unknown operator is
+    referenced (e.g. LLM hallucinated ``cs_rank``).
     """
+    tree = ast.parse(code)
+    bad: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "backtest.factor.transforms":
+                for alias in node.names:
+                    name = alias.asname if alias.asname else alias.name
+                    if name == "*":
+                        continue
+                    if name not in _VALID_TRANSFORMS:
+                        bad.append(name)
+    if bad:
+        raise ValueError(
+            f"Unknown transform(s) imported: {bad}. "
+            f"Valid names: {sorted(_VALID_TRANSFORMS)}"
+        )
+
+
+def _extract_llm_factor_id(code: str) -> str | None:
+    """Extract the factor_id string the LLM wrote in the @register decorator."""
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        # Invalid code — prepend decorator and let caller validate later
-        return f'@register("{factor_id}")\n' + code
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            for dec in node.decorator_list:
+                if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name) and dec.func.id == "register":
+                    if dec.args and isinstance(dec.args[0], ast.Constant):
+                        return str(dec.args[0].value)
+                    for kw in dec.keywords:
+                        if kw.arg == "factor_id" and isinstance(kw.value, ast.Constant):
+                            return str(kw.value.value)
+    return None
+
+
+def _inject_factor_id(
+    code: str,
+    fallback_id: str,
+    used_ids: set[str] | None = None,
+) -> tuple[str, str]:
+    """Resolve the final factor_id and inject it (plus variant sanitization).
+
+    Priority:
+      1. LLM-generated semantic ID (``f_auto_<slug>``) if it passes validation.
+      2. ``fallback_id`` (batch+seq or timestamp) if the LLM ID is missing/invalid.
+      3. De-duplicate against ``used_ids`` by appending ``_001``, ``_002``, …
+
+    Returns
+    -------
+    (updated_code, final_factor_id)
+    """
+    # 1. Extract what the LLM wrote
+    llm_id = _extract_llm_factor_id(code)
+
+    # 2. Validate / clean
+    if llm_id and _SEMANTIC_ID_RE.match(llm_id):
+        final_id = llm_id
+    else:
+        if llm_id:
+            print(f"  [WARN] LLM factor_id '{llm_id}' is invalid; using fallback '{fallback_id}'")
+        final_id = fallback_id
+
+    # 3. De-duplicate within the run
+    if used_ids is not None:
+        base = final_id
+        n = 1
+        while final_id in used_ids:
+            final_id = f"{base}_{n:03d}"
+            n += 1
+
+    # 4. Inject into AST
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return f'@register("{final_id}")\n' + code, final_id
 
     modified = False
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef):
             for i, dec in enumerate(node.decorator_list):
-                # Handle @register("...") or @register(factor_id="...")
                 if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name) and dec.func.id == "register":
                     if dec.args and isinstance(dec.args[0], ast.Constant):
-                        dec.args[0] = ast.Constant(value=factor_id)
+                        dec.args[0] = ast.Constant(value=final_id)
                         modified = True
-                    elif dec.keywords:
-                        for kw in dec.keywords:
-                            if kw.arg == "factor_id" and isinstance(kw.value, ast.Constant):
-                                kw.value = ast.Constant(value=factor_id)
+                    for kw in dec.keywords:
+                        if kw.arg == "factor_id" and isinstance(kw.value, ast.Constant):
+                            kw.value = ast.Constant(value=final_id)
+                            modified = True
+                            break
+                    # Sanitize variant
+                    for kw in dec.keywords:
+                        if kw.arg == "variant" and isinstance(kw.value, ast.Constant):
+                            v = kw.value.value
+                            if v not in _VALID_VARIANTS:
+                                print(f"  [WARN] Invalid variant '{v}' from LLM, falling back to '{_DEFAULT_VARIANT}'")
+                                kw.value = ast.Constant(value=_DEFAULT_VARIANT)
                                 modified = True
-                                break
+                            break
                     break
-                # Handle bare @register (no parentheses)
                 elif isinstance(dec, ast.Name) and dec.id == "register":
                     node.decorator_list[i] = ast.Call(
                         func=ast.Name(id="register", ctx=ast.Load()),
-                        args=[ast.Constant(value=factor_id)],
+                        args=[ast.Constant(value=final_id)],
                         keywords=[],
                     )
                     modified = True
@@ -139,9 +293,8 @@ def _inject_factor_id(code: str, factor_id: str) -> str:
 
     if modified:
         tree = ast.fix_missing_locations(tree)
-        return ast.unparse(tree)
-    # No @register found — prepend one
-    return f'@register("{factor_id}")\n' + code
+        return ast.unparse(tree), final_id
+    return f'@register("{final_id}")\n' + code, final_id
 
 
 # ---------------------------------------------------------------------------
@@ -157,11 +310,13 @@ class AutoQuantFactorHypothesisGen(HypothesisGen):
         scenario: "AShareQuantScenario",
         llm_client: Any,
         knowledge_base: "KnowledgeBase | None" = None,
+        log_dir: Path | str | None = None,
     ):
         super().__init__(scenario)
         self.llm = llm_client
         self.kb = knowledge_base
         self._prompt_dir = scenario._prompt_dir
+        self._log_dir = Path(log_dir) if log_dir else None
 
     def gen(
         self,
@@ -212,6 +367,9 @@ class AutoQuantFactorHypothesisGen(HypothesisGen):
         content = choice.message.content
         if not content:
             raise RuntimeError("LLM returned empty content (possible refusal or empty completion)")
+
+        _log_llm_response(content, self._log_dir, "hypothesis", print_limit=0)
+
         data = _extract_json(content)
 
         return Hypothesis(
@@ -306,15 +464,21 @@ class AutoQuantFactorHypothesis2Experiment(Hypothesis2Experiment):
         self,
         scenario: "AShareQuantScenario",
         llm_client: Any,
+        log_dir: Path | str | None = None,
+        batch: str | None = None,
     ):
         super().__init__(scenario)
         self.llm = llm_client
         self._prompt_dir = scenario._prompt_dir
+        self._log_dir = Path(log_dir) if log_dir else None
+        self._batch = batch
 
     def convert(
         self,
         hypothesis: Hypothesis,
         trace: "Trace | None" = None,
+        seq: int | None = None,
+        used_ids: set[str] | None = None,
     ) -> AutoQuantFactorExperiment:
         """Convert a hypothesis into an executable experiment.
 
@@ -335,7 +499,7 @@ class AutoQuantFactorHypothesis2Experiment(Hypothesis2Experiment):
             )
 
         # Generate factor ID
-        factor_id = _generate_factor_id()
+        factor_id = _generate_factor_id(batch=self._batch, seq=seq)
 
         # Build code generation prompt
         system_prompt = self._build_system_prompt()
@@ -359,12 +523,16 @@ class AutoQuantFactorHypothesis2Experiment(Hypothesis2Experiment):
         content = choice.message.content
         if not content:
             raise RuntimeError("LLM returned empty content (possible refusal or empty completion)")
+
+        _log_llm_response(content, self._log_dir, "codegen", print_limit=30)
+
         code = _extract_python_code(content)
-        code = _inject_factor_id(code, factor_id)
+        code, final_factor_id = _inject_factor_id(code, factor_id, used_ids=used_ids)
         _validate_python_code(code)
+        _validate_transforms_imports(code)
 
         return AutoQuantFactorExperiment(
-            factor_id=factor_id,
+            factor_id=final_factor_id,
             factor_code=code,
         )
 

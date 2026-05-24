@@ -21,9 +21,11 @@ from backtest.data.storage import MarketStorage
 def main():
     with MarketStorage() as storage:
         dates = storage.conn.execute("""
-            SELECT DISTINCT date
+            SELECT date
             FROM market_daily
-            WHERE mf_net_mf_amount IS NULL
+            WHERE date >= '2011-12-12'
+            GROUP BY date
+            HAVING COUNT(mf_net_mf_amount) = 0
             ORDER BY date
         """).fetchdf()["date"].tolist()
 
@@ -55,8 +57,8 @@ def main():
                         UPDATE market_daily m
                         SET {set_clause}
                         FROM tmp_mf t
-                        WHERE m.date = strptime(t.trade_date, '%Y%m%d')::DATE
-                          AND m.symbol = t.ts_code
+                        WHERE m.date = strptime(t.date, '%Y%m%d')::DATE
+                          AND m.symbol = t.symbol
                     """)
                     updated_total += result.fetchone()[0]
                 finally:

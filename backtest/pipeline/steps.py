@@ -400,9 +400,9 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
     """10-group quantile, Spearman corr(group_id, mean_return) > 0.7."""
     config = state.config
 
-    # Reuse eval_result from step3 if available
+    # Reuse eval_result from step3 if available (may be dict after JSON round-trip)
     eval_result = state.eval_result
-    if eval_result is None:
+    if eval_result is None or isinstance(eval_result, dict):
         eval_result = evaluate(
             config.factor_id,
             config.start_date,
@@ -549,7 +549,10 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
     if state.strategy_config is None:
         return _reject(state, "step6", "No strategy config. Run step5 first.")
 
-    strategy = SingleFactorStrategy(state.strategy_config)
+    sc = state.strategy_config
+    if isinstance(sc, dict):
+        sc = StrategyConfig.from_dict(sc)
+    strategy = SingleFactorStrategy(sc)
     signals = strategy.run(config.start_date, config.end_date)
     state.signals = signals
 

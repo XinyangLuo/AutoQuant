@@ -78,6 +78,8 @@ def _pipe(section: str, key: str):
 # Agent-specific fallback defaults.
 _AGENT_FALLBACKS: dict[str, Any] = {
     "high_bar_sharpe": 1.0,
+    "start_date": "20160101",
+    "end_date": "20251231",
 }
 
 
@@ -126,6 +128,10 @@ class AgentConfig:
     # ---- agent-specific ---------------------------------------------------
     #: High-bar early-stop threshold (from root ``agent:`` key).
     high_bar_sharpe: float = field(default_factory=_agent_root("high_bar_sharpe"))
+
+    #: Backtest date range (from root ``agent:`` key).
+    start_date: str = field(default_factory=_agent_root("start_date"))
+    end_date: str = field(default_factory=_agent_root("end_date"))
 
     #: Frequency-aware factory — see ``PipelineConfig.for_frequency``.
     frequency: str = "D"

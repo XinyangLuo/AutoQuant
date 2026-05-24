@@ -3,15 +3,17 @@
 Usage::
 
     # Run the agent loop
-    python -m agents.rdagent.run \
-        --max-rounds 10 --start 20160101 --end 20231231 \
-        --output-dir results/agent/run_001
+    python -m agents.rdagent.run run \
+        --max-rounds 10 --output-dir results/agent/run_001
 
     # List candidates from a run
-    python -m agents.rdagent.run --list-candidates results/agent/run_001
+    python -m agents.rdagent.run list-candidates results/agent/run_001
 
     # Admit a candidate (manual review)
-    python -m agents.rdagent.run --admit f_auto_001 --run-dir results/agent/run_001
+    python -m agents.rdagent.run admit f_auto_001 --run-dir results/agent/run_001
+
+Date range (start_date / end_date) is read from ``config.yaml`` (``agent.start_date``
+/ ``agent.end_date``), not from CLI flags.
 """
 
 from __future__ import annotations
@@ -23,6 +25,11 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+# Load API keys from .env so callers don't need to export manually.
+load_dotenv()
 
 from .config import AgentConfig
 from .core.evolving_framework import Trace
@@ -51,8 +58,6 @@ except ImportError:
 
 def run_agent_loop(
     max_rounds: int = 10,
-    start_date: str = "20160101",
-    end_date: str = "20231231",
     output_dir: Path = Path("results/agent"),
     *,
     agent_config: AgentConfig | None = None,
@@ -65,13 +70,11 @@ def run_agent_loop(
     ----------
     max_rounds : int
         Maximum number of hypothesis→experiment iterations.
-    start_date, end_date : str
-        Backtest date range (YYYYMMDD).
     output_dir : Path
         Directory to save checkpoints and reports.
     agent_config : AgentConfig | None
-        Thresholds and knobs.  Defaults are drawn from the pipeline / admission
-        configs (see ``agents.rdagent.config.AgentConfig``).
+        Thresholds, date range, and knobs.  Defaults are drawn from
+        ``config.yaml`` (see ``agents.rdagent.config.AgentConfig``).
     seed_hypothesis : Hypothesis | None
         If provided, use this as the Round-1 hypothesis instead of asking the
         LLM to generate one.  The LLM will still generate code from your idea.
@@ -104,8 +107,10 @@ def run_agent_loop(
     llm_client._default_model = "deepseek-chat"  # type: ignore[attr-defined]
 
     kb = AShareKnowledgeBase(db_path=output_dir / "kb.json")
-    hypothesis_gen = AutoQuantFactorHypothesisGen(scenario, llm_client, kb)
-    h2e = AutoQuantFactorHypothesis2Experiment(scenario, llm_client)
+    llm_logs_dir = output_dir / "llm_logs"
+    run_batch = output_dir.name  # e.g. "run_001" from "results/agent/run_001"
+    hypothesis_gen = AutoQuantFactorHypothesisGen(scenario, llm_client, kb, log_dir=llm_logs_dir)
+    h2e = AutoQuantFactorHypothesis2Experiment(scenario, llm_client, log_dir=llm_logs_dir, batch=run_batch)
     cfg = agent_config or AgentConfig()
     evaluator = AutoQuantFactorEvaluator(
         min_rankicir=cfg.min_rankicir,
@@ -116,8 +121,8 @@ def run_agent_loop(
     )
 
     with AutoQuantFactorRunner(
-        start_date=start_date,
-        end_date=end_date,
+        start_date=cfg.start_date,
+        end_date=cfg.end_date,
         results_root=output_dir,
         generated_dir=Path("alphas/agent"),
         agent_config=cfg,
@@ -125,6 +130,7 @@ def run_agent_loop(
         # Try resume from checkpoint
         trace = Trace()
         candidates: list[AutoQuantFactorExperiment] = []
+        used_factor_ids: set[str] = set()
         completed_rounds = 0
         round_num = completed_rounds  # safe lower bound; overridden by loop
 
@@ -162,10 +168,11 @@ def run_agent_loop(
 
             # 2. Convert to experiment (code generation)
             try:
-                experiment = h2e.convert(hypothesis, trace)
+                experiment = h2e.convert(hypothesis, trace, seq=round_num, used_ids=used_factor_ids)
                 # Propagate hypothesis metadata for knowledge base
                 experiment.category = hypothesis.category
                 experiment.keywords = hypothesis.keywords
+                used_factor_ids.add(experiment.factor_id)
                 print(f"  Generated code for: {experiment.factor_id}")
             except (RuntimeError, ValueError, SyntaxError) as e:
                 print(f"  Code generation failed: {e}")
@@ -223,7 +230,7 @@ def run_agent_loop(
 
     # Generate final review report
     _generate_review_report(candidates, output_dir)
-    _save_run_metadata(output_dir, max_rounds, start_date, end_date, len(candidates))
+    _save_run_metadata(output_dir, max_rounds, cfg.start_date, cfg.end_date, len(candidates))
 
     total_rounds = max(completed_rounds, round_num)
     print(f"\n{'='*60}")
@@ -402,8 +409,6 @@ def _build_parser() -> argparse.ArgumentParser:
     # run loop
     p_run = sub.add_parser("run", help="Run the agent research loop")
     p_run.add_argument("--max-rounds", type=int, default=10)
-    p_run.add_argument("--start", default="20160101")
-    p_run.add_argument("--end", default="20231231")
     p_run.add_argument("--output-dir", default="results/agent/run_001")
     p_run.add_argument("--min-rankicir", type=float, default=None)
     p_run.add_argument("--min-ic-pos", type=float, default=None)
@@ -469,8 +474,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     try:
         candidates = run_agent_loop(
             max_rounds=args.max_rounds,
-            start_date=args.start,
-            end_date=args.end,
             output_dir=Path(args.output_dir),
             agent_config=cfg,
             seed_hypothesis=seed,

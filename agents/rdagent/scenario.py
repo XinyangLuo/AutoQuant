@@ -80,6 +80,16 @@ class AShareQuantScenario(Scenario):
                     "dv_ratio", "dv_ttm",
                     "total_share", "float_share", "free_share",
                     "total_mv", "circ_mv",
+                    # Moneyflow (capital flow) — extra-large/large/medium/small orders
+                    "mf_buy_elg_vol", "mf_buy_elg_amount",
+                    "mf_sell_elg_vol", "mf_sell_elg_amount",
+                    "mf_buy_lg_vol", "mf_buy_lg_amount",
+                    "mf_sell_lg_vol", "mf_sell_lg_amount",
+                    "mf_buy_md_vol", "mf_buy_md_amount",
+                    "mf_sell_md_vol", "mf_sell_md_amount",
+                    "mf_buy_sm_vol", "mf_buy_sm_amount",
+                    "mf_sell_sm_vol", "mf_sell_sm_amount",
+                    "mf_net_mf_vol", "mf_net_mf_amount",
                 ],
             },
             "income_q": {
@@ -126,6 +136,16 @@ class AShareQuantScenario(Scenario):
             "dv_ratio", "dv_ttm",
             "total_share", "float_share", "free_share",
             "total_mv", "circ_mv",
+            # Moneyflow (capital flow)
+            "mf_buy_elg_vol", "mf_buy_elg_amount",
+            "mf_sell_elg_vol", "mf_sell_elg_amount",
+            "mf_buy_lg_vol", "mf_buy_lg_amount",
+            "mf_sell_lg_vol", "mf_sell_lg_amount",
+            "mf_buy_md_vol", "mf_buy_md_amount",
+            "mf_sell_md_vol", "mf_sell_md_amount",
+            "mf_buy_sm_vol", "mf_buy_sm_amount",
+            "mf_sell_sm_vol", "mf_sell_sm_amount",
+            "mf_net_mf_vol", "mf_net_mf_amount",
         ]
 
         _income_cols = [
