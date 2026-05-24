@@ -25,6 +25,15 @@ thresholds:
       # 0.2 ≤ R² < 0.7      → smart_beta（部分风格暴露，入库）
       # R² ≥ 0.7            → reject（风格克隆，拒绝）
 
+    # 残差 ICIR 增量信息检查（新因子的最后一道入库门控）
+    # 候选因子对所有已 admit 因子逐日 Ridge 回归取残差，
+    # 计算残差对 1D/5D/20D 远期收益的年化 RankICIR。
+    # 任一周期年化 ICIR > 阈值 → 有增量信息 → 通过。
+    residual_icir:
+      min_annual_icir: 0.1
+      horizons: [1, 5, 20]
+      ridge_alpha: 1.0
+
   # Pipeline 各 step 自动门控阈值
   pipeline:
     # step1: 覆盖率检查

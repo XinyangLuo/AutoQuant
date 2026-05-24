@@ -40,9 +40,11 @@ from pathlib import Path
 from typing import Literal
 
 from backtest.factor.admission_check import (
+    ResidualICIRResult,
     RidgeCheckResult,
     StyleCloneRejectedError,
     TIER_REJECT,
+    residual_icir_check,
     ridge_r2_check,
 )
 from backtest.factor.registry import (
@@ -120,6 +122,7 @@ def _finalize_action(
     persist: bool,
     strategy_config: dict | None = None,
     ridge_check: RidgeCheckResult | None = None,
+    residual_icir_check: ResidualICIRResult | None = None,
 ) -> AdmissionAction:
     """Stamp the action onto the registry."""
     entry = {
@@ -133,6 +136,8 @@ def _finalize_action(
         entry["strategy_config"] = strategy_config
     if ridge_check is not None:
         entry["ridge_check"] = ridge_check.as_meta()
+    if residual_icir_check is not None:
+        entry["residual_icir_check"] = residual_icir_check.as_meta()
 
     meta = registry[factor_id]
     meta["status"] = status
@@ -140,6 +145,9 @@ def _finalize_action(
     if ridge_check is not None:
         meta["tier"] = ridge_check.tier
         meta["r2"] = float(ridge_check.r2)
+    if residual_icir_check is not None:
+        meta["residual_icir_passed"] = residual_icir_check.passed
+        meta["residual_annual_icirs"] = residual_icir_check.annual_icirs
     history = meta.setdefault("admission_history", [])
     history.append(entry)
     del history[:-20]
@@ -170,6 +178,7 @@ def admit(
     strategy_config: dict | None = None,
     force: bool = False,
     skip_ridge_check: bool = False,
+    skip_residual_icir_check: bool = False,
 ) -> AdmissionAction:
     """Promote a factor from the work DB into the stable library.
 
@@ -179,17 +188,22 @@ def admit(
          library (skipped for ``barra_l3`` / ``barra_l1`` categories — they
          ARE the regressors). A ``reject`` tier blocks promotion unless
          ``force=True``; the tier + R² are stamped onto meta either way.
-      3. Upsert into ``FactorLibrary`` (library DB).
-      4. Drop the column from the work DB.
-      5. Mark ``registry[factor_id]["status"] = "admitted"``.
+      3. Run :func:`residual_icir_check` against ALL admitted factors.
+         The residual RankICIR must be positive (annualised > threshold)
+         for at least one horizon, proving the factor adds incremental
+         information beyond what the library already captures. Blocked
+         unless ``force=True``; skipped for bootstrap categories.
+      4. Upsert into ``FactorLibrary`` (library DB).
+      5. Drop the column from the work DB.
+      6. Mark ``registry[factor_id]["status"] = "admitted"``.
 
     Raises
     ------
     KeyError
         If ``factor_id`` is not registered.
     ValueError
-        If the work DB has no data for this factor, or the ridge check
-        returned ``reject`` and ``force`` is False.
+        If the work DB has no data for this factor, or either gate
+        returned a reject verdict and ``force`` is False.
     """
     persist = registry is None
     target = registry if registry is not None else _load_registry()
@@ -201,8 +215,12 @@ def admit(
     should_check = (
         not skip_ridge_check and category not in _BOOTSTRAP_CATEGORIES
     )
+    should_check_residual = (
+        not skip_residual_icir_check and category not in _BOOTSTRAP_CATEGORIES
+    )
 
     ridge_result: RidgeCheckResult | None = None
+    residual_icir_result: ResidualICIRResult | None = None
     if should_check:
         ridge_result = ridge_r2_check(factor_id)
         if ridge_result.tier == TIER_REJECT and not force:
@@ -210,6 +228,19 @@ def admit(
                 f"{factor_id} blocked by ridge_r2_check: R²={ridge_result.r2:.3f} "
                 f"-> tier=reject. Override with force=True if you really want "
                 f"this style-clone in the library."
+            )
+
+    if should_check_residual:
+        residual_icir_result = residual_icir_check(factor_id)
+        if not residual_icir_result.passed and not force:
+            annuals = residual_icir_result.annual_icirs
+            raise ValueError(
+                f"{factor_id} blocked by residual_icir_check: "
+                f"annualised residual RankICIRs={ {h: f'{v:.4f}' for h, v in annuals.items()} }, "
+                f"threshold={residual_icir_result.threshold}. "
+                f"No horizon adds incremental information beyond the "
+                f"{residual_icir_result.n_regressors} existing admitted factors. "
+                f"Override with force=True."
             )
 
     with FactorStorage() as work, FactorLibrary() as lib:
@@ -227,6 +258,7 @@ def admit(
         notes=notes, registry=target, persist=persist,
         strategy_config=strategy_config,
         ridge_check=ridge_result,
+        residual_icir_check=residual_icir_result,
     )
 
 
@@ -439,6 +471,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_admit.add_argument("--skip-ridge-check", action="store_true",
                          help="Don't run the ridge check at all (e.g. when "
                               "library doesn't yet contain the 6 Barra L1).")
+    p_admit.add_argument("--skip-residual-icir-check", action="store_true",
+                         help="Skip the residual ICIR incremental-info check.")
     _add_meta_flags(p_admit)
 
     p_reject = sub.add_parser("reject", help="Discard factor — clear work DB, mark rejected")
@@ -473,6 +507,7 @@ def main():
                     strategy_config=strategy_config,
                     force=args.force,
                     skip_ridge_check=args.skip_ridge_check,
+                    skip_residual_icir_check=args.skip_residual_icir_check,
                 )
             else:
                 action = reject(
@@ -492,6 +527,14 @@ def main():
             if rc is not None:
                 print(f"  ridge check          : R²={rc['r2']:.3f} "
                       f"tier={rc['tier']} n_obs={rc['n_obs']:,}")
+            ric = entry.get("residual_icir_check")
+            if ric is not None:
+                annuals = ric.get("annual_icirs", {})
+                passed = "PASS" if ric.get("passed") else "FAIL"
+                print(f"  residual ICIR check  : {passed} "
+                      f"annual_icirs={ {h: f'{v:.3f}' for h, v in annuals.items()} }, "
+                      f"n_regressors={ric.get('n_regressors', 0)}, "
+                      f"threshold={ric.get('threshold', 0)}")
         print()
         return
 

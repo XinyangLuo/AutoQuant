@@ -281,7 +281,7 @@ class TestAdmitRidgeGate:
             }))
 
         registry = _seed_registry()
-        action = admit("f_test", registry=registry)
+        action = admit("f_test", registry=registry, skip_residual_icir_check=True)
         assert action.action == "admitted"
 
         meta = registry["f_test"]
@@ -343,7 +343,7 @@ class TestAdmitRidgeGate:
             }))
 
         registry = _seed_registry()
-        action = admit("f_test", registry=registry, force=True)
+        action = admit("f_test", registry=registry, force=True, skip_residual_icir_check=True)
         assert action.action == "admitted"
         assert registry["f_test"]["tier"] == "reject"
         # force still records the verdict — caller chose to override knowingly.

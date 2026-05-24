@@ -50,7 +50,9 @@ from backtest.factor.admission import (
 )
 from backtest.factor.admission_check import (
     BARRA_L1_REGRESSORS,
+    ResidualICIRResult,
     RidgeCheckResult,
+    residual_icir_check,
     ridge_r2_check,
 )
 from backtest.factor.compute import compute_factor, compute_all
@@ -130,7 +132,9 @@ __all__ = [
     "admit",
     "reject",
     "ridge_r2_check",
+    "residual_icir_check",
     "BARRA_L1_REGRESSORS",
+    "ResidualICIRResult",
     "RidgeCheckResult",
     "AdmissionAction",
     "STATUS_ADMITTED",

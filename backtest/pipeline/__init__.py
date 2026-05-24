@@ -1,4 +1,4 @@
-"""Factor mining pipeline: step1~step9 CLI-driven pipeline.
+"""Factor mining pipeline: step1~step10 CLI-driven pipeline.
 
 Usage::
 
@@ -6,7 +6,7 @@ Usage::
     python -m backtest.pipeline step1 f_001
     python -m backtest.pipeline step2 f_001
     ...
-    python -m backtest.pipeline step9 f_001
+    python -m backtest.pipeline step10 f_001
 
 Or run all steps at once::
 
@@ -24,7 +24,8 @@ from backtest.pipeline.steps import (
     step6_simple_backtest,
     step7_detailed_backtest,
     step8_ridge_r2,
-    step9_report_and_admit,
+    step9_residual_icir,
+    step10_report_and_admit,
 )
 
 __all__ = [
@@ -40,5 +41,6 @@ __all__ = [
     "step6_simple_backtest",
     "step7_detailed_backtest",
     "step8_ridge_r2",
-    "step9_report_and_admit",
+    "step9_residual_icir",
+    "step10_report_and_admit",
 ]

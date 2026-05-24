@@ -17,7 +17,7 @@
 ## P1
 
 ### 入库标准
-看新的因子对已有因子的回归残差的ICIR看看有没有增益
+- [x] 残差 ICIR 增量信息检查：新因子对**所有已入库因子**逐日 Ridge 回归取残差，看残差对 1D/5D/20D 远期收益的年化 RankICIR。任一周期 > 0.1 即通过（默认阈值），作为入库最后一道门控。实现于 `admission_check.residual_icir_check()` + pipeline step9。
  
 ### 测试覆盖
 
@@ -65,6 +65,7 @@
 - [x] **P1.15** T+1 结算：日频调仓天然满足（T 日收盘算因子 → T+1 开盘调仓），无需额外逻辑
 - [ ] **P1.16** DetailedSimulator 输入校验：检查 market_data 包含 `open/close/low/high/limit_up/limit_down` 列
 - [ ] **P1.17** Daily metrics fee 一致性：`detailed.py` 中 transfer_fee/stamp_duty 从 `t.amount * rate` 重算，与 `Trade.commission` 可能不一致
+- [ ] **p1.18** 更新universe，将科创板、创业板、北交所的股票列为可选
 
 ---
 

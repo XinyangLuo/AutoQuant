@@ -6,7 +6,7 @@ Usage::
     python -m backtest.pipeline step1 f_001
     python -m backtest.pipeline step2 f_001
     ...
-    python -m backtest.pipeline step9 f_001
+    python -m backtest.pipeline step10 f_001
 
     python -m backtest.pipeline run-all f_001 --start 20160101 --end 20251231
 """
@@ -29,7 +29,8 @@ from backtest.pipeline.steps import (
     step6_simple_backtest,
     step7_detailed_backtest,
     step8_ridge_r2,
-    step9_report_and_admit,
+    step9_residual_icir,
+    step10_report_and_admit,
 )
 
 STEP_FUNCTIONS = {
@@ -41,15 +42,16 @@ STEP_FUNCTIONS = {
     "step6": step6_simple_backtest,
     "step7": step7_detailed_backtest,
     "step8": step8_ridge_r2,
-    "step9": step9_report_and_admit,
+    "step9": step9_residual_icir,
+    "step10": step10_report_and_admit,
 }
 
-STEP_ORDER = ["step1", "step2", "step3", "step4", "step5", "step6", "step7", "step8", "step9"]
+STEP_ORDER = ["step1", "step2", "step3", "step4", "step5", "step6", "step7", "step8", "step9", "step10"]
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Factor mining pipeline (step1~step9)",
+        description="Factor mining pipeline (step1~step10)",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -63,8 +65,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_init.add_argument("--ret-type", default="open", choices=["close", "open"])
     p_init.add_argument("--benchmark", default="000300.SH")
 
-    # step1~step9
-    for i in range(1, 10):
+    # step1~step10
+    for i in range(1, 11):
         p = sub.add_parser(f"step{i}", help=f"Run step {i}")
         p.add_argument("factor_id")
         p.add_argument("--results-root", default="results")
@@ -80,7 +82,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--start", default=None, help="default from config.yaml")
     p_run.add_argument("--end", default=None, help="default from config.yaml")
     p_run.add_argument("--frequency", choices=["D", "M"], default="D")
-    p_run.add_argument("--from-step", type=int, default=1, choices=range(1, 10))
+    p_run.add_argument("--from-step", type=int, default=1, choices=range(1, 11))
     p_run.add_argument("--results-root", default="results")
     p_run.add_argument("--ret-type", default="open", choices=["close", "open"])
     p_run.add_argument("--benchmark", default="000300.SH")

@@ -4,7 +4,7 @@
 
 ## 定位
 
-串行 step1~step9 因子挖掘流水线，每步有明确的淘汰标准（pass/fail gate）。与旧版 `scripts/run_factor_pipeline.py` 的区别：
+串行 step1~step10 因子挖掘流水线，每步有明确的淘汰标准（pass/fail gate）。与旧版 `scripts/run_factor_pipeline.py` 的区别：
 
 - 旧版：一次性跑完 eval + simple BT + detailed BT，无淘汰门控
 - 新版：每步独立 CLI，可单独调用；失败即停；state 落盘便于 Agent 介入；**拒绝时生成完整诊断报告而非直接清理**
@@ -25,10 +25,10 @@ backtest/pipeline/
     __init__.py          # 公开 API
     config.py            # PipelineConfig, StepThresholds（默认值从 config.yaml 读取）
     state.py             # PipelineState（可序列化）
-    steps.py             # step1~step9 函数（纯逻辑，无 CLI）
+    steps.py             # step1~step10 函数（纯逻辑，无 CLI）
     _report.py           # markdown 报告 + 诊断图生成（拒绝时也会执行）
     _cleanup.py          # 手动清理工具（不再自动调用）
-    __main__.py          # CLI dispatcher: step1~step9 + run-all
+    __main__.py          # CLI dispatcher: step1~step10 + run-all
 ```
 
 ## CLI 接口
@@ -47,7 +47,8 @@ python -m backtest.pipeline step5 f_001   # build strategy config
 python -m backtest.pipeline step6 f_001   # simple backtest
 python -m backtest.pipeline step7 f_001   # detailed backtest
 python -m backtest.pipeline step8 f_001   # ridge r2
-python -m backtest.pipeline step9 f_001   # report + admit
+python -m backtest.pipeline step9 f_001   # residual icir
+python -m backtest.pipeline step10 f_001  # report + admit
 
 # 一键全跑
 python -m backtest.pipeline run-all f_001 \
@@ -113,7 +114,8 @@ python -m backtest.pipeline step5 f_001 \
 | step6 | Simple Backtest | 向量化回测（无成本） | Sharpe≤0.8 或 ann_ret≤10% 或 max_dd≤-40% 或 Calmar≤0.5。不检查换手率（SimpleSimulator 不计算） |
 | step7 | Detailed Backtest | 事件驱动回测（含成本） | Sharpe≤0.4 或 ann_ret≤8% 或 max_dd≤-40% 或 Calmar≤0.5 或 turnover≥50x |
 | step8 | Ridge R² | 风格克隆检测（对 6 个 Barra L1 做 ridge 回归） | tier == reject（R² ≥ smart_beta_max，见下方分档） |
-| step9 | Report | 生成诊断报告，标记 ready_for_review | 无淘汰（总是通过）。需人工 `admit` |
+| step9 | Residual ICIR | 增量信息检测（对所有已 admit 因子逐日 Ridge，残差 ICIR） | 各周期年化残差 RankICIR 均 ≤ 阈值（默认 0.1） |
+| step10 | Report | 生成诊断报告，标记 ready_for_review | 无淘汰（总是通过）。需人工 `admit` |
 
 ### 阈值来源
 
@@ -170,7 +172,8 @@ python -m backtest.pipeline step5 f_001 \
 | step6 | `SingleFactorStrategy`, `SimpleSimulator` |
 | step7 | `DetailedSimulator`, `MarketStorage.get_dividends()` |
 | step8 | `ridge_r2_check()` |
-| step9 | `admit()`, `generate_pipeline_report()` |
+| step9 | `residual_icir_check()` |
+| step10 | `admit()`, `generate_pipeline_report()` |
 
 ## Agent 交互模式
 

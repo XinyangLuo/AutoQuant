@@ -925,7 +925,7 @@ Admission: f_rev_05  ->  ADMITTED
 
 ## 附录 A：P1 自动化 Pipeline（设计稿，未实现）
 
-> 本附录是 PLAN.md §4 的回填版，记录自动化 step1~step9 全套设计。**已部分实现**（`backtest/pipeline/`），详见 [`pipeline/DESIGN.md`](pipeline/DESIGN.md)。
+> 本附录是 PLAN.md §4 的回填版，记录自动化 step1~step10 全套设计。**已部分实现**（`backtest/pipeline/`），详见 [`pipeline/DESIGN.md`](pipeline/DESIGN.md)。
 > 阈值统一从 `config.yaml` 读取（单一事实来源），代码中不再 hard-code。
 >
 > **前置依赖**（已完成）：
@@ -953,7 +953,9 @@ step7: 详细回测（含分红/成本）+ 必检阈值 → 失败回 step5，ag
   ↓
 step8: 与剩余 6 个一级 Barra 因子做 Ridge Regression，按 R² 分流入库
   ↓
-step9: admit + 写 meta + 自动生成 markdown 报告
+step9: 对所有已入库因子逐日 Ridge 回归取残差，残差年化 RankICIR > 0.1 → 通过
+  ↓
+step10: admit + 写 meta + 自动生成 markdown 报告
 ```
 
 **重试上限**：step6/7 各最多 3 次。每次 agent 拿到失败指标后选择 (a) 改 `decay` (1/3/5/10) (b) 改 `universe` (全A / 沪深 300 / 中证 500 / 中证 1000) (c) 改 `selection.top_pct` (5% / 10% / 20%)，组合空间不超过 12 种，3 次重试通常足以覆盖代表性配置。
@@ -1079,24 +1081,28 @@ delay: 1
 **全部通过 → step8**；任一不通过 → 同 step6 重试机制（独立计数，最多 3 次）。
 
 ### A.8 step8：Ridge Regression 入库分流
+// ... (unchanged) ...
 
-**回归设置**：
+### A.8b step9：残差 ICIR 增量信息检查
 
-- 因变量：候选因子（`barra_ind_size` variant 时序值）
-- 自变量：6 个一级 Barra 因子（**不含** Size 和 Industry，二者已在 step2 中性化中扣除），即 Beta / Momentum / Value / Quality / Liquidity / Growth
-- 正则化：Ridge，α = 1.0
+**检查逻辑**：
+1. 候选因子对 library 中**全部已入库因子**逐日做 Ridge 回归取残差
+2. 计算残差对 1D / 5D / 20D 远期收益的逐日 RankIC
+3. 年化 ICIR = raw_icir × √(252/h)
+4. **任一周期年化残差 RankICIR > 阈值（默认 0.1）**→ 有增量信息 → 通过
 
-**R² 分层规则**（定义在 `config.yaml` → `thresholds.admission.ridge_r2`）：
+**配置**（`config.yaml` → `thresholds.admission.residual_icir`）：
 
-| R² 区间 | 分类 | 入库 |
-|---|---|---|
-| `R² < 0.2` | **pure_alpha** | 与现有风格正交 — 入库 |
-| `0.2 ≤ R² < 0.7` | **smart_beta** | 部分风格暴露 — 入库 |
-| `R² ≥ 0.7` | **reject** | 风格克隆 — 拒绝 |
+```yaml
+residual_icir:
+  min_annual_icir: 0.1
+  horizons: [1, 5, 20]
+  ridge_alpha: 1.0
+```
 
-> 不再有 `edge_smart_beta` 和 residual ICIR 二次判定。三档分界值从 `config.yaml` 读取，可随时调整。
+**边界情况**：Library 中 0 个已入库因子 → 平凡通过。`force=True` 绕过。
 
-### A.9 step9：操作入库 + 生成报告
+### A.9 step10：操作入库 + 生成报告
 
 **入库**：
 1. 把候选因子从 work DB 迁移到 library DB（同现有 `admit()` 机制）
@@ -1106,7 +1112,7 @@ delay: 1
    - `frequency` ∈ {daily, monthly}
    - `pipeline_config`：step5~step7 最终通过时的策略配置（含重试历史中的 decay / universe / top_pct）
    - `detailed_metrics`：每一阶段的完整指标字典
-   - `pass_history`：step1~step8 每步的输入指标 + 通过情况
+   - `pass_history`：step1~step10 每步的输入指标 + 通过情况
 
 **自动生成 markdown 报告** `results/<factor_id>/pipeline_report_v2.md`，包含：
 

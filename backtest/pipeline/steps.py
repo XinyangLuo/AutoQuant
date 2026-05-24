@@ -1,4 +1,4 @@
-"""Pipeline step functions (step1~step9).
+"""Pipeline step functions (step1~step10).
 
 Each function is a pure transform: takes PipelineState, returns updated
 PipelineState.  They are called by the CLI dispatcher in __main__.py.
@@ -16,7 +16,10 @@ import pandas as pd
 from backtest.data.storage import MarketStorage
 from backtest.factor.admission import admit
 from backtest.factor.admission_check import (
+    CandidateNotBackfilledError,
+    InsufficientOverlapError,
     TIER_REJECT,
+    residual_icir_check,
     ridge_r2_check,
 )
 from backtest.config_loader import get_section
@@ -729,11 +732,70 @@ def step8_ridge_r2(state: PipelineState) -> PipelineState:
 
 
 # ---------------------------------------------------------------------------
-# Step 9: Report + admission
+# Step 9: Residual ICIR incremental-information check
 # ---------------------------------------------------------------------------
 
 
-def step9_report_and_admit(state: PipelineState) -> PipelineState:
+def step9_residual_icir(state: PipelineState) -> PipelineState:
+    """Regress candidate against ALL admitted factors, check residual RankICIR.
+
+    Passes if the annualised residual RankICIR exceeds the configured
+    threshold for at least one forward-return horizon (1D / 5D / 20D).
+    """
+    config = state.config
+
+    try:
+        th = get_section("thresholds", "admission", "residual_icir")
+        result = residual_icir_check(
+            config.factor_id,
+            horizons=th.get("horizons", [1, 5, 20]),
+            threshold=float(th.get("min_annual_icir", 0.1)),
+            alpha=float(th.get("ridge_alpha", 1.0)),
+            ret_type=config.ret_type,
+            start=config.start_date,
+            end=config.end_date,
+        )
+    except (ValueError, KeyError, InsufficientOverlapError,
+            CandidateNotBackfilledError) as exc:
+        return _reject(state, "step9", f"Residual ICIR check failed: {exc}")
+
+    state.residual_icir_result = result
+
+    passed = result.passed
+    metrics = {
+        "residual_rank_icirs": result.residual_rank_icirs,
+        "annual_icirs": result.annual_icirs,
+        "residual_rank_ic_means": result.residual_rank_ic_means,
+        "residual_rank_ic_stds": result.residual_rank_ic_stds,
+        "n_regressors": result.n_regressors,
+        "n_dates": result.n_dates,
+        "n_obs_total": result.n_obs_total,
+        "threshold": result.threshold,
+        "passed": result.passed,
+    }
+
+    if passed:
+        return _pass(state, "step9", metrics)
+
+    max_annual = max(
+        (v for v in result.annual_icirs.values() if not math.isnan(v)),
+        default=float("-inf"),
+    )
+    return _reject(
+        state, "step9",
+        f"Residual ICIR: max annualised={max_annual:.4f}, "
+        f"threshold={result.threshold}. No horizon adds incremental "
+        f"information beyond {result.n_regressors} existing factors.",
+        metrics,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Step 10: Report + admission
+# ---------------------------------------------------------------------------
+
+
+def step10_report_and_admit(state: PipelineState) -> PipelineState:
     """Generate markdown report and mark pipeline as ready for human review.
 
     Does NOT auto-admit. The human reviews the report and manually runs
@@ -748,7 +810,7 @@ def step9_report_and_admit(state: PipelineState) -> PipelineState:
     state.artifacts["report"] = str(report_path)
 
     state.status = "ready_for_review"
-    return _pass(state, "step9", {
+    return _pass(state, "step10", {
         "report_path": str(report_path),
         "action": "ready_for_review",
         "next_step": f"python -m backtest.factor.admission admit {config.factor_id}",

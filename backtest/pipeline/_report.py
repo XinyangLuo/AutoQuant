@@ -68,7 +68,8 @@ _STEP_NAMES = {
     "step6": "简单回测",
     "step7": "详细回测",
     "step8": "Ridge R² 分档",
-    "step9": "报告生成",
+    "step9": "残差 ICIR 增量信息",
+    "step10": "报告生成",
 }
 
 
@@ -115,7 +116,8 @@ def generate_pipeline_report(state: PipelineState) -> Path:
     lines.extend(_step_section(state, plots_dir, "step6", _render_step6))
     lines.extend(_step_section(state, plots_dir, "step7", _render_step7))
     lines.extend(_step_section(state, plots_dir, "step8", _render_step8))
-    lines.extend(_step_section(state, plots_dir, "step9", _render_step9))
+    lines.extend(_step_section(state, plots_dir, "step9", _render_step9_residual_icir))
+    lines.extend(_step_section(state, plots_dir, "step10", _render_step10))
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
@@ -194,7 +196,8 @@ def _summarise_metrics(metrics: dict, step_key: str) -> str:
         "step6": ["sharpe", "annual_return", "max_drawdown"],
         "step7": ["sharpe", "annual_return", "annual_turnover"],
         "step8": ["r2", "tier"],
-        "step9": [],
+        "step9": ["annual_icirs", "n_regressors"],
+        "step10": [],
     }
     keys = step_priorities.get(step_key, list(metrics.keys())[:2])
     parts = []
@@ -384,8 +387,46 @@ def _render_step8(state: PipelineState, plots_dir: Path) -> list[str]:
     return lines
 
 
-def _render_step9(state: PipelineState, plots_dir: Path) -> list[str]:
+def _render_step9_residual_icir(state: PipelineState, plots_dir: Path) -> list[str]:
+    """Residual ICIR incremental-information check."""
     result = state.step_results.get("step9")
+    if not result or not result.metrics:
+        return ["*未执行。*", ""]
+
+    m = result.metrics
+    annual_icirs = m.get("annual_icirs", {})
+    rank_icirs = m.get("residual_rank_icirs", {})
+    rank_means = m.get("residual_rank_ic_means", {})
+    rank_stds = m.get("residual_rank_ic_stds", {})
+    threshold = m.get("threshold", 0.0)
+    n_regressors = m.get("n_regressors", 0)
+    n_dates = m.get("n_dates", 0)
+    passed = m.get("passed", False)
+
+    lines = [
+        f"- **回归因子数**：{n_regressors}",
+        f"- **有效日期数**：{n_dates}",
+        f"- **年化阈值**：{threshold}",
+        f"- **结论**：{'通过' if passed else '**拒绝**'}（增量信息检查）",
+        "",
+        "| 周期 | 原始 RankICIR | 年化 RankICIR | RankIC 均值 | RankIC 标准差 |",
+        "|------|---------------|---------------|-------------|---------------|",
+    ]
+    for h in sorted(annual_icirs.keys(), key=lambda k: int(k)):
+        a_icir = annual_icirs.get(h, float("nan"))
+        r_icir = rank_icirs.get(h, float("nan"))
+        r_mean = rank_means.get(h, float("nan"))
+        r_std = rank_stds.get(h, float("nan"))
+        lines.append(
+            f"| {h}D | {_fmt(r_icir, 'f4')} | {_fmt(a_icir, 'f4')} | "
+            f"{_fmt(r_mean, 'f4')} | {_fmt(r_std, 'f4')} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _render_step10(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step10")
     if not result or not result.metrics:
         return ["*未执行。*", ""]
     lines = _metrics_sub_table(result.metrics)

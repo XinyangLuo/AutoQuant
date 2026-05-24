@@ -331,6 +331,47 @@ RECOMMENDED_THRESHOLDS = {
 
 `check_recommended_thresholds(metrics)` 返回 `{check: bool}` dict，仅用于评测打印和决策辅助。`admit()` 不做检查——是否入库由人类看完三层报告自行决定。
 
+## 残差 ICIR 增量信息检查（入库最后一道门控）
+
+`admit()` 的最后一步是对**所有已入库因子**做增量信息检查（`residual_icir_check()`）：
+
+1. 候选因子对 library 中全部已 admit 因子**逐日**做 Ridge 回归取残差
+2. 计算残差对 1D / 5D / 20D 远期收益的逐日 RankIC
+3. 年化 ICIR = raw_icir × √(252/h)
+4. **任一周期年化残差 RankICIR > 阈值（默认 0.1）**即视为有增量信息 → 通过
+
+```python
+from backtest.factor.admission_check import residual_icir_check
+
+result = residual_icir_check("f_001")
+# result.passed         — True if any horizon > threshold
+# result.annual_icirs   — {1: 0.15, 5: 0.08, 20: 0.03}
+# result.n_regressors   — number of existing factors in library
+```
+
+| 字段 | 说明 |
+|------|------|
+| `residual_rank_icirs` | 各周期的原始残差 RankICIR |
+| `annual_icirs` | 各周期的年化残差 RankICIR |
+| `residual_rank_ic_means` | 各周期的残差 RankIC 均值 |
+| `threshold` | 年化阈值（来自 `config.yaml`） |
+| `passed` | 任一周期年化 ICIR > 阈值 |
+
+**配置**（`config.yaml` → `thresholds.admission.residual_icir`）：
+
+```yaml
+residual_icir:
+  min_annual_icir: 0.1   # 年化残差 RankICIR 最低阈值
+  horizons: [1, 5, 20]    # 检查的预测周期
+  ridge_alpha: 1.0        # 逐日 Ridge 正则化强度
+```
+
+**边界情况**：
+- Library 中 0 个已入库因子 → 平凡通过（无回归目标，step3 已充分检查）
+- `force=True` 可绕过此门控；Barra L1 bootstrap 类别自动跳过
+
+此检查与 `ridge_r2_check()` 互补：ridge_r2 检测风格克隆（vs 6 个 Barra L1），残差 ICIR 检测增量信息（vs 全部已入库因子）。
+
 ## 与数据模块的交互
 
 | 消费方 | 提供方 | 函数 |

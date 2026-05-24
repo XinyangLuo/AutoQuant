@@ -234,11 +234,376 @@ def ridge_r2_check(
             library.close()
 
 
+# ---------------------------------------------------------------------------
+# Residual ICIR incremental-information check
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ResidualICIRResult:
+    """Outcome of the residual ICIR incremental-info admission check.
+
+    Regresses the candidate against ALL admitted factors per-date (Ridge),
+    then computes the RankICIR of the residuals against forward returns.
+    """
+
+    factor_id: str
+    residual_rank_icirs: dict[int, float]
+    residual_rank_ic_means: dict[int, float]
+    residual_rank_ic_stds: dict[int, float]
+    residual_rank_ic_pos_ratios: dict[int, float]
+    annual_icirs: dict[int, float]
+    n_regressors: int
+    n_dates: int
+    n_obs_total: int
+    threshold: float
+    passed: bool
+
+    def as_meta(self) -> dict:
+        return {
+            "residual_rank_icirs": self.residual_rank_icirs,
+            "annual_icirs": self.annual_icirs,
+            "residual_rank_ic_means": self.residual_rank_ic_means,
+            "n_regressors": self.n_regressors,
+            "n_dates": self.n_dates,
+            "n_obs_total": self.n_obs_total,
+            "threshold": self.threshold,
+            "passed": self.passed,
+        }
+
+
+def _per_date_ridge_residuals(
+    candidate: pd.DataFrame,
+    regressors: pd.DataFrame,
+    *,
+    alpha: float = 1.0,
+    min_obs_per_date: int | None = None,
+) -> pd.DataFrame:
+    """For each date, fit ridge on the cross-section and return per-row residual.
+
+    Parameters
+    ----------
+    candidate : pd.DataFrame
+        Columns ``[date, symbol, value]``.
+    regressors : pd.DataFrame
+        Columns ``[date, symbol, <regressor_id>, ...]``.
+    alpha : float
+        Ridge regularisation strength.
+    min_obs_per_date : int | None
+        Minimum observations per date. Defaults to ``n_regressors + 2``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns ``[date, symbol, residual]``.
+
+    Raises
+    ------
+    InsufficientOverlapError
+        If no date has enough overlapping observations.
+    """
+    merged = candidate.merge(regressors, on=["date", "symbol"], how="inner")
+    if merged.empty:
+        raise InsufficientOverlapError(
+            "Candidate and regressors share zero overlapping (date, symbol) rows."
+        )
+
+    reg_cols = [c for c in regressors.columns if c not in ("date", "symbol")]
+    n_reg = len(reg_cols)
+    if min_obs_per_date is None:
+        min_obs_per_date = n_reg + 2
+
+    residuals_parts: list[pd.DataFrame] = []
+    for date, group in merged.groupby("date"):
+        sub = group.dropna(subset=["value", *reg_cols])
+        if len(sub) < min_obs_per_date:
+            continue
+        X = sub[reg_cols].to_numpy(dtype=float)
+        y = sub["value"].to_numpy(dtype=float)
+        try:
+            beta, intercept = _ridge_fit(X, y, alpha=alpha)
+        except np.linalg.LinAlgError:
+            continue
+        y_hat = X @ beta + intercept
+        residual = y - y_hat
+        residuals_parts.append(
+            pd.DataFrame(
+                {"date": sub["date"], "symbol": sub["symbol"], "residual": residual}
+            )
+        )
+
+    if not residuals_parts:
+        raise InsufficientOverlapError(
+            f"No date had >= {min_obs_per_date} valid observations "
+            f"for {n_reg} regressors."
+        )
+
+    return pd.concat(residuals_parts, ignore_index=True)
+
+
+def _load_all_admitted_regressors(
+    factor_id: str,
+    start: str,
+    end: str,
+    library: FactorLibrary,
+) -> pd.DataFrame:
+    """Load ALL admitted factors from library as a wide regressor DataFrame.
+
+    Excludes ``factor_id`` (in case it already exists in the library).
+    Returns an empty DataFrame (no columns beyond date/symbol) if the
+    library has no admitted factors.
+    """
+    others = library.get_factors_long(start=start, end=end, exclude=factor_id)
+    if others.empty:
+        return pd.DataFrame(columns=["date", "symbol"])
+
+    wide = others.pivot(
+        index=["date", "symbol"], columns="factor_id", values="value"
+    ).reset_index()
+    wide.columns.name = None
+    return wide
+
+
+def _load_forward_returns_for_check(
+    symbols: list[str],
+    start: str,
+    end: str,
+    horizons: list[int],
+    ret_type: str = "open",
+) -> pd.DataFrame:
+    """Load market data and compute forward returns for residual ICIR check."""
+    from backtest.data.storage import MarketStorage
+
+    max_h = max(horizons)
+    returns_end = (
+        pd.Timestamp(end) + pd.Timedelta(days=int(max_h) + 10)
+    ).strftime("%Y%m%d")
+
+    with MarketStorage(read_only=True) as ms:
+        market_df = ms.get_bars(symbols=symbols, start=start, end=returns_end)
+
+    if market_df.empty:
+        raise ValueError("No market data available for forward return calculation.")
+
+    from backtest.factor.evaluation import _compute_forward_returns
+
+    return _compute_forward_returns(market_df, horizons, ret_type)
+
+
+def _residual_rank_icirs(
+    residuals: pd.DataFrame,
+    returns_df: pd.DataFrame,
+    horizons: list[int],
+) -> dict[int, dict]:
+    """Per-date RankIC of residuals vs forward returns, then ICIR per horizon.
+
+    Parameters
+    ----------
+    residuals : pd.DataFrame
+        Columns ``[date, symbol, residual]``.
+    returns_df : pd.DataFrame
+        Columns ``[date, symbol, ret_1, ret_5, ...]``.
+    horizons : list[int]
+        Forward-return horizons to check, e.g. ``[1, 5, 20]``.
+
+    Returns
+    -------
+    dict[int, dict]
+        ``{horizon: {"icir", "ic_mean", "ic_std", "ic_positive_ratio", "ic_count"}}``.
+    """
+    from backtest.factor.evaluation import _compute_ic_stats, _rank_ic_series
+
+    merged = residuals.merge(returns_df, on=["date", "symbol"], how="inner")
+
+    results: dict[int, dict] = {}
+    for h in horizons:
+        ret_col = f"ret_{h}"
+        if ret_col not in merged.columns:
+            results[h] = {
+                "icir": float("nan"),
+                "ic_mean": float("nan"),
+                "ic_std": float("nan"),
+                "ic_positive_ratio": float("nan"),
+                "ic_count": 0,
+            }
+            continue
+
+        ic_series = merged.groupby("date").apply(
+            lambda g: _rank_ic_series(g["residual"], g[ret_col]),
+            include_groups=False,
+        )
+        results[h] = _compute_ic_stats(ic_series)
+
+    return results
+
+
+def _get_residual_icir_config() -> dict:
+    """Read residual ICIR thresholds from config.yaml with fallback defaults."""
+    try:
+        from backtest.config_loader import get_section
+
+        return get_section("thresholds", "admission", "residual_icir")
+    except KeyError:
+        return {
+            "min_annual_icir": 0.1,
+            "horizons": [1, 5, 20],
+            "ridge_alpha": 1.0,
+        }
+
+
+def residual_icir_check(
+    factor_id: str,
+    *,
+    horizons: list[int] | None = None,
+    threshold: float | None = None,
+    alpha: float | None = None,
+    ret_type: str = "open",
+    start: str | None = None,
+    end: str | None = None,
+    factor_storage: FactorStorage | None = None,
+    library: FactorLibrary | None = None,
+) -> ResidualICIRResult:
+    """Check if candidate adds incremental predictive power beyond ALL admitted factors.
+
+    Steps:
+
+    1. Load candidate from work DB.
+    2. Load ALL admitted factors from library DB as regressors.
+    3. If 0 regressors: trivial pass.
+    4. Per-date Ridge regression -> residuals.
+    5. Compute forward returns for configured horizons.
+    6. Per-date RankIC of residuals vs returns per horizon -> ICIR.
+    7. Annualize ICIR, pass if ANY horizon > threshold.
+
+    Returns
+    -------
+    ResidualICIRResult
+    """
+    cfg = _get_residual_icir_config()
+    if horizons is None:
+        horizons = cfg.get("horizons", [1, 5, 20])
+    if threshold is None:
+        threshold = float(cfg.get("min_annual_icir", 0.1))
+    if alpha is None:
+        alpha = float(cfg.get("ridge_alpha", 1.0))
+
+    own_fs = factor_storage is None
+    own_lib = library is None
+    try:
+        if factor_storage is None:
+            factor_storage = FactorStorage()
+        if library is None:
+            library = FactorLibrary()
+
+        candidate = factor_storage.get_factor(factor_id, start=start, end=end)
+        if candidate.empty:
+            raise CandidateNotBackfilledError(
+                f"Candidate {factor_id} has no rows in the work DB. Backfill first."
+            )
+
+        reg_df = _load_all_admitted_regressors(
+            factor_id,
+            start=start or candidate["date"].min().strftime("%Y%m%d"),
+            end=end or candidate["date"].max().strftime("%Y%m%d"),
+            library=library,
+        )
+        reg_cols = [c for c in reg_df.columns if c not in ("date", "symbol")]
+        n_regressors = len(reg_cols)
+
+        if n_regressors == 0:
+            return ResidualICIRResult(
+                factor_id=factor_id,
+                residual_rank_icirs={h: float("nan") for h in horizons},
+                residual_rank_ic_means={h: float("nan") for h in horizons},
+                residual_rank_ic_stds={h: float("nan") for h in horizons},
+                residual_rank_ic_pos_ratios={h: float("nan") for h in horizons},
+                annual_icirs={h: float("nan") for h in horizons},
+                n_regressors=0,
+                n_dates=0,
+                n_obs_total=0,
+                threshold=threshold,
+                passed=True,
+            )
+
+        residuals = _per_date_ridge_residuals(
+            candidate, reg_df, alpha=alpha
+        )
+
+        use_start = (
+            start or candidate["date"].min().strftime("%Y%m%d")
+        )
+        use_end = (
+            end or candidate["date"].max().strftime("%Y%m%d")
+        )
+        symbols = residuals["symbol"].unique().tolist()
+        returns_df = _load_forward_returns_for_check(
+            symbols=symbols,
+            start=use_start,
+            end=use_end,
+            horizons=horizons,
+            ret_type=ret_type,
+        )
+
+        icir_by_horizon = _residual_rank_icirs(residuals, returns_df, horizons)
+
+        n_dates = max(
+            (stats.get("ic_count", 0) for stats in icir_by_horizon.values()),
+            default=0,
+        )
+
+        residual_rank_icirs: dict[int, float] = {}
+        residual_rank_ic_means: dict[int, float] = {}
+        residual_rank_ic_stds: dict[int, float] = {}
+        residual_rank_ic_pos_ratios: dict[int, float] = {}
+        annual_icirs: dict[int, float] = {}
+        any_passed = False
+
+        import math
+
+        for h in horizons:
+            stats = icir_by_horizon.get(h, {})
+            raw_icir = stats.get("icir", float("nan"))
+            residual_rank_icirs[h] = float(raw_icir) if not (isinstance(raw_icir, float) and math.isnan(raw_icir)) else float("nan")
+            residual_rank_ic_means[h] = float(stats.get("ic_mean", float("nan")))
+            residual_rank_ic_stds[h] = float(stats.get("ic_std", float("nan")))
+            residual_rank_ic_pos_ratios[h] = float(stats.get("ic_positive_ratio", float("nan")))
+
+            raw = residual_rank_icirs[h]
+            if not math.isnan(raw):
+                annual = raw * math.sqrt(252.0 / h)
+            else:
+                annual = float("nan")
+            annual_icirs[h] = annual
+
+            if not math.isnan(annual) and annual > threshold:
+                any_passed = True
+
+        return ResidualICIRResult(
+            factor_id=factor_id,
+            residual_rank_icirs=residual_rank_icirs,
+            residual_rank_ic_means=residual_rank_ic_means,
+            residual_rank_ic_stds=residual_rank_ic_stds,
+            residual_rank_ic_pos_ratios=residual_rank_ic_pos_ratios,
+            annual_icirs=annual_icirs,
+            n_regressors=n_regressors,
+            n_dates=int(n_dates),
+            n_obs_total=int(len(residuals)),
+            threshold=threshold,
+            passed=any_passed,
+        )
+    finally:
+        if own_fs and factor_storage is not None:
+            factor_storage.close()
+        if own_lib and library is not None:
+            library.close()
+
+
 __all__ = [
     "BARRA_L1_REGRESSORS",
     "CandidateNotBackfilledError",
     "InsufficientOverlapError",
     "LibraryNotBootstrappedError",
+    "ResidualICIRResult",
     "RidgeCheckError",
     "RidgeCheckResult",
     "StyleCloneRejectedError",
@@ -246,5 +611,6 @@ __all__ = [
     "TIER_REJECT",
     "TIER_SMART_BETA",
     "Tier",
+    "residual_icir_check",
     "ridge_r2_check",
 ]

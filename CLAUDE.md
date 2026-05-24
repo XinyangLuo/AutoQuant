@@ -49,7 +49,7 @@ python -m backtest.data.update_daily                     # 日更（所有表）
 
 # 因子 → 回测 → 入库
 python -m backtest.factor.backfill f_xxx                 # 回填因子到 work DB
-python -m backtest.pipeline run-all f_xxx --start 20210101 --end 20241231  # step1~step9 全自动
+python -m backtest.pipeline run-all f_xxx --start 20210101 --end 20241231  # step1~step10 全自动
 python -m backtest.factor.admission admit f_xxx          # 人工 admit
 python -m backtest.factor.update                         # 日更 admitted 因子
 
@@ -87,7 +87,7 @@ AutoQuant/
 │   ├── strategy/            # 因子 → target_weight + DESIGN.md
 │   ├── simulation/          # Simple/Detailed 双轨回测引擎 + DESIGN.md
 │   ├── evaluation/          # 从 parquet 反推策略质量 + DESIGN.md
-│   ├── pipeline/            # step1~step9 因子挖掘门控流水线 + DESIGN.md
+│   ├── pipeline/            # step1~step10 因子挖掘门控流水线 + DESIGN.md
 │   ├── PIPELINE.md          # 端到端使用手册（最重要的文档）
 │   └── CLAUDE.md            # 回测系统总览
 ├── alphas/                  # 私有 alpha 代码（gitignored）

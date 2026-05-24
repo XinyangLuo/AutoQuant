@@ -12,7 +12,7 @@ from backtest.pipeline.config import PipelineConfig, StepThresholds
 
 StepName = Literal[
     "step1", "step2", "step3", "step4",
-    "step5", "step6", "step7", "step8", "step9",
+    "step5", "step6", "step7", "step8", "step9", "step10",
 ]
 
 
@@ -40,6 +40,7 @@ class PipelineState:
     simple_bt_metrics: dict | None = None
     detailed_bt_metrics: dict | None = None
     ridge_result: "RidgeCheckResult | None" = None
+    residual_icir_result: "ResidualICIRResult | None" = None
     eval_result: "EvaluationResult | None" = None
 
     # ------------------------------------------------------------------
@@ -97,7 +98,7 @@ class PipelineState:
         """Check if all prerequisite steps have passed."""
         if self.is_rejected():
             return False
-        order = ["step1", "step2", "step3", "step4", "step5", "step6", "step7", "step8", "step9"]
+        order = ["step1", "step2", "step3", "step4", "step5", "step6", "step7", "step8", "step9", "step10"]
         try:
             idx = order.index(step)
         except ValueError:
