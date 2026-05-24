@@ -749,8 +749,9 @@ def step9_residual_icir(state: PipelineState) -> PipelineState:
         result = residual_icir_check(
             config.factor_id,
             horizons=th.get("horizons", [1, 5, 20]),
-            threshold=float(th.get("min_annual_icir", 0.1)),
-            alpha=float(th.get("ridge_alpha", 1.0)),
+            threshold=float(th.get("min_annual_icir", 0.05)),
+            ic_mean_threshold=float(th.get("min_abs_ic_mean", 0.001)),
+            alpha=float(th.get("ridge_alpha", 0.0)),
             ret_type=config.ret_type,
             start=config.start_date,
             end=config.end_date,
@@ -771,6 +772,7 @@ def step9_residual_icir(state: PipelineState) -> PipelineState:
         "n_dates": result.n_dates,
         "n_obs_total": result.n_obs_total,
         "threshold": result.threshold,
+        "ic_mean_threshold": result.ic_mean_threshold,
         "passed": result.passed,
     }
 

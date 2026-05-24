@@ -281,8 +281,8 @@ def reject(
 
     if target[factor_id].get("status") == STATUS_ADMITTED:
         raise ValueError(
-            f"{factor_id} is already admitted. De-admission is not supported "
-            f"via this CLI — remove from library manually if you must."
+            f"{factor_id} is already admitted. Use `unadmit` to drop it "
+            f"from the library, or `reject` is only for pending factors."
         )
 
     with FactorStorage() as work:
@@ -293,6 +293,76 @@ def reject(
         rows_promoted=0, rows_cleared=rows_cleared,
         notes=notes, registry=target, persist=persist,
         strategy_config=strategy_config,
+    )
+
+
+def unadmit(
+    factor_id: str,
+    *,
+    notes: str | None = None,
+    registry: dict | None = None,
+    force: bool = False,
+) -> AdmissionAction:
+    """Drop an admitted factor from the library DB and mark it rejected.
+
+    This is the reverse of :func:`admit`: removes the column from the
+    library DuckDB and flips the registry status back to ``rejected``.
+    Only works on factors currently marked ``admitted``, unless
+    ``force=True``.
+
+    After unadmit, the column is gone from the library but the factor
+    must be re-backfilled to the work DB before it can be re-admitted.
+    Stale admission metadata (tier, r2, residual_icir_*) is cleared.
+
+    Raises
+    ------
+    KeyError
+        If ``factor_id`` is not registered.
+    ValueError
+        If the factor is not currently admitted and ``force`` is False.
+    """
+    persist = registry is None
+    target = registry if registry is not None else _load_registry()
+    if factor_id not in target:
+        raise KeyError(f"factor_id '{factor_id}' not found in registry")
+
+    if not force and target[factor_id].get("status") != STATUS_ADMITTED:
+        raise ValueError(
+            f"{factor_id} is not admitted (status="
+            f"{target[factor_id].get('status', 'unknown')}). "
+            f"Only admitted factors can be unadmitted. "
+            f"Use force=True to override."
+        )
+
+    import duckdb
+    from backtest.factor.storage import FACTOR_LIBRARY_DB_PATH, _quote_ident
+
+    qid = _quote_ident(factor_id)
+    con = duckdb.connect(str(FACTOR_LIBRARY_DB_PATH))
+    try:
+        cols = [
+            r[0] for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name='factors_daily'"
+            ).fetchall()
+        ]
+        if factor_id in cols:
+            con.execute(f"ALTER TABLE factors_daily DROP COLUMN {qid}")
+            rows_cleared = 1
+        else:
+            rows_cleared = 0
+    finally:
+        con.close()
+
+    # Clear stale admission metadata left from the original admit
+    meta = target[factor_id]
+    for key in ("tier", "r2", "residual_icir_passed", "residual_annual_icirs"):
+        meta.pop(key, None)
+
+    return _finalize_action(
+        factor_id, STATUS_REJECTED,
+        rows_promoted=0, rows_cleared=rows_cleared,
+        notes=notes, registry=target, persist=persist,
     )
 
 
@@ -480,6 +550,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p_reject.add_argument("--notes", default=None, help="Free-form note for history")
     _add_meta_flags(p_reject)
 
+    p_unadmit = sub.add_parser("unadmit", help="Drop an admitted factor from the library DB")
+    p_unadmit.add_argument("factor_id")
+    p_unadmit.add_argument("--notes", default=None, help="Free-form note for history")
+    p_unadmit.add_argument("--no-strategy-config", action="store_true",
+                           help="Skip reading pipeline.json (unadmit doesn't need it)")
+    p_unadmit.add_argument("--force", action="store_true",
+                           help="Force unadmit even if status is not 'admitted'")
+
     p_status = sub.add_parser("status", help="Show admission status")
     p_status.add_argument("factor_id", nargs="?", default=None)
 
@@ -489,6 +567,18 @@ def _build_parser() -> argparse.ArgumentParser:
 def main():
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.cmd == "unadmit":
+        try:
+            action = unadmit(
+                args.factor_id, notes=args.notes,
+                force=getattr(args, "force", False),
+            )
+        except (KeyError, ValueError) as exc:
+            parser.exit(2, f"unadmit failed: {exc}\n")
+        print_action(action)
+        print()
+        return
 
     if args.cmd in ("admit", "reject"):
         strategy_config: dict | None = None

@@ -47,6 +47,7 @@ from backtest.factor.admission import (
     print_action,
     print_status,
     reject,
+    unadmit,
 )
 from backtest.factor.admission_check import (
     BARRA_L1_REGRESSORS,
@@ -131,6 +132,7 @@ __all__ = [
     "list_factors",
     "admit",
     "reject",
+    "unadmit",
     "ridge_r2_check",
     "residual_icir_check",
     "BARRA_L1_REGRESSORS",

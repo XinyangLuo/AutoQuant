@@ -1089,15 +1089,16 @@ delay: 1
 1. 候选因子对 library 中**全部已入库因子**逐日做 Ridge 回归取残差
 2. 计算残差对 1D / 5D / 20D 远期收益的逐日 RankIC
 3. 年化 ICIR = raw_icir × √(252/h)
-4. **任一周期年化残差 RankICIR > 阈值（默认 0.1）**→ 有增量信息 → 通过
+4. **任一周期同时满足年化残差 RankICIR > 阈值（默认 0.05）且 |IC 均值| > 下限（默认 0.001）**→ 通过
 
 **配置**（`config.yaml` → `thresholds.admission.residual_icir`）：
 
 ```yaml
 residual_icir:
-  min_annual_icir: 0.1
+  min_annual_icir: 0.05
+  min_abs_ic_mean: 0.001
   horizons: [1, 5, 20]
-  ridge_alpha: 1.0
+  ridge_alpha: 0.0
 ```
 
 **边界情况**：Library 中 0 个已入库因子 → 平凡通过。`force=True` 绕过。

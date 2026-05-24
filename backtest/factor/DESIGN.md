@@ -355,15 +355,17 @@ result = residual_icir_check("f_001")
 | `annual_icirs` | 各周期的年化残差 RankICIR |
 | `residual_rank_ic_means` | 各周期的残差 RankIC 均值 |
 | `threshold` | 年化阈值（来自 `config.yaml`） |
-| `passed` | 任一周期年化 ICIR > 阈值 |
+| `ic_mean_threshold` | \|IC 均值\| 下限（来自 `config.yaml`） |
+| `passed` | 任一周期同时满足年化 ICIR > 阈值 **且** \|IC 均值\| > 下限 |
 
 **配置**（`config.yaml` → `thresholds.admission.residual_icir`）：
 
 ```yaml
 residual_icir:
-  min_annual_icir: 0.1   # 年化残差 RankICIR 最低阈值
-  horizons: [1, 5, 20]    # 检查的预测周期
-  ridge_alpha: 1.0        # 逐日 Ridge 正则化强度
+  min_annual_icir: 0.05    # 年化残差 RankICIR 最低阈值
+  min_abs_ic_mean: 0.001   # 残差 |IC 均值| 下限，防 IC≈0 但 std 极小导致 ICIR 虚高
+  horizons: [1, 5, 20]     # 检查的预测周期
+  ridge_alpha: 0.0         # 0=OLS（彻底剥离线性信号），>0=Ridge 正则化强度
 ```
 
 **边界情况**：

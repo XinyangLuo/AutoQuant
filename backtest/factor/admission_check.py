@@ -257,6 +257,7 @@ class ResidualICIRResult:
     n_dates: int
     n_obs_total: int
     threshold: float
+    ic_mean_threshold: float
     passed: bool
 
     def as_meta(self) -> dict:
@@ -268,6 +269,7 @@ class ResidualICIRResult:
             "n_dates": self.n_dates,
             "n_obs_total": self.n_obs_total,
             "threshold": self.threshold,
+            "ic_mean_threshold": self.ic_mean_threshold,
             "passed": self.passed,
         }
 
@@ -321,9 +323,21 @@ def _per_date_ridge_residuals(
         X = sub[reg_cols].to_numpy(dtype=float)
         y = sub["value"].to_numpy(dtype=float)
         try:
-            beta, intercept = _ridge_fit(X, y, alpha=alpha)
+            # OLS first — strips linear signal completely.
+            # Fall back to Ridge only on rank-deficient days.
+            if alpha == 0.0:
+                beta, resid, _rank, _s = np.linalg.lstsq(
+                    np.column_stack([np.ones(len(X)), X]), y, rcond=None
+                )
+                intercept = float(beta[0])
+                beta = beta[1:]
+            else:
+                beta, intercept = _ridge_fit(X, y, alpha=alpha)
         except np.linalg.LinAlgError:
-            continue
+            # Fall back to Ridge with configured alpha; use mild
+            # regularisation (1.0) if configured alpha is also 0.0.
+            fallback_alpha = alpha if alpha != 0.0 else 1.0
+            beta, intercept = _ridge_fit(X, y, alpha=fallback_alpha)
         y_hat = X @ beta + intercept
         residual = y - y_hat
         residuals_parts.append(
@@ -445,9 +459,10 @@ def _get_residual_icir_config() -> dict:
         return get_section("thresholds", "admission", "residual_icir")
     except KeyError:
         return {
-            "min_annual_icir": 0.1,
+            "min_annual_icir": 0.05,
+            "min_abs_ic_mean": 0.001,
             "horizons": [1, 5, 20],
-            "ridge_alpha": 1.0,
+            "ridge_alpha": 0.0,
         }
 
 
@@ -456,6 +471,7 @@ def residual_icir_check(
     *,
     horizons: list[int] | None = None,
     threshold: float | None = None,
+    ic_mean_threshold: float | None = None,
     alpha: float | None = None,
     ret_type: str = "open",
     start: str | None = None,
@@ -483,9 +499,11 @@ def residual_icir_check(
     if horizons is None:
         horizons = cfg.get("horizons", [1, 5, 20])
     if threshold is None:
-        threshold = float(cfg.get("min_annual_icir", 0.1))
+        threshold = float(cfg.get("min_annual_icir", 0.05))
+    if ic_mean_threshold is None:
+        ic_mean_threshold = float(cfg.get("min_abs_ic_mean", 0.001))
     if alpha is None:
-        alpha = float(cfg.get("ridge_alpha", 1.0))
+        alpha = float(cfg.get("ridge_alpha", 0.0))
 
     own_fs = factor_storage is None
     own_lib = library is None
@@ -522,6 +540,7 @@ def residual_icir_check(
                 n_dates=0,
                 n_obs_total=0,
                 threshold=threshold,
+                ic_mean_threshold=ic_mean_threshold,
                 passed=True,
             )
 
@@ -575,7 +594,10 @@ def residual_icir_check(
                 annual = float("nan")
             annual_icirs[h] = annual
 
-            if not math.isnan(annual) and annual > threshold:
+            ic_mean = residual_rank_ic_means[h]
+            if (not math.isnan(annual) and annual > threshold
+                    and not math.isnan(ic_mean)
+                    and abs(ic_mean) > ic_mean_threshold):
                 any_passed = True
 
         return ResidualICIRResult(
@@ -589,6 +611,7 @@ def residual_icir_check(
             n_dates=int(n_dates),
             n_obs_total=int(len(residuals)),
             threshold=threshold,
+            ic_mean_threshold=ic_mean_threshold,
             passed=any_passed,
         )
     finally:
