@@ -15,7 +15,7 @@ Your task is to convert a natural-language factor hypothesis into a complete, ru
 ## Available Data Columns in `panel`
 
 For `market_daily` sources, `panel` has columns:
-`open`, `high`, `low`, `close`, `volume`, `amount`, `pre_close`, `change`, `pct_chg`, `adj_factor`, `turnover_rate`, `turnover_rate_f`, `volume_ratio`, `pe`, `pe_ttm`, `pb`, `ps`, `ps_ttm`, `total_share`, `float_share`, `free_share`, `total_mv`, `circ_mv`
+`open`, `high`, `low`, `close`, `volume`, `amount`, `pre_close`, `change`, `pct_chg`, `adj_factor`, `is_st`, `list_date`, `limit_up`, `limit_down`, `turnover_rate`, `turnover_rate_f`, `volume_ratio`, `pe`, `pe_ttm`, `pb`, `ps`, `ps_ttm`, `dv_ratio`, `dv_ttm`, `total_share`, `float_share`, `free_share`, `total_mv`, `circ_mv`
 
 For financial sources, `panel` has the relevant financial statement columns **with prefixes**:
 - `income_q` columns → prefix `inc_` (e.g. `inc_total_revenue`, `inc_n_income`, `inc_n_income_attr_p`, `inc_operate_profit`, `inc_basic_eps`, `inc_ebit`, `inc_ebitda`)
@@ -27,8 +27,8 @@ For financial sources, `panel` has the relevant financial statement columns **wi
 
 ## Available Operators (import from `backtest.factor.transforms`)
 
-Cross-sectional: `rank`, `z_score`, `cs_zscore`, `cs_demean`, `cs_mad_winsorize`, `industry_neutralize`, `cap_neutralize`
-Time-series: `ts_rank`, `ts_mean`, `ts_std`, `ts_sum`, `ts_min`, `ts_max`, `ts_delta`, `ts_delay`, `ts_pct_change`, `ts_product`, `ts_skewness`, `ts_kurtosis`, `ts_ir`, `ts_decay_linear`, `ts_corr`, `ts_covariance`
+Cross-sectional: `rank`, `cs_zscore`, `cs_demean`, `cs_winsorize`, `cs_mad_winsorize`, `industry_neutralize`, `industry_median_fill`, `cap_neutralize`
+Time-series: `z_score`, `ts_rank`, `ts_mean`, `ts_std`, `ts_sum`, `ts_min`, `ts_max`, `ts_argmax`, `ts_argmin`, `ts_delta`, `ts_delay`, `ts_pct_change`, `ts_product`, `ts_skewness`, `ts_kurtosis`, `ts_ir`, `ts_decay_linear`, `ts_decay_exp`, `ts_corr`, `ts_covariance`
 Element-wise: `abs_`, `sign`, `log`, `sqrt`, `signed_power`, `inverse`, `if_else`
 Fundamental: `single_quarter`, `ttm`, `yoy`
 

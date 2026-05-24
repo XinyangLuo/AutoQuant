@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 
 # CJK font support — try common macOS / Linux Chinese fonts in order.
-for _font in ("PingFang SC", "Heiti SC", "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei"):
+for _font in ("PingFang HK", "Heiti TC", "STHeiti", "Arial Unicode MS",
+              "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei"):
     try:
         matplotlib.font_manager.findfont(_font, fallback_to_default=False)
         plt.rcParams["font.sans-serif"] = [_font, "DejaVu Sans"]
@@ -27,9 +28,9 @@ from .state import PipelineState
 _FIGSIZE_WIDE = (14, 5)
 _DPI = 120
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Tag
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _build_tag(state: PipelineState) -> str:
@@ -58,9 +59,26 @@ def _build_tag(state: PipelineState) -> str:
     return f"{tag}_{cfg.rebalance_freq.lower()}_d{decay}"
 
 
-# ---------------------------------------------------------------------------
+_STEP_NAMES = {
+    "step1": "覆盖率",
+    "step2": "中性化验证",
+    "step3": "ICIR 门控",
+    "step4": "单调性",
+    "step5": "策略配置",
+    "step6": "简单回测",
+    "step7": "详细回测",
+    "step8": "Ridge R² 分档",
+    "step9": "报告生成",
+}
+
+
+def _step_label(step_key: str) -> str:
+    return _STEP_NAMES.get(step_key, step_key)
+
+
+# ===========================================================================
 # 主入口
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def generate_pipeline_report(state: PipelineState) -> Path:
@@ -83,21 +101,43 @@ def generate_pipeline_report(state: PipelineState) -> Path:
         "",
     ]
 
+    # 决策横幅 + 汇总表
     lines.extend(_decision_banner(state))
-    lines.extend(_step_summary_table(state))
-    lines.extend(_factor_eval_section(state, tag_dir, plots_dir))
-    lines.extend(_backtest_section(state, tag_dir, plots_dir))
-    lines.extend(_decile_section(state, plots_dir))
-    lines.extend(_ridge_section(state))
-    lines.extend(_decision_detail(state))
+    lines.extend(_summary_table(state))
+
+    # 逐步明细
+    lines.extend(_step_section(state, plots_dir, "step1", _render_step1))
+    lines.extend(_step_section(state, plots_dir, "step2", _render_step2))
+    lines.extend(_step_section(state, plots_dir, "step3", _render_step3))
+    lines.extend(_step_section(state, plots_dir, "step4", _render_step4))
+    lines.extend(_step_section(state, plots_dir, "step5", _render_step5))
+    lines.extend(_step_section(state, plots_dir, "step6", _render_step6))
+    lines.extend(_step_section(state, plots_dir, "step7", _render_step7))
+    lines.extend(_step_section(state, plots_dir, "step8", _render_step8))
+    lines.extend(_step_section(state, plots_dir, "step9", _render_step9))
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
 
 
-# ---------------------------------------------------------------------------
-# 决策横幅
-# ---------------------------------------------------------------------------
+def _step_section(state: PipelineState, plots_dir: Path,
+                  step_key: str, render_fn) -> list[str]:
+    """Render a single step section with heading, content, and pass/fail."""
+    result = state.step_results.get(step_key)
+    name = _STEP_NAMES[step_key]
+    status = "通过" if (result and result.passed) else ("**拒绝**" if result else "未执行")
+    lines = [f"## {name}", ""]
+    lines.append(f"**结果**：{status}")
+    if result and result.reason:
+        lines.append(f"<br>**原因**：{result.reason}")
+    lines.append("")
+    lines.extend(render_fn(state, plots_dir))
+    return lines
+
+
+# ===========================================================================
+# 决策横幅 + 汇总表
+# ===========================================================================
 
 
 def _decision_banner(state: PipelineState) -> list[str]:
@@ -107,9 +147,8 @@ def _decision_banner(state: PipelineState) -> list[str]:
     elif state.status == "ready_for_review":
         lines.append("> **结果：待人工审核**")
         lines.append(">")
-        factor_id = state.config.factor_id
         lines.append(f"> 所有步骤通过，请查看报告后手动入库：")
-        lines.append(f"> `python -m backtest.factor.admission admit {factor_id}`")
+        lines.append(f"> `python -m backtest.factor.admission admit {state.config.factor_id}`")
     elif state.status == "rejected":
         reason = _find_rejection_reason(state)
         step_name = _find_rejection_step(state)
@@ -124,33 +163,10 @@ def _decision_banner(state: PipelineState) -> list[str]:
     return lines
 
 
-# ---------------------------------------------------------------------------
-# 步骤汇总表
-# ---------------------------------------------------------------------------
-
-
-_STEP_NAMES = {
-    "step1": "覆盖率",
-    "step2": "中性化验证",
-    "step3": "ICIR 门控",
-    "step4": "单调性",
-    "step5": "策略配置",
-    "step6": "简单回测",
-    "step7": "详细回测",
-    "step8": "Ridge R² 分档",
-    "step9": "报告生成",
-}
-
-
-def _step_label(step_key: str) -> str:
-    return _STEP_NAMES.get(step_key, step_key)
-
-
-def _step_summary_table(state: PipelineState) -> list[str]:
-    lines = ["## 各步骤结果汇总", ""]
+def _summary_table(state: PipelineState) -> list[str]:
+    lines = ["## 汇总", ""]
     lines.append("| 步骤 | 名称 | 结果 | 关键指标 | 原因 |")
     lines.append("|------|------|------|----------|------|")
-
     for step_key in _STEP_NAMES:
         result = state.step_results.get(step_key)
         if result is None:
@@ -161,7 +177,6 @@ def _step_summary_table(state: PipelineState) -> list[str]:
         metrics_str = _summarise_metrics(result.metrics, step_key)
         reason = result.reason or "-"
         lines.append(f"| {step_key} | {name} | {status} | {metrics_str} | {reason} |")
-
     lines.append("")
     return lines
 
@@ -169,11 +184,10 @@ def _step_summary_table(state: PipelineState) -> list[str]:
 def _summarise_metrics(metrics: dict, step_key: str) -> str:
     if not metrics:
         return "-"
-
     step_priorities = {
         "step1": ["pct95_missing_rate", "max_missing_rate", "n_dates"],
         "step2": ["max_existing_corr", "size_corr", "max_industry_corr"],
-        "step3": ["annual_icir", "abs_ic", "tstat", "best_horizon"],
+        "step3": ["annual_icir", "abs_ic", "best_horizon"],
         "step4": ["spearman", "n_groups"],
         "step5": ["top_pct", "decay", "rebalance"],
         "step6": ["sharpe", "annual_return", "max_drawdown"],
@@ -181,7 +195,6 @@ def _summarise_metrics(metrics: dict, step_key: str) -> str:
         "step8": ["r2", "tier"],
         "step9": [],
     }
-
     keys = step_priorities.get(step_key, list(metrics.keys())[:2])
     parts = []
     for key in keys:
@@ -194,25 +207,51 @@ def _summarise_metrics(metrics: dict, step_key: str) -> str:
     return ", ".join(parts[:2]) if parts else "-"
 
 
-# ---------------------------------------------------------------------------
-# 因子评估
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 各 step 渲染函数
+# ===========================================================================
 
 
-def _factor_eval_section(state: PipelineState, tag_dir: Path, plots_dir: Path) -> list[str]:
-    lines = ["## 因子离线评估", ""]
+def _metrics_sub_table(metrics: dict, exclude: set | None = None) -> list[str]:
+    """Render a subset of metrics as a key-value table."""
+    exclude = exclude or set()
+    lines = ["| 指标 | 数值 |", "|------|------|"]
+    for k, v in metrics.items():
+        if k in exclude:
+            continue
+        if isinstance(v, float):
+            lines.append(f"| {k} | {_fmt(v, 'f4')} |")
+        elif v is None:
+            lines.append(f"| {k} | — |")
+        elif isinstance(v, dict):
+            pass  # skip nested dicts
+        else:
+            lines.append(f"| {k} | {v} |")
+    return lines
 
-    step3 = state.step_results.get("step3")
-    if step3 is None:
-        lines.append("*无评估数据。*")
-        lines.append("")
-        return lines
 
-    # IC 指标表
-    all_ic = step3.metrics.get("all_ic_metrics", {})
+def _render_step1(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step1")
+    if not result or not result.metrics:
+        return ["*无数据。*", ""]
+    return _metrics_sub_table(result.metrics, exclude={"all_ic_metrics"})
+
+
+def _render_step2(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step2")
+    if not result or not result.metrics:
+        return ["*无数据。*", ""]
+    return _metrics_sub_table(result.metrics)
+
+
+def _render_step3(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step3")
+    if not result:
+        return ["*无数据。*", ""]
+
+    lines = []
+    all_ic = result.metrics.get("all_ic_metrics", {})
     if all_ic:
-        lines.append("### 各周期 IC 指标")
-        lines.append("")
         lines.append("| 周期 | IC 均值 | IC 标准差 | ICIR | IC t 值 | IC 正向占比 |")
         lines.append("|------|---------|-----------|------|---------|-------------|")
         for h_str, ic in sorted(all_ic.items(), key=lambda x: int(x[0])):
@@ -223,234 +262,174 @@ def _factor_eval_section(state: PipelineState, tag_dir: Path, plots_dir: Path) -
             )
         lines.append("")
 
-    best_h = step3.metrics.get("best_horizon")
-    if best_h:
-        lines.append(f"**最优周期**：{best_h}天 "
-                     f"（年化 ICIR={_fmt(step3.metrics.get('annual_icir'), 'f4')}，"
-                     f"|IC|={_fmt(step3.metrics.get('abs_ic'), 'f4')}，"
-                     f"t={_fmt(step3.metrics.get('tstat'), 'f4')}）")
+    p = _plot_ic_decay(all_ic, plots_dir)
+    if p:
+        lines.append(f"![IC 衰减图](plots/{p.name})")
         lines.append("")
 
-    step4 = state.step_results.get("step4")
-    if step4:
-        lines.append(f"**单调性**：Spearman 相关系数 = {_fmt(step4.metrics.get('spearman'), 'f4')} "
-                     f"（阈值 {state.config.thresholds.min_monotonicity}）")
+    p = _plot_ic_time_series(state, plots_dir)
+    if p:
+        lines.append(f"![IC 时序图](plots/{p.name})")
         lines.append("")
-
-    # IC 衰减图
-    plot_path = _plot_ic_decay(all_ic, plots_dir)
-    if plot_path:
-        lines.append(f"![IC 衰减图](plots/{plot_path.name})")
-        lines.append("")
-
-    # IC 时序图（4 面板）
-    ts_plot = _plot_ic_time_series(state, plots_dir)
-    if ts_plot:
-        lines.append(f"![IC 时序图](plots/{ts_plot.name})")
-        lines.append("")
-
-    # 分组收益图
-    step4_metrics = (step4.metrics if step4 else {})
-    group_rets = step4_metrics.get("group_mean_returns", {})
-    if group_rets:
-        plot_path = _plot_group_returns(group_rets, plots_dir)
-        if plot_path:
-            lines.append(f"![分组收益图](plots/{plot_path.name})")
-            lines.append("")
 
     return lines
 
 
-# ---------------------------------------------------------------------------
-# 回测结果
-# ---------------------------------------------------------------------------
+def _render_step4(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step4")
+    if not result or not result.metrics:
+        return ["*无数据。*", ""]
+
+    # 分组收益（静态截面）
+    lines = ["### 分组收益", ""]
+    lines.extend(_metrics_sub_table(result.metrics))
+    lines.append("")
+    group_rets = result.metrics.get("group_mean_returns", {})
+    if group_rets:
+        p = _plot_group_returns(group_rets, plots_dir)
+        if p:
+            lines.append(f"![分组收益图](plots/{p.name})")
+            lines.append("")
+
+    # 十档分层回测（动态净值）
+    lines.extend(_decile_content(state, plots_dir))
+    return lines
 
 
-def _backtest_section(state: PipelineState, tag_dir: Path, plots_dir: Path) -> list[str]:
-    lines = ["## 策略回测", ""]
+def _render_step5(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step5")
+    if not result or not result.metrics:
+        return ["*无数据。*", ""]
+    return _metrics_sub_table(result.metrics)
 
-    step5 = state.step_results.get("step5")
-    if step5 and step5.metrics:
-        lines.append(f"**策略参数**：top_pct={step5.metrics.get('top_pct')}，"
-                     f"decay={step5.metrics.get('decay')}，"
-                     f"rebalance={step5.metrics.get('rebalance')}")
+
+def _render_step6(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step6")
+    if not result or not result.metrics:
+        return ["*无数据。*", ""]
+
+    lines = _bt_metrics_table(result.metrics)
+    lines.append("")
+    _plot_backtest_nav(state, tag="simple", plots_dir=plots_dir)
+    lines.append("![简单回测净值曲线](plots/bt_simple_nav.png)")
+    lines.append("")
+    return lines
+
+
+def _render_step7(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step7")
+    if not result or not result.metrics:
+        return ["*无数据。*", ""]
+
+    lines = _bt_metrics_table(result.metrics)
+    lines.append("")
+    _plot_backtest_nav(state, tag="detailed", plots_dir=plots_dir)
+    lines.append("![详细回测净值曲线](plots/bt_detailed_nav.png)")
+    lines.append("")
+
+    p = _plot_evaluation_report(state, plots_dir)
+    if p:
+        lines.append(f"![回测全景图](plots/{p.name})")
         lines.append("")
 
     step6 = state.step_results.get("step6")
-    step7 = state.step_results.get("step7")
-
-    # 简单回测
-    if step6 and step6.metrics:
-        lines.append("### 简单回测（向量化，无交易成本）")
-        lines.append("")
-        lines.extend(_metrics_table(step6.metrics))
-        lines.append("")
-        _plot_backtest_nav(state, tag="simple", plots_dir=plots_dir)
-        lines.append("![简单回测净值曲线](plots/bt_simple_nav.png)")
-        lines.append("")
-
-    # 详细回测
-    if step7 and step7.metrics:
-        lines.append("### 详细回测（事件驱动，含佣金/印花税/过户费）")
-        lines.append("")
-        lines.extend(_metrics_table(step7.metrics))
-        lines.append("")
-        _plot_backtest_nav(state, tag="detailed", plots_dir=plots_dir)
-        lines.append("![详细回测净值曲线](plots/bt_detailed_nav.png)")
-        lines.append("")
-
-        # 8 面板大图
-        report_png = _plot_evaluation_report(state, plots_dir)
-        if report_png:
-            lines.append(f"![回测全景图](plots/{report_png.name})")
-            lines.append("")
-
-        # 成本侵蚀
-        simple_ann = (step6.metrics or {}).get("annual_return", 0) or 0
-        detailed_ann = step7.metrics.get("annual_return", 0) or 0
-        drag = simple_ann - detailed_ann
-        lines.append(f"**成本侵蚀**：简单回测年化 {_fmt(simple_ann, 'pct')} → "
-                     f"详细回测年化 {_fmt(detailed_ann, 'pct')}，"
-                     f"侵蚀 {_fmt(drag, 'pct')}")
-        lines.append("")
-
+    simple_ann = (step6.metrics or {}).get("annual_return", 0) or 0
+    detailed_ann = result.metrics.get("annual_return", 0) or 0
+    drag = simple_ann - detailed_ann
+    lines.append(f"*成本侵蚀：简单回测年化 {_fmt(simple_ann, 'pct')} → "
+                 f"详细回测年化 {_fmt(detailed_ann, 'pct')}，"
+                 f"侵蚀 {_fmt(drag, 'pct')}*")
+    lines.append("")
     return lines
 
 
-def _plot_evaluation_report(state: PipelineState, plots_dir: Path) -> Path | None:
-    """调用 evaluation 模块生成 8 面板全景图（report.png）。"""
-    try:
-        from backtest.evaluation import evaluate
-        bt_dir = state.artifacts.get("detailed_bt")
-        if not bt_dir:
-            return None
-        src = Path(bt_dir) / "report.png"
-        # Only re-run evaluate() if report.png doesn't already exist.
-        if not src.exists():
-            evaluate(str(bt_dir), benchmark=state.config.benchmark, plot=True)
-        if src.exists():
-            dst = plots_dir / "bt_report.png"
-            dst.write_bytes(src.read_bytes())
-            return dst
-        return None
-    except Exception:
-        return None
+def _render_step8(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step8")
+    if not result or not result.metrics:
+        return ["*未执行。*", ""]
 
-
-# ---------------------------------------------------------------------------
-# 十档分层回测
-# ---------------------------------------------------------------------------
-
-
-def _decile_section(state: PipelineState, plots_dir: Path) -> list[str]:
-    lines = ["## 十档分层回测", ""]
-
-    try:
-        from backtest.factor.evaluation import evaluate
-
-        config = state.config
-
-        # Check if decile plot already exists — skip re-computation if so.
-        decile_png = Path(config.results_root) / config.factor_id / "decile_backtest" / f"{config.factor_id}_decile.png"
-        if not decile_png.exists():
-            evaluate(
-                config.factor_id,
-                config.start_date,
-                config.end_date,
-                horizons=[20],
-                ret_type=config.ret_type,
-                corr_top_k=0,
-                exclude_limit_up=True,
-                run_decile_backtest=True,
-            )
-
-        if decile_png.exists():
-            dst = plots_dir / "decile_backtest.png"
-            dst.write_bytes(decile_png.read_bytes())
-            lines.append(f"![十档分层回测](plots/{dst.name})")
-            lines.append("")
-
-            # Metrics are embedded in the plot PNG; the image is self-contained.
-            lines.append("*十档分层净值曲线见上图，含 D1~D10 分组 NAV 和多空对冲曲线。*")
-            lines.append("")
-    except Exception as exc:
-        lines.append(f"*十档分层回测暂不可用（{exc}）。*")
-        lines.append("")
-
-    return lines
-
-
-# ---------------------------------------------------------------------------
-# Ridge R²
-# ---------------------------------------------------------------------------
-
-
-def _ridge_section(state: PipelineState) -> list[str]:
-    lines = ["## Ridge R² 风格分档", ""]
-
-    step8 = state.step_results.get("step8")
-    if step8 is None:
-        lines.append("*未执行。*")
-        lines.append("")
-        return lines
-
-    r2 = step8.metrics.get("r2")
-    tier = step8.metrics.get("tier")
+    r2 = result.metrics.get("r2")
+    tier = result.metrics.get("tier")
     tier_names = {"pure_alpha": "纯 Alpha", "smart_beta": "Smart Beta", "reject": "风格克隆"}
     tier_cn = tier_names.get(tier, str(tier))
 
-    lines.append(f"- **R²**：{_fmt(r2, 'f4')}")
-    lines.append(f"- **分档**：`{tier}`（{tier_cn}）")
-    lines.append(f"- **样本数**：{step8.metrics.get('n_obs'):,}")
-    lines.append("")
-    lines.append("| 分档 | R² 范围 | 含义 |")
-    lines.append("|------|---------|------|")
-    lines.append("| `pure_alpha` | R² < 0.2 | 与现有风格正交 — 入库 |")
-    lines.append("| `smart_beta` | 0.2 ≤ R² < 0.7 | 部分风格暴露 — 入库 |")
-    lines.append("| `reject` | R² ≥ 0.7 | 风格克隆 — 拒绝 |")
-    lines.append("")
-
+    lines = [
+        f"- **R²**：{_fmt(r2, 'f4')}",
+        f"- **分档**：`{tier}`（{tier_cn}）",
+        f"- **样本数**：{result.metrics.get('n_obs'):,}",
+        "",
+        "| 分档 | R² 范围 | 含义 |",
+        "|------|---------|------|",
+        "| `pure_alpha` | R² < 0.2 | 与现有风格正交 — 入库 |",
+        "| `smart_beta` | 0.2 ≤ R² < 0.7 | 部分风格暴露 — 入库 |",
+        "| `reject` | R² ≥ 0.7 | 风格克隆 — 拒绝 |",
+        "",
+    ]
     return lines
 
 
-# ---------------------------------------------------------------------------
-# 决策明细
-# ---------------------------------------------------------------------------
+def _render_step9(state: PipelineState, plots_dir: Path) -> list[str]:
+    result = state.step_results.get("step9")
+    if not result or not result.metrics:
+        return ["*未执行。*", ""]
+    lines = _metrics_sub_table(result.metrics)
+    if state.status == "ready_for_review":
+        lines.append(f"")
+        lines.append(f"> 人工入库：`python -m backtest.factor.admission admit {state.config.factor_id}`")
+    return lines
 
 
-def _decision_detail(state: PipelineState) -> list[str]:
-    lines = ["## 各步骤明细", ""]
+# ===========================================================================
+# 十档分层回测
+# ===========================================================================
 
-    for step_key in _STEP_NAMES:
-        result = state.step_results.get(step_key)
-        if result is None:
-            continue
-        status = "通过" if result.passed else "**拒绝**"
-        name = _STEP_NAMES[step_key]
-        lines.append(f"- **{name}**（{step_key}）：{status}")
-        if result.metrics:
-            for k, v in result.metrics.items():
-                if k == "all_ic_metrics":
-                    continue
-                if isinstance(v, float):
-                    lines.append(f"  - {k}: {v:.4f}")
-                elif isinstance(v, dict):
-                    flat = ", ".join(
-                        f"{dk}={_fmt(dv, 'f4') if isinstance(dv, float) else dv}"
-                        for dk, dv in list(v.items())[:5]
-                    )
-                    lines.append(f"  - {k}: {{{flat}}}")
-                else:
-                    lines.append(f"  - {k}: {v}")
-        if result.reason:
-            lines.append(f"  - *原因*: {result.reason}")
+
+def _decile_content(state: PipelineState, plots_dir: Path) -> list[str]:
+    """十档分层回测（嵌入 step4 单调性）。"""
+    lines = ["### 十档分层回测", ""]
+
+    try:
+        from backtest.factor.evaluation import evaluate
+        from backtest.simulation.decile import plot_decile_backtest
+
+        config = state.config
+        decile_png = Path(config.results_root) / config.factor_id / "decile_backtest" / f"{config.factor_id}_decile.png"
+
+        result = evaluate(
+            config.factor_id, config.start_date, config.end_date,
+            horizons=[20], ret_type=config.ret_type,
+            corr_top_k=0, exclude_limit_up=True, run_decile_backtest=True,
+        )
+        dr = result.decile_result
+        if dr is None:
+            lines.append("*无结果。*")
+            lines.append("")
+            return lines
+
+        if not decile_png.exists():
+            decile_png.parent.mkdir(parents=True, exist_ok=True)
+            plot_decile_backtest(dr, str(decile_png))
+
+        dst = plots_dir / "decile_backtest.png"
+        dst.write_bytes(decile_png.read_bytes())
+        lines.append(f"![十档分层回测](plots/{dst.name})")
+        lines.append("")
+
+        ls = dr.ls_metrics
+        lines.append(f"- **单调性**：{_fmt(dr.monotonicity_score, 'f4')}")
+        lines.append(f"- **多空年化收益**：{_fmt(ls.get('annual_return'), 'pct')}")
+        lines.append(f"- **多空 Sharpe**：{_fmt(ls.get('sharpe'), 'f3')}")
+        lines.append(f"- **多空最大回撤**：{_fmt(ls.get('max_drawdown'), 'pct')}")
+        lines.append("")
+    except Exception as exc:
+        lines.append(f"*暂不可用（{exc}）。*")
         lines.append("")
 
     return lines
 
 
 # ===========================================================================
-# 图表生成函数
+# 图表生成
 # ===========================================================================
 
 
@@ -465,19 +444,18 @@ def _plot_ic_decay(all_ic: dict, plots_dir: Path) -> Path | None:
     icirs = [_get(h, "icir") for h in horizons]
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=_FIGSIZE_WIDE)
-
     ax1.errorbar(horizons, means, yerr=stds, marker="o", color="steelblue", capsize=4, linewidth=1.5)
     ax1.axhline(0, color="gray", linestyle="--", linewidth=0.8)
     ax1.set_xlabel("预测周期（天）")
     ax1.set_ylabel("IC")
     ax1.set_title("IC 均值 ± 标准差")
-
+    ax1.grid(True, alpha=0.3)
     ax2.bar(horizons, icirs, color="darkorange", alpha=0.8)
     ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
     ax2.set_xlabel("预测周期（天）")
     ax2.set_ylabel("ICIR")
     ax2.set_title("ICIR")
-
+    ax2.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
     out = plots_dir / "eval_ic_decay.png"
     fig.savefig(out, dpi=_DPI, bbox_inches="tight")
@@ -492,10 +470,8 @@ def _plot_ic_time_series(state: PipelineState, plots_dir: Path) -> Path | None:
     best_h = step3.metrics.get("best_horizon")
     if best_h is None:
         return None
-
     try:
         from backtest.factor.evaluation import evaluate, plot_evaluation
-
         config = state.config
         result = evaluate(
             config.factor_id, config.start_date, config.end_date,
@@ -512,7 +488,6 @@ def _plot_ic_time_series(state: PipelineState, plots_dir: Path) -> Path | None:
 def _plot_group_returns(group_rets: dict, plots_dir: Path) -> Path | None:
     groups = sorted(int(g) for g in group_rets)
     values = [group_rets[str(g)] if str(g) in group_rets else group_rets.get(g, 0) for g in groups]
-
     fig, ax = plt.subplots(figsize=_FIGSIZE_WIDE)
     colors = ["#d73027" if v < 0 else "#4575b4" for v in values]
     ax.bar(groups, values, color=colors, alpha=0.85)
@@ -521,7 +496,7 @@ def _plot_group_returns(group_rets: dict, plots_dir: Path) -> Path | None:
     ax.set_ylabel("平均前瞻收益")
     ax.set_title("各分位组平均收益（h=1）")
     ax.set_xticks(groups)
-
+    ax.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
     out = plots_dir / "eval_group_returns.png"
     fig.savefig(out, dpi=_DPI, bbox_inches="tight")
@@ -529,83 +504,7 @@ def _plot_group_returns(group_rets: dict, plots_dir: Path) -> Path | None:
     return out
 
 
-def _plot_backtest_nav(state: PipelineState, *, tag: str, plots_dir: Path) -> None:
-    art_key = f"{tag}_bt"
-    bt_dir = state.artifacts.get(art_key)
-    nav_path = Path(bt_dir) / "nav.parquet" if bt_dir else None
-
-    if nav_path is None or not nav_path.exists():
-        _plot_backtest_summary_card(state, tag, plots_dir)
-        return
-
-    nav_df = pd.read_parquet(nav_path)
-    if nav_df.empty or "nav" not in nav_df.columns:
-        _plot_backtest_summary_card(state, tag, plots_dir)
-        return
-
-    nav_df["date"] = pd.to_datetime(nav_df["date"])
-    nav_series = nav_df.set_index("date")["nav"].astype(float)
-    nav_norm = nav_series / nav_series.iloc[0]
-    cummax = nav_series.expanding().max()
-    drawdown = nav_series / cummax - 1.0
-
-    title_map = {"simple": "简单回测", "detailed": "详细回测"}
-    title = title_map.get(tag, tag)
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 7))
-
-    ax1.plot(nav_norm.index, nav_norm.values, color="steelblue", linewidth=1.4)
-    ax1.axhline(1.0, color="black", linewidth=0.5, alpha=0.5)
-    ax1.set_ylabel("净值")
-    ax1.set_title(f"{title} — 净值曲线")
-    ax1.grid(True, alpha=0.3)
-
-    ax2.fill_between(drawdown.index, drawdown.values, 0, color="red", alpha=0.3)
-    ax2.plot(drawdown.index, drawdown.values, color="red", linewidth=1.0)
-    ax2.set_ylabel("回撤")
-    ax2.set_xlabel("日期")
-    ax2.set_title(f"{title} — 回撤曲线")
-    ax2.grid(True, alpha=0.3)
-
-    fig.tight_layout()
-    out = plots_dir / f"bt_{tag}_nav.png"
-    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _plot_backtest_summary_card(state: PipelineState, tag: str, plots_dir: Path) -> None:
-    step_key = "step6" if tag == "simple" else "step7"
-    step = state.step_results.get(step_key)
-    metrics = step.metrics if step else {}
-
-    title_map = {"simple": "简单回测", "detailed": "详细回测"}
-    title = title_map.get(tag, tag)
-
-    fig, ax = plt.subplots(figsize=_FIGSIZE_WIDE)
-    card_lines = []
-    for label, key, kind in [
-        ("年化收益", "annual_return", "pct"),
-        ("Sharpe", "sharpe", "f3"),
-        ("最大回撤", "max_drawdown", "pct"),
-        ("Calmar", "calmar", "f3"),
-        ("年化换手", "annual_turnover", "f2"),
-    ]:
-        val = metrics.get(key)
-        if val is not None and not (isinstance(val, float) and np.isnan(val)):
-            card_lines.append(f"{label}: {_fmt(val, kind)}")
-
-    ax.axis("off")
-    ax.text(0.5, 0.5, "\n".join(card_lines), ha="center", va="center",
-            transform=ax.transAxes, fontsize=14, fontfamily="monospace",
-            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.3))
-    ax.set_title(f"{title} 摘要", fontsize=13, fontweight="bold")
-    fig.tight_layout()
-    out = plots_dir / f"bt_{tag}_nav.png"
-    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _metrics_table(metrics: dict) -> list[str]:
+def _bt_metrics_table(metrics: dict) -> list[str]:
     rows = [
         ("年化收益", "annual_return", "pct"),
         ("Sharpe", "sharpe", "f3"),
@@ -623,9 +522,91 @@ def _metrics_table(metrics: dict) -> list[str]:
     return lines
 
 
-# ---------------------------------------------------------------------------
+def _plot_backtest_nav(state: PipelineState, *, tag: str, plots_dir: Path) -> None:
+    art_key = f"{tag}_bt"
+    bt_dir = state.artifacts.get(art_key)
+    nav_path = Path(bt_dir) / "nav.parquet" if bt_dir else None
+    if nav_path is None or not nav_path.exists():
+        _plot_backtest_summary_card(state, tag, plots_dir)
+        return
+    nav_df = pd.read_parquet(nav_path)
+    if nav_df.empty or "nav" not in nav_df.columns:
+        _plot_backtest_summary_card(state, tag, plots_dir)
+        return
+    nav_df["date"] = pd.to_datetime(nav_df["date"])
+    nav_series = nav_df.set_index("date")["nav"].astype(float)
+    nav_norm = nav_series / nav_series.iloc[0]
+    drawdown = nav_series / nav_series.expanding().max() - 1.0
+    title_map = {"simple": "简单回测", "detailed": "详细回测"}
+    title = title_map.get(tag, tag)
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 7))
+    ax1.plot(nav_norm.index, nav_norm.values, color="steelblue", linewidth=1.4)
+    ax1.axhline(1.0, color="black", linewidth=0.5, alpha=0.5)
+    ax1.set_ylabel("净值")
+    ax1.set_title(f"{title} — 净值曲线")
+    ax1.grid(True, alpha=0.3)
+    ax2.fill_between(drawdown.index, drawdown.values, 0, color="red", alpha=0.3)
+    ax2.plot(drawdown.index, drawdown.values, color="red", linewidth=1.0)
+    ax2.set_ylabel("回撤")
+    ax2.set_xlabel("日期")
+    ax2.set_title(f"{title} — 回撤曲线")
+    ax2.grid(True, alpha=0.3)
+    fig.tight_layout()
+    out = plots_dir / f"bt_{tag}_nav.png"
+    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_backtest_summary_card(state: PipelineState, tag: str, plots_dir: Path) -> None:
+    step_key = "step6" if tag == "simple" else "step7"
+    step = state.step_results.get(step_key)
+    metrics = step.metrics if step else {}
+    title_map = {"simple": "简单回测", "detailed": "详细回测"}
+    title = title_map.get(tag, tag)
+    fig, ax = plt.subplots(figsize=_FIGSIZE_WIDE)
+    card_lines = []
+    for label, key, kind in [
+        ("年化收益", "annual_return", "pct"),
+        ("Sharpe", "sharpe", "f3"),
+        ("最大回撤", "max_drawdown", "pct"),
+        ("Calmar", "calmar", "f3"),
+        ("年化换手", "annual_turnover", "f2"),
+    ]:
+        val = metrics.get(key)
+        if val is not None and not (isinstance(val, float) and np.isnan(val)):
+            card_lines.append(f"{label}: {_fmt(val, kind)}")
+    ax.axis("off")
+    ax.text(0.5, 0.5, "\n".join(card_lines), ha="center", va="center",
+            transform=ax.transAxes, fontsize=14, fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.3))
+    ax.set_title(f"{title} 摘要", fontsize=13, fontweight="bold")
+    fig.tight_layout()
+    out = plots_dir / f"bt_{tag}_nav.png"
+    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
+    plt.close(fig)
+
+
+def _plot_evaluation_report(state: PipelineState, plots_dir: Path) -> Path | None:
+    try:
+        from backtest.evaluation import evaluate
+        bt_dir = state.artifacts.get("detailed_bt")
+        if not bt_dir:
+            return None
+        src = Path(bt_dir) / "report.png"
+        if not src.exists():
+            evaluate(str(bt_dir), benchmark=state.config.benchmark, plot=True)
+        if src.exists():
+            dst = plots_dir / "bt_report.png"
+            dst.write_bytes(src.read_bytes())
+            return dst
+        return None
+    except Exception:
+        return None
+
+
+# ===========================================================================
 # Helpers
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 
 def _find_rejection_reason(state: PipelineState) -> str | None:

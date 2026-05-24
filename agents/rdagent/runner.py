@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import sys
 from pathlib import Path
@@ -13,7 +14,7 @@ from backtest.data.storage import MarketStorage
 from backtest.evaluation import evaluate as bt_evaluate
 from backtest.factor.compute import apply_variant_pipeline, compute_factor
 from backtest.factor.evaluation import evaluate as factor_evaluate
-from backtest.factor.registry import get_factor_meta, sync_registry
+from backtest.factor.registry import get_factor_meta, sync_registry, unregister
 from backtest.factor.storage import FactorStorage
 from backtest.simulation.config import SimulationConfig
 from backtest.simulation.detailed import DetailedSimulator
@@ -98,7 +99,11 @@ class AutoQuantFactorRunner:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self._close_storages()
+        try:
+            self._close_storages()
+        except Exception:
+            # If close fails, still propagate the original exception
+            pass
         return False
 
     def _close_storages(self) -> None:
@@ -221,6 +226,7 @@ class AutoQuantFactorRunner:
             spec.loader.exec_module(module)
         except Exception:
             sys.modules.pop(mod_name, None)
+            unregister(experiment.factor_id)
             raise
 
         # Persist registry
@@ -253,7 +259,8 @@ class AutoQuantFactorRunner:
                     factor_storage=self.factor_storage,
                 )
             except RuntimeError as e:
-                if "admitted" in str(e).lower() or "requires" in str(e).lower():
+                msg = str(e).lower()
+                if "not admitted" in msg or "requires admitted factor" in msg:
                     # Required library factor (e.g. f_barra_size) not available;
                     # fall back to raw factor without neutralization.
                     df = raw_df
@@ -263,6 +270,11 @@ class AutoQuantFactorRunner:
             df = raw_df
 
         # Insert into work DB
+        if df.empty:
+            raise RuntimeError(
+                f"Factor {experiment.factor_id} produced empty DataFrame after compute. "
+                "Check that the factor function returns non-NaN values."
+            )
         self.factor_storage.insert_factors(df)
 
     # ------------------------------------------------------------------
@@ -321,6 +333,13 @@ class AutoQuantFactorRunner:
             columns="factor_id",
             values="value",
         ).reset_index()
+        # pivot_table may produce MultiIndex columns in some pandas versions;
+        # flatten them so SingleFactorStrategy can look up the factor_id.
+        if isinstance(factor_panel.columns, pd.MultiIndex):
+            factor_panel.columns = [
+                col[1] if col[0] == "value" else col[0]
+                for col in factor_panel.columns.to_flat_index()
+            ]
 
         # Load market data
         market_panel = self.market_storage.get_bars(
@@ -420,15 +439,15 @@ class AutoQuantFactorRunner:
             strategy_type=base.strategy_type,
             rebalance_freq=base.rebalance_freq,
             delay=base.delay,
-            universe=base.universe,
+            universe=copy.deepcopy(base.universe),
             factors=[FactorConfig(id=factor_id, direction="desc", weight=1.0)],
             combine_method=base.combine_method,
-            selection=base.selection,
-            weighting=base.weighting,
-            neutralize=base.neutralize,
-            risk=base.risk,
-            backtest=base.backtest,
-            decay=base.decay,
+            selection=copy.deepcopy(base.selection),
+            weighting=copy.deepcopy(base.weighting),
+            neutralize=copy.deepcopy(base.neutralize) if base.neutralize is not None else None,
+            risk=copy.deepcopy(base.risk) if base.risk is not None else None,
+            backtest=copy.deepcopy(base.backtest),
+            decay=copy.deepcopy(base.decay) if base.decay is not None else None,
         )
 
     def _get_rebalance_dates(self, config: StrategyConfig) -> list[str]:

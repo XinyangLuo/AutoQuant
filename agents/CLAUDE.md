@@ -26,12 +26,12 @@ HypothesisGen (LLM) → Hypothesis2Experiment (code gen)
 
 ```bash
 # Agent 因子研究主循环
-python -m agents.rdagent.run \
+python -m agents.rdagent.run run \
     --max-rounds 10 --start 20160101 --end 20231231 \
     --output-dir results/agent/run_001
 
 # 指定种子假设（跳过 Round-1 LLM 生成）
-python -m agents.rdagent.run --seed "20-day momentum x volume spike"
+python -m agents.rdagent.run run --seed "20-day momentum x volume spike"
 
 # 查看候选列表
 python -m agents.rdagent.run list-candidates results/agent/run_001
@@ -66,8 +66,9 @@ agents/
 │   ├── runner.py               # AutoQuantFactorRunner（对接 backtest 流水线）
 │   ├── evaluator.py            # AutoQuantFactorEvaluator → QuantFeedback
 │   ├── hypothesis.py           # AutoQuantFactorHypothesisGen + Hypothesis2Experiment
+│   ├── experiment.py           # AutoQuantFactorExperiment
 │   ├── knowledge.py            # AShareKnowledgeBase（经验积累 + 相似检索）
-   ├── config.py               # AgentConfig（阈值统一从 config.yaml 读取）
+│   ├── config.py               # AgentConfig（阈值统一从 config.yaml 读取）
 │   ├── run.py                  # 主循环 + CLI
 │   ├── utils.py                # cleanup_generated_factor 等
 │   ├── prompts/                # LLM Prompt 模板（markdown）
@@ -81,11 +82,11 @@ agents/
 |---|---|---|---|
 | 场景描述 | `AShareQuantScenario` | HypothesisGen / H2E | Prompt 上下文（schema / rules / thresholds） |
 | 因子注册 | `hypothesis.py` (`_inject_factor_id`) | `backtest.factor.registry` | Python 代码文件 + `@register` |
-| 因子计算 | `AutoQuantFactorRunner` | `backtest.factor.compute` | `compute_factor()` + `apply_variant_pipeline()` |
-| 因子评估 | `AutoQuantFactorRunner` | `backtest.factor.evaluation` | `evaluate()` → rankicir / IC+ / turnover |
-| 策略回测 | `AutoQuantFactorRunner` | `backtest.simulation` | `SingleFactorStrategy` + `Simple/DetailedSimulator` |
-| 评测指标 | `AutoQuantFactorEvaluator` | `backtest.evaluation` | `evaluate(result_dir)` → metrics dict |
-| 因子准入 | `run.py` CLI | `backtest.factor.admission` | `admit()` / `reject()` |
+| 因子计算 | `backtest.factor.compute` | `AutoQuantFactorRunner` | `compute_factor()` + `apply_variant_pipeline()` |
+| 因子评估 | `backtest.factor.evaluation` | `AutoQuantFactorRunner` | `evaluate()` → rankicir / IC+ / turnover |
+| 策略回测 | `backtest.simulation` | `AutoQuantFactorRunner` | `SingleFactorStrategy` + `Simple/DetailedSimulator` |
+| 评测指标 | `backtest.evaluation` | `AutoQuantFactorEvaluator` | `evaluate(result_dir)` → metrics dict |
+| 因子准入 | `backtest.factor.admission` | `run.py` CLI | `admit()` / `reject()` |
 | 历史反馈 | `Trace` | `HypothesisGen.gen()` | `trace.hist[-5:]` 最近 5 轮结果 |
 | 知识检索 | `AShareKnowledgeBase` | `HypothesisGen` | `get_sota()` + `retrieve_similar()` |
 

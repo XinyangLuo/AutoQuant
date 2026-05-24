@@ -88,7 +88,7 @@ agents/
 - 中性化选项（raw、swl2_capq5）
 
 **复用 AutoQuant**：
-- `backtest/factor/variants.py:BASELINE_VARIANT`
+- `backtest/factor/variants.py:DEFAULT_VARIANT`
 - `backtest/factor/admission.py:RECOMMENDED_THRESHOLDS`
 - `backtest/data/storage.py:MarketStorage.get_bars()` 探测 schema
 
@@ -99,13 +99,17 @@ agents/
 ```python
 @dataclass
 class AutoQuantFactorExperiment(Experiment):
-    factor_id: str
-    factor_code: str              # Python code with @register decorator
-    factor_file_path: Path        # agents/rdagent/generated/f_{uuid}.py
-    eval_result: EvaluationResult | None
-    simple_bt_metrics: dict | None
-    detailed_bt_metrics: dict | None
-    pipeline_report_path: Path | None
+    factor_id: str = ""
+    factor_code: str = ""           # Python code with @register decorator
+    factor_file_path: Path | None = None
+    eval_result: dict[str, Any] = field(default_factory=dict)
+    simple_bt_metrics: dict[str, Any] = field(default_factory=dict)
+    detailed_bt_metrics: dict[str, Any] = field(default_factory=dict)
+    simple_bt_dir: Path | None = None
+    detailed_bt_dir: Path | None = None
+    category: str = ""
+    keywords: list[str] = field(default_factory=list)
+    error: str | None = None
 ```
 
 ### 3. AutoQuantFactorRunner (`runner.py`)
@@ -121,7 +125,7 @@ class AutoQuantFactorExperiment(Experiment):
 6. Collect all metrics into experiment
 ```
 
-**分阶段执行**：步骤 3+4 每轮必跑（秒级）；步骤 5 只在 RankICIR ≥ 0.25 且 Sharpe ≥ 0.5 时跑（分钟级）。
+**分阶段执行**：步骤 3+4 每轮必跑（秒级）；步骤 5 只在 RankICIR ≥ 0.25 且 Sharpe ≥ 0.8 时跑（分钟级）。
 
 **复用 AutoQuant**：
 - `backtest.factor.compute.compute_factor()`
@@ -201,16 +205,14 @@ for round in range(max_rounds):
     experiment = h2e.convert(hypothesis, trace)
     experiment = runner.run(experiment)       # 执行 AutoQuant 流水线
     feedback = evaluator.evaluate(experiment) # 评估并生成反馈
-    trace.hist.append((experiment, feedback))
+    trace.add(experiment, feedback)
     knowledge_base.add_experience(experiment, feedback)
     save_checkpoint(trace, knowledge_base, round)
     if feedback.decision and feedback.simple_sharpe > 1.0:
         break
 
-# 事后审核报告
-best = select_best_factors(trace, top_k=5)
-for exp in best:
-    auto_admit_with_report(exp)  # admit + 生成审核报告
+# 事后审核报告（由 _generate_review_report 生成）
+generate_review_report(candidates, output_dir)
 ```
 
 ## 与 AutoQuant 的接口契约
@@ -218,9 +220,9 @@ for exp in best:
 | 边界 | RD-Agent 侧 | AutoQuant 侧 | 形式 |
 |------|-------------|--------------|------|
 | 因子注册 | 生成带 `@register` 的代码 | `backtest.factor.registry.register` 装饰器 | Python 代码文件 |
-| 因子计算 | 调用 Runner | `compute_factor()` + `apply_neutralizations()` | Python API |
+| 因子计算 | 调用 Runner | `compute_factor()` + `apply_variant_pipeline()` | Python API |
 | 因子评估 | 调用 Runner | `evaluate()` → `EvaluationResult` | Python API |
-| 策略信号 | 调用 Runner | `SingleFactorStrategy.run()` | Python API |
+| 策略信号 | 调用 Runner | `SingleFactorStrategy.generate_signals()` | Python API |
 | 回测执行 | 调用 Runner | `SimpleSimulator.run()` / `DetailedSimulator.run()` | Python API |
 | 结果评估 | 调用 Evaluator | `backtest.evaluation.evaluate()` | Python API |
 | 因子准入 | 半自动 admit | `admit()` / `reject()` | Python API |
@@ -249,7 +251,7 @@ for exp in best:
 | `backtest.factor.compute` | `compute_factor()`、中性化 |
 | `backtest.factor.evaluate` | `evaluate()`、IC/RankIC/ICIR |
 | `backtest.factor.admission` | `admit()`/`reject()`、门槛检查 |
-| `backtest.factor.variants` | `BASELINE_VARIANT`、`expand_variant_names()` |
+| `backtest.factor.variants` | `DEFAULT_VARIANT`、`expand_variant_names()` |
 | `backtest.strategy` | `StrategyConfig`、`SingleFactorStrategy` |
 | `backtest.simulation` | `SimpleSimulator`、`DetailedSimulator` |
 | `backtest.evaluation` | `evaluate()`、指标计算 |

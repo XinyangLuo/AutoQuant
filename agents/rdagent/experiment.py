@@ -70,7 +70,7 @@ class AutoQuantFactorExperiment(Experiment):
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AutoQuantFactorExperiment":
         base = super().from_dict(data)
-        return cls(
+        obj = cls(
             experiment_id=base.experiment_id,
             source_code=base.source_code,
             source_file_path=base.source_file_path,
@@ -89,3 +89,5 @@ class AutoQuantFactorExperiment(Experiment):
             keywords=data.get("keywords", []),
             error=data.get("error"),
         )
+        obj.__post_init__()
+        return obj

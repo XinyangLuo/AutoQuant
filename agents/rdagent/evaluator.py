@@ -12,6 +12,13 @@ from .core.evaluation import Evaluator, Feedback
 from .experiment import AutoQuantFactorExperiment
 
 
+def _default_min_sharpe_simple() -> float:
+    try:
+        return _PipeThresh().min_sharpe_simple
+    except (KeyError, FileNotFoundError):
+        return 0.8
+
+
 @dataclass
 class QuantFeedback(Feedback):
     """Structured feedback for a quantitative factor experiment.
@@ -114,7 +121,7 @@ class AutoQuantFactorEvaluator(Evaluator):
         self.min_ic_positive_ratio = min_ic_positive_ratio if min_ic_positive_ratio is not None else _ADM_THRESHOLDS["min_ic_positive_ratio"]
         self.max_turnover = max_turnover if max_turnover is not None else _ADM_THRESHOLDS["max_turnover"]
         self.max_corr = max_corr if max_corr is not None else _ADM_THRESHOLDS["max_corr"]
-        self.min_simple_sharpe = min_simple_sharpe if min_simple_sharpe is not None else _PipeThresh().min_sharpe_simple
+        self.min_simple_sharpe = min_simple_sharpe if min_simple_sharpe is not None else _default_min_sharpe_simple()
 
     def evaluate(self, experiment: AutoQuantFactorExperiment) -> QuantFeedback:
         """Evaluate an experiment and return structured feedback.
@@ -160,7 +167,8 @@ class AutoQuantFactorEvaluator(Evaluator):
             and ic_pos >= self.min_ic_positive_ratio
             and turnover < self.max_turnover
             and max_corr < self.max_corr
-            and (simple_sharpe is None or simple_sharpe >= self.min_simple_sharpe)
+            and simple_sharpe is not None
+            and simple_sharpe >= self.min_simple_sharpe
         )
 
         # Observation (natural language summary)

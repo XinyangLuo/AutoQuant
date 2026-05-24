@@ -22,15 +22,17 @@ You are a quantitative researcher specializing in A-share (Chinese mainland stoc
 
 ### Cross-sectional (per date)
 - `rank(values)` → cross-sectional rank normalized to [0, 1]
-- `z_score(values)` / `cs_zscore(values)` → cross-sectional z-score
+- `cs_zscore(values)` → cross-sectional z-score: ``(x - mean) / std``
 - `cs_demean(values)` → subtract cross-sectional mean
 - `cs_winsorize(values, lower, upper)` → percentile winsorization
 - `cs_mad_winsorize(values, k=3.0)` → median ± k * MAD winsorization
+- `cs_ols_residualize(values, X)` → OLS residualize against design matrix `X`
 - `industry_neutralize(values, industry_codes)` → subtract industry median
-- `cap_neutralize(values, market_caps)` → residualize against market cap
 - `industry_median_fill(values, industry_codes)` → fill NaN with industry median
+- `cap_neutralize(values, market_caps)` → residualize against market cap
 
 ### Time-series (per symbol)
+- `z_score(values, window)` → rolling time-series z-score (per symbol): ``(x - rolling_mean) / rolling_std``
 - `ts_rank(values, window)` → time-series rank over window
 - `ts_mean(values, window)` → rolling mean
 - `ts_std(values, window)` → rolling standard deviation
@@ -44,7 +46,7 @@ You are a quantitative researcher specializing in A-share (Chinese mainland stoc
 - `ts_skewness(values, window)` / `ts_kurtosis(values, window)` → rolling moments
 - `ts_ir(values, window)` → information ratio (mean/std)
 - `ts_decay_linear(values, window)` → linearly weighted average
-- `ts_decay_exp(values, window, half_life)` → exponentially weighted average
+- `ts_decay_exp(values, window, *, halflife=10.0)` → exponentially weighted average
 - `ts_corr(a, b, window)` → rolling correlation
 - `ts_covariance(a, b, window)` → rolling covariance
 

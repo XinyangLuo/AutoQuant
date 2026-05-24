@@ -55,10 +55,21 @@ def _extract_json(text: str) -> dict[str, Any]:
     if fenced:
         text = fenced.group(1)
     else:
-        # Try bare JSON object
-        bare = re.search(r"(\{.*\})", text, re.DOTALL)
-        if bare:
-            text = bare.group(1)
+        # Try bare JSON object — balance braces to handle nesting
+        start = text.find("{")
+        if start == -1:
+            raise ValueError("No JSON object found in text")
+        depth = 0
+        for i, ch in enumerate(text[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    text = text[start : i + 1]
+                    break
+        else:
+            raise ValueError("Unbalanced braces in JSON text")
     return json.loads(text)
 
 
@@ -66,8 +77,14 @@ def _extract_python_code(text: str) -> str:
     """Extract Python code from LLM response text.
 
     Handles markdown fences (```python ... ```) and raw code.
+    Prefers explicitly tagged python blocks to avoid grabbing JSON fences.
     """
-    fenced = re.search(r"```(?:python)?\s*(.*?)\s*```", text, re.DOTALL)
+    # Prefer explicitly tagged python blocks
+    fenced = re.search(r"```python\s*(.*?)\s*```", text, re.DOTALL)
+    if fenced:
+        return fenced.group(1).strip()
+    # Fallback: any fenced block
+    fenced = re.search(r"```\s*(.*?)\s*```", text, re.DOTALL)
     if fenced:
         return fenced.group(1).strip()
     return text.strip()
@@ -121,6 +138,7 @@ def _inject_factor_id(code: str, factor_id: str) -> str:
                 break
 
     if modified:
+        tree = ast.fix_missing_locations(tree)
         return ast.unparse(tree)
     # No @register found — prepend one
     return f'@register("{factor_id}")\n' + code
@@ -192,6 +210,8 @@ class AutoQuantFactorHypothesisGen(HypothesisGen):
         if choice.finish_reason == "length":
             raise RuntimeError("LLM response truncated (finish_reason='length'); increase max_tokens")
         content = choice.message.content
+        if not content:
+            raise RuntimeError("LLM returned empty content (possible refusal or empty completion)")
         data = _extract_json(content)
 
         return Hypothesis(
@@ -259,9 +279,9 @@ class AutoQuantFactorHypothesisGen(HypothesisGen):
         for i, (exp, fb) in enumerate(trace.hist[-5:], 1):  # Last 5 only
             status = "PASS" if fb.decision else "FAIL"
             parts = [f"{i}. {exp.experiment_id} [{status}]"]
-            rankicir = getattr(fb, "rankicir", None)
-            ic_pos = getattr(fb, "ic_positive_ratio", None)
-            turnover = getattr(fb, "turnover", None)
+            rankicir = fb.metrics.get("rankicir")
+            ic_pos = fb.metrics.get("ic_positive_ratio")
+            turnover = fb.metrics.get("turnover")
             if rankicir is not None:
                 parts.append(f"RankICIR={rankicir:.3f}")
             if ic_pos is not None:
@@ -336,7 +356,10 @@ class AutoQuantFactorHypothesis2Experiment(Hypothesis2Experiment):
         choice = response.choices[0]
         if choice.finish_reason == "length":
             raise RuntimeError("LLM code response truncated (finish_reason='length'); increase max_tokens")
-        code = _extract_python_code(choice.message.content)
+        content = choice.message.content
+        if not content:
+            raise RuntimeError("LLM returned empty content (possible refusal or empty completion)")
+        code = _extract_python_code(content)
         code = _inject_factor_id(code, factor_id)
         _validate_python_code(code)
 

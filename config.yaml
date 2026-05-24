@@ -29,7 +29,7 @@ thresholds:
   pipeline:
     # step1: 覆盖率检查
     coverage:
-      max_missing_rate_pv: 0.15
+      max_missing_rate_pv: 0.2
       max_missing_rate_fin: 0.30
 
     # step3: ICIR 检查

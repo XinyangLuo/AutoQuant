@@ -86,7 +86,7 @@ class AShareKnowledgeBase(KnowledgeBase):
         self._records.append(record)
 
         # Update SOTA
-        self._update_sota(feedback)
+        self._update_sota(feedback, experiment.factor_id)
         self.save()
 
     def retrieve_similar(
@@ -110,8 +110,9 @@ class AShareKnowledgeBase(KnowledgeBase):
                 score += 2.0
             # Keyword overlap
             rec_kw = set(rec.keywords)
-            if target_kw and rec_kw:
-                overlap = len(target_kw & rec_kw) / max(len(target_kw), len(rec_kw))
+            denom = max(len(target_kw), len(rec_kw))
+            if denom > 0:
+                overlap = len(target_kw & rec_kw) / denom
                 score += overlap * 3.0
             # Decision bonus (learn from both successes and failures)
             if rec.decision:
@@ -169,7 +170,7 @@ class AShareKnowledgeBase(KnowledgeBase):
         ]
         self._sota = data.get("sota", {})
 
-    def _update_sota(self, feedback: QuantFeedback) -> None:
+    def _update_sota(self, feedback: QuantFeedback, factor_id: str | None = None) -> None:
         """Update state-of-the-art if this feedback is better."""
         if not self._sota:
             self._sota = {
@@ -180,7 +181,7 @@ class AShareKnowledgeBase(KnowledgeBase):
 
         if feedback.rankicir > self._sota.get("best_rankicir", float("-inf")):
             self._sota["best_rankicir"] = feedback.rankicir
-            self._sota["best_factor_id"] = feedback.metrics.get("factor_id")
+            self._sota["best_factor_id"] = factor_id
 
         if feedback.simple_sharpe is not None and feedback.simple_sharpe > self._sota.get(
             "best_simple_sharpe", float("-inf")

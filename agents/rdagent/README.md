@@ -26,7 +26,7 @@ pip install openai
 ### 2. 运行 Agent 循环
 
 ```bash
-python -m agents.rdagent.run \
+python -m agents.rdagent.run run \
     --max-rounds 10 \
     --start 20200101 \
     --end 20231231 \
@@ -44,7 +44,7 @@ python -m agents.rdagent.run \
 | `--min-rankicir` | 0.25 | 候选门槛：RankICIR |
 | `--min-ic-pos` | 0.52 | 候选门槛：IC+ 比例 |
 | `--max-turnover` | 0.5 | 候选门槛：最大换手 |
-| `--min-sharpe` | 0.5 | 候选门槛：Simple Sharpe |
+| `--min-sharpe` | 0.8 | 候选门槛：Simple Sharpe |
 
 ### 3. 查看候选因子
 
@@ -111,7 +111,7 @@ Agent 自动标记为 **candidate** 的因子需同时满足：
 | IC+ ratio | >= 52% | 正 IC 天数占比 |
 | Turnover | < 0.5 | 日频换手（越低越稳定）|
 | Max corr | < 0.85 | 与现有因子最大相关性 |
-| Simple Sharpe | >= 0.5 | 简单回测夏普比 |
+| Simple Sharpe | >= 0.8 | 简单回测夏普比 |
 
 达到 **high bar**（Sharpe > 1.0）时自动提前终止。
 

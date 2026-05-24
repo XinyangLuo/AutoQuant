@@ -10,12 +10,15 @@
 
 > 严格「立刻 / 阻塞其他工作」。
 
-- [ ] **P0.1** `run-all` 中 retry 逻辑落地（step6/7 失败后自动调参重试，`state.retry_count` / `retry_params` 已定义但从未写入）
+- [ ] **P0.1** `run-all` 中 Agent 驱动 retry 落地：step6/7 失败后，Agent 分析 feedback 决定调参策略（如放宽 top_pct、缩短 horizon），通过 step5 override 重新生成信号再跑，最多 3 次。`state.retry_count` / `retry_params` 已定义但从未写入
 
 ---
 
 ## P1
 
+### 入库标准
+看新的因子对已有因子的回归残差的ICIR看看有没有增益
+ 
 ### 测试覆盖
 
 - [ ] **P1.01** Barra L1 smoke test：一个 alpha 走 `barra_ind_size` pipeline，验证 7/7 admitted 的 Barra L1 能被读出来做中性化
@@ -28,7 +31,7 @@
 ### 缺失基础设施
 
 - [ ] **P1.07** `backtest/data/__init__.py`：模块缺少公共 API 入口
-- [ ] **P1.08** `backtest/data/index_fetcher.py` + `backfill_indices.py`：evaluation 模块的 benchmark 功能依赖这两个文件（`benchmark.py` 报错信息已引用不存在的脚本）
+- [ ] **P1.08** `backtest/data/backfill_indices.py` standalone CLI：已随 `c5ae70e` 迁移到 `backfill/indices.py`（`index_fetcher.py` 存在），但 benchmark 报错信息仍引用旧路径，需更新
 - [ ] **P1.09** strategy CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`（`run.py` / `__main__.py` 不存在）
 
 ### Agent 因子投研系统（`agents/rdagent/`）

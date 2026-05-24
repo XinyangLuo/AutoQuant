@@ -173,7 +173,9 @@ def run_agent_loop(
             # 3. Execute pipeline
             try:
                 experiment = runner.run(experiment)
-            except (RuntimeError, ValueError, ImportError, SyntaxError) as e:
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception as e:
                 print(f"  Pipeline execution failed: {e}")
                 runner.cleanup_work_db(experiment.factor_id)
                 feedback = QuantFeedback(
@@ -498,7 +500,11 @@ def cmd_list_candidates(args: argparse.Namespace) -> int:
         print(f"No candidates found in {run_dir}", file=sys.stderr)
         return 1
 
-    data = json.loads(candidate_files[-1].read_text(encoding="utf-8"))
+    try:
+        data = json.loads(candidate_files[-1].read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        print(f"Corrupt candidate file: {e}", file=sys.stderr)
+        return 1
     print(f"Candidates from {args.run_dir}:")
     for c in data:
         print(f"  - {c.get('factor_id')}: status={c.get('status')}")
@@ -511,6 +517,8 @@ def cmd_admit(args: argparse.Namespace) -> int:
     try:
         result = admit(args.factor_id)
         print(f"Admitted: {result}")
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as e:
         print(f"Admit failed: {e}", file=sys.stderr)
         return 1
@@ -543,6 +551,8 @@ def cmd_reject(args: argparse.Namespace) -> int:
     try:
         result = reject(args.factor_id, notes=args.reason or None)
         print(f"Rejected: {result}")
+    except (KeyboardInterrupt, SystemExit):
+        raise
     except Exception as e:
         print(f"Reject failed: {e}", file=sys.stderr)
         return 1
