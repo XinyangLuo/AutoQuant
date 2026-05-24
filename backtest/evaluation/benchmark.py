@@ -35,7 +35,7 @@ def load_benchmark(
         Pre-opened storage handle; if None a new one is opened and closed.
     """
     own = storage is None
-    storage = storage or MarketStorage()
+    storage = storage or MarketStorage(read_only=True)
     try:
         s, e = _fmt_date(start), _fmt_date(end)
         df = storage.get_index_bars([code], start=s, end=e)

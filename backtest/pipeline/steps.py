@@ -108,7 +108,7 @@ def step1_coverage_check(state: PipelineState) -> PipelineState:
         )
 
     # Compute per-date missing rate against market universe (batched)
-    with MarketStorage() as ms:
+    with MarketStorage(read_only=True) as ms:
         market_df = ms.get_bars(
             start=config.start_date,
             end=config.end_date,
@@ -200,7 +200,7 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
 
     # 2. Correlation with industry dummies
     max_ind_corr = 0.0
-    with MarketStorage() as ms:
+    with MarketStorage(read_only=True) as ms:
         industry = ms.get_industry_panel_range(start=start, end=end, level="L1")
     if not industry.empty:
         merged = factor_df.merge(industry, on=["date", "symbol"], how="inner")
@@ -612,7 +612,7 @@ def _load_market_data(
         + pd.Timedelta(days=_MARKET_BUFFER_DAYS)
     ).strftime("%Y%m%d")
     symbols = signals["symbol"].unique().tolist()
-    with MarketStorage() as ms:
+    with MarketStorage(read_only=True) as ms:
         market_data = ms.get_bars(
             symbols=symbols, start=config.start_date, end=market_end,
         )

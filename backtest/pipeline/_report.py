@@ -95,6 +95,7 @@ def generate_pipeline_report(state: PipelineState) -> Path:
         "",
         f"- **策略标签**：{tag}",
         f"- **回测区间**：{config.start_date} ~ {config.end_date}",
+        f"- **成交类型**：{config.ret_type}（{'开盘' if config.ret_type == 'open' else '收盘'}价成交）",
         f"- **频率**：{config.frequency}",
         f"- **状态**：{state.status}",
         f"- **重试次数**：{state.retry_count}",
@@ -250,8 +251,19 @@ def _render_step3(state: PipelineState, plots_dir: Path) -> list[str]:
         return ["*无数据。*", ""]
 
     lines = []
+
+    # Factor formula
+    formula = _get_factor_formula(state.config.factor_id)
+    if formula:
+        lines.extend(formula)
+
+    # IC metrics table
     all_ic = result.metrics.get("all_ic_metrics", {})
     if all_ic:
+        lines.append("### IC 指标")
+        lines.append("")
+        lines.append(f"*成交类型：{state.config.ret_type}（{'开盘' if state.config.ret_type == 'open' else '收盘'}价），已排除涨停无法成交样本*")
+        lines.append("")
         lines.append("| 周期 | IC 均值 | IC 标准差 | ICIR | IC t 值 | IC 正向占比 |")
         lines.append("|------|---------|-----------|------|---------|-------------|")
         for h_str, ic in sorted(all_ic.items(), key=lambda x: int(x[0])):
@@ -262,15 +274,19 @@ def _render_step3(state: PipelineState, plots_dir: Path) -> list[str]:
             )
         lines.append("")
 
+    # IC decay overview
     p = _plot_ic_decay(all_ic, plots_dir)
     if p:
         lines.append(f"![IC 衰减图](plots/{p.name})")
         lines.append("")
 
-    p = _plot_ic_time_series(state, plots_dir)
-    if p:
-        lines.append(f"![IC 时序图](plots/{p.name})")
-        lines.append("")
+    # IC time series per major horizon — single evaluate() call, plot from cache
+    _plot_ic_time_series_multi(state, plots_dir)
+    for h in [1, 5, 20]:
+        p = plots_dir / f"eval_ic_ts_h{h}.png"
+        if p.exists():
+            lines.append(f"![IC 时序图 (h={h})](plots/{p.name})")
+            lines.append("")
 
     return lines
 
@@ -463,26 +479,22 @@ def _plot_ic_decay(all_ic: dict, plots_dir: Path) -> Path | None:
     return out
 
 
-def _plot_ic_time_series(state: PipelineState, plots_dir: Path) -> Path | None:
-    step3 = state.step_results.get("step3")
-    if step3 is None:
-        return None
-    best_h = step3.metrics.get("best_horizon")
-    if best_h is None:
-        return None
+def _plot_ic_time_series_multi(state: PipelineState, plots_dir: Path) -> None:
+    """Generate IC time series plots for h=1,5,20 in one evaluate() call."""
     try:
         from backtest.factor.evaluation import evaluate, plot_evaluation
         config = state.config
         result = evaluate(
             config.factor_id, config.start_date, config.end_date,
-            horizons=[best_h], ret_type=config.ret_type,
+            horizons=[1, 5, 20], ret_type=config.ret_type,
             corr_top_k=0, exclude_limit_up=True, run_decile_backtest=False,
         )
-        out = plots_dir / "eval_ic_ts.png"
-        plot_evaluation(result, horizon=best_h, output_path=str(out))
-        return out
+        for h in [1, 5, 20]:
+            if h in result.ic_series:
+                out = plots_dir / f"eval_ic_ts_h{h}.png"
+                plot_evaluation(result, horizon=h, output_path=str(out))
     except Exception:
-        return None
+        pass
 
 
 def _plot_group_returns(group_rets: dict, plots_dir: Path) -> Path | None:
@@ -542,14 +554,16 @@ def _plot_backtest_nav(state: PipelineState, *, tag: str, plots_dir: Path) -> No
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 7))
     ax1.plot(nav_norm.index, nav_norm.values, color="steelblue", linewidth=1.4)
     ax1.axhline(1.0, color="black", linewidth=0.5, alpha=0.5)
+    ret_type = state.config.ret_type
+    ret_label = "o2o" if ret_type == "open" else "c2c"
     ax1.set_ylabel("净值")
-    ax1.set_title(f"{title} — 净值曲线")
+    ax1.set_title(f"{title} — 净值曲线 ({ret_label})")
     ax1.grid(True, alpha=0.3)
     ax2.fill_between(drawdown.index, drawdown.values, 0, color="red", alpha=0.3)
     ax2.plot(drawdown.index, drawdown.values, color="red", linewidth=1.0)
     ax2.set_ylabel("回撤")
     ax2.set_xlabel("日期")
-    ax2.set_title(f"{title} — 回撤曲线")
+    ax2.set_title(f"{title} — 回撤曲线 ({ret_label})")
     ax2.grid(True, alpha=0.3)
     fig.tight_layout()
     out = plots_dir / f"bt_{tag}_nav.png"
@@ -607,6 +621,35 @@ def _plot_evaluation_report(state: PipelineState, plots_dir: Path) -> Path | Non
 # ===========================================================================
 # Helpers
 # ===========================================================================
+
+
+def _get_factor_formula(factor_id: str) -> list[str] | None:
+    """Read factor metadata from registry and format as formula block."""
+    try:
+        from backtest.factor.registry import get_factor_meta
+        meta = get_factor_meta(factor_id)
+        name = meta.get("name", "")
+        desc = meta.get("description", "")
+        params = meta.get("parameters", {})
+        variant = meta.get("variant", "")
+        sources = meta.get("data_sources", [])
+
+        lines = [f"**因子名称**：{name}", ""]
+        if desc:
+            lines.append(f"> {desc}")
+            lines.append("")
+        lines.append("**公式**：")
+        # Build formula from params
+        if "window" in params:
+            w = params["window"]
+            lines.append(f"$$-\\;\\text{{std}}(\\text{{turnover\\_rate}},\\;{w})$$")
+        lines.append("")
+        lines.append(f"- 数据源：`{', '.join(sources)}`")
+        lines.append(f"- 中性化：`{variant}`")
+        lines.append("")
+        return lines
+    except Exception:
+        return None
 
 
 def _find_rejection_reason(state: PipelineState) -> str | None:

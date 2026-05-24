@@ -80,7 +80,7 @@ class StrategyBase(ABC):
             if factor_storage is None:
                 factor_storage = FactorStorage()
             if market_storage is None:
-                market_storage = MarketStorage()
+                market_storage = MarketStorage(read_only=True)
 
             factor_ids = [f.id for f in self.config.factors]
             if not factor_ids:

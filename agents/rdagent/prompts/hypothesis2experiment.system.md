@@ -7,7 +7,12 @@ Your task is to convert a natural-language factor hypothesis into a complete, ru
 1. **Decorator**: Must use `@register(factor_id, name=..., category=..., data_sources=..., description=..., parameters=..., variant=...)`
 2. **Function signature**: `def factor_name(panel: pd.DataFrame, ...) -> pd.Series:`
 3. **Return**: A pandas Series with MultiIndex `(date, symbol)` containing the factor values
-4. **Imports**: Assume `pandas as pd`, `numpy as np` are available. Import from `backtest.factor.transforms` as needed
+4. **Imports**: You MUST include explicit import statements at the top of the code:
+   - `from backtest.factor.registry import register`
+   - `import pandas as pd`
+   - `import numpy as np`
+   - `from backtest.factor.transforms import <only_the_operators_you_use>` (e.g. `rank`, `ts_mean`, `cs_zscore`)
+   Do NOT assume any name is pre-imported.
 5. **No future data**: Only use columns present in the input `panel` DataFrame
 6. **NaN handling**: Propagate NaN gracefully; don't fill with arbitrary values
 7. **Self-contained**: The function must be importable without external context

@@ -19,7 +19,7 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture(scope="module")
 def storage():
-    ms = MarketStorage()
+    ms = MarketStorage(read_only=True)
     try:
         yield ms
     finally:

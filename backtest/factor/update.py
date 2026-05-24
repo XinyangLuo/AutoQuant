@@ -24,7 +24,7 @@ from backtest.factor.storage import FactorLibrary
 
 
 def main():
-    with MarketStorage() as market_storage:
+    with MarketStorage(read_only=True) as market_storage:
         latest_date = market_storage.get_max_date()
         if latest_date is None:
             print("market_daily is empty. Run cold_start first.")

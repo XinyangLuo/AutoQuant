@@ -119,6 +119,7 @@ def run_agent_loop(
         start_date=start_date,
         end_date=end_date,
         results_root=output_dir,
+        generated_dir=Path("alphas/agent"),
         agent_config=cfg,
     ) as runner:
         # Try resume from checkpoint

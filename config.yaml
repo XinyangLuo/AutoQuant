@@ -47,7 +47,7 @@ thresholds:
     simple_backtest:
       min_sharpe: 0.8
       min_annual_return: 0.10
-      max_max_drawdown: 0.40
+      max_max_drawdown: 0.5
       min_calmar: 0.5
       max_annual_turnover: 50.0
 

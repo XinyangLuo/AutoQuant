@@ -30,7 +30,7 @@ def _load_market_data(
 
     Returns (market_df, returns_df, limit_df) for reuse across multiple factors.
     """
-    with MarketStorage() as ms:
+    with MarketStorage(read_only=True) as ms:
         market_df = ms.get_bars(
             symbols=symbols,
             start=start,

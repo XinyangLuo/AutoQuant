@@ -54,8 +54,11 @@ def temp_storage(monkeypatch, tmp_path):
 
     from backtest.data.storage import MarketStorage
 
-    with MarketStorage() as storage:
-        storage.insert_trade_calendar(_make_test_data())
+    storage = MarketStorage()
+    storage.insert_trade_calendar(_make_test_data())
+    storage.close()
+
+    with MarketStorage(read_only=True) as storage:
         yield storage
 
 

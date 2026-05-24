@@ -57,7 +57,7 @@ def backfill_factor(
     own_factor = factor_storage is None
     try:
         if market_storage is None:
-            market_storage = MarketStorage()
+            market_storage = MarketStorage(read_only=True)
         if factor_storage is None:
             factor_storage = FactorStorage()
 
@@ -96,7 +96,7 @@ def main():
     stock_list = fetch_stock_list()
     earliest_date = _get_earliest_start_date(stock_list)
 
-    with MarketStorage() as market_storage:
+    with MarketStorage(read_only=True) as market_storage:
         latest_date = market_storage.get_max_date()
         if latest_date is None:
             print("market_daily is empty. Run cold_start first.")

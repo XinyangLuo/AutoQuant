@@ -340,21 +340,22 @@ TRADE_CALENDAR_COLUMNS = [
 class MarketStorage:
     """DuckDB storage for market_daily, fundamental tables, and dividends."""
 
-    def __init__(self):
+    def __init__(self, *, read_only: bool = False):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         self.db_path = DB_PATH
-        self.conn = duckdb.connect(str(DB_PATH))
-        # Cap DuckDB working set + spill to disk on overshoot. Default
-        # is ≈ 80% of RAM which lets range-joins OOM before spilling.
-        self.conn.execute("PRAGMA memory_limit='6GB'")
-        # temp_directory is database-level and not re-settable in the
-        # same process; a second MarketStorage in the same run inherits
-        # whatever the first set.
-        try:
-            self.conn.execute("PRAGMA temp_directory='/tmp/duckdb_spill'")
-        except duckdb.NotImplementedException:
-            pass
-        self._init_tables()
+        self.conn = duckdb.connect(str(DB_PATH), read_only=read_only)
+        if not read_only:
+            # Cap DuckDB working set + spill to disk on overshoot. Default
+            # is ≈ 80% of RAM which lets range-joins OOM before spilling.
+            self.conn.execute("PRAGMA memory_limit='6GB'")
+            # temp_directory is database-level and not re-settable in the
+            # same process; a second MarketStorage in the same run inherits
+            # whatever the first set.
+            try:
+                self.conn.execute("PRAGMA temp_directory='/tmp/duckdb_spill'")
+            except duckdb.NotImplementedException:
+                pass
+            self._init_tables()
 
     def _init_tables(self):
         self.conn.execute(DAILY_SCHEMA)

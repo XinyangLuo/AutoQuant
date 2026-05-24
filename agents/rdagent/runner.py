@@ -51,6 +51,7 @@ class AutoQuantFactorRunner:
         end_date: str,
         *,
         results_root: Path | str = "results/agent",
+        generated_dir: Path | str | None = None,
         market_storage: MarketStorage | None = None,
         factor_storage: FactorStorage | None = None,
         benchmark: str = "000300.SH",
@@ -59,6 +60,7 @@ class AutoQuantFactorRunner:
         self.start_date = start_date
         self.end_date = end_date
         self.results_root = Path(results_root)
+        self.generated_dir = Path(generated_dir) if generated_dir else Path(__file__).parent / "generated"
         self.market_storage = market_storage
         self.factor_storage = factor_storage
         self.benchmark = benchmark
@@ -68,7 +70,7 @@ class AutoQuantFactorRunner:
         self._market_storage_owned = market_storage is None
         self._factor_storage_owned = factor_storage is None
         if self.market_storage is None:
-            self.market_storage = MarketStorage()
+            self.market_storage = MarketStorage(read_only=True)
         if self.factor_storage is None:
             self.factor_storage = FactorStorage()
 
@@ -194,8 +196,8 @@ class AutoQuantFactorRunner:
         if not experiment.factor_id:
             raise ValueError("experiment.factor_id is empty")
 
-        # Write to generated/ directory
-        gen_dir = Path(__file__).parent / "generated"
+        # Write to generated directory
+        gen_dir = self.generated_dir
         gen_dir.mkdir(parents=True, exist_ok=True)
         # Ensure generated/ is a valid Python package for dynamic imports
         init_file = gen_dir / "__init__.py"

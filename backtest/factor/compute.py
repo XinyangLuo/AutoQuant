@@ -125,7 +125,7 @@ def compute_factor(
 
     try:
         if market_storage is None and (needs_market or needs_fina):
-            market_storage = MarketStorage()
+            market_storage = MarketStorage(read_only=True)
         if factor_storage is None and needs_factor_store:
             factor_storage = FactorStorage()
 
@@ -276,7 +276,7 @@ def apply_variant_pipeline(
         own_market = market_storage is None
         try:
             if market_storage is None:
-                market_storage = MarketStorage()
+                market_storage = MarketStorage(read_only=True)
             start = raw_df["date"].min().strftime("%Y%m%d")
             end = raw_df["date"].max().strftime("%Y%m%d")
             series = apply_l3_pipeline(raw_series, market_storage, start=start, end=end)

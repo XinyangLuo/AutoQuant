@@ -59,7 +59,7 @@ def get_trade_dates(start: str, end: str) -> list[str]:
     covered, falls back to ``pro.trade_cal`` and writes the fetched rows back
     so subsequent calls are DB-only.
     """
-    with MarketStorage() as storage:
+    with MarketStorage(read_only=True) as storage:
         dates = storage.get_trade_dates_from_db(start, end)
 
     # If DB returned nothing or partial, fallback to Tushare
@@ -89,13 +89,13 @@ def get_rebalance_dates(start: str, end: str, freq: str) -> list[str]:
     list[str]
         Sorted list of YYYYMMDD rebalancing dates.
     """
-    with MarketStorage() as storage:
+    with MarketStorage(read_only=True) as storage:
         dates = storage.get_rebalance_dates_from_db(start, end, freq)
 
     if not dates:
         # DB miss — fallback: fetch trade dates, write full calendar, retry
         _fetch_and_write(start, end)
-        with MarketStorage() as storage:
+        with MarketStorage(read_only=True) as storage:
             dates = storage.get_rebalance_dates_from_db(start, end, freq)
 
     return dates

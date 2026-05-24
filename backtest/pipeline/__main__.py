@@ -225,14 +225,14 @@ def cmd_run_all(args) -> int:
         from backtest.factor.registry import _load_registry, _save_registry
         from datetime import datetime, timezone
         reg = _load_registry()
-        entry = reg.get(config.factor_id, {})
+        entry = reg.get(state.config.factor_id, {})
         entry["status"] = "rejected"
         entry["rejection"] = {
             "step": rejected_step,
             "reason": state.step_results.get(rejected_step, StepResult(False)).reason,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        reg[config.factor_id] = entry
+        reg[state.config.factor_id] = entry
         _save_registry(reg)
         state.status = "rejected"
         _save_state(state)
