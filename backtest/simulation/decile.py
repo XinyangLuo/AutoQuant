@@ -12,7 +12,7 @@ import pandas as pd
 from backtest.evaluation.metrics import compute_single_nav_metrics
 from backtest.simulation.config import SimulationConfig
 from backtest.simulation.models import DecileBacktestResult
-from backtest.simulation.utils import compute_adj_price, cumulate_nav
+from backtest.simulation.utils import cumulate_nav
 
 _DECILE_NAV_COLUMNS = ["date"] + [f"d{i}_nav" for i in range(10)] + ["ls_nav"]
 
@@ -67,12 +67,20 @@ class DecileSimulator:
         if merged.empty:
             return _empty_result()
 
-        # 2. Adjusted price & daily return
-        merged["adj_price"] = compute_adj_price(merged, self.config.price_type)
+        # 2. Forward daily return (delay=1 safe).
+        #    Factor is computed at T close → trade at T+1 open/close →
+        #    return to T+2 open/close.  With decile.shift(1) the row-T
+        #    decile comes from factor at T-1, so the return at row T
+        #    must be price_{T+1} / price_T - 1 — the period that starts
+        #    at T (after factor_{T-1} is already known).
         merged = merged.sort_values(["symbol", "date"])
-        merged["daily_return"] = merged.groupby("symbol")["adj_price"].pct_change()
+        price_col = "open" if self.config.price_type == "o2o" else "close"
+        merged["daily_return"] = (
+            merged.groupby("symbol")[price_col].shift(-1)
+            / merged[price_col] - 1.0
+        )
 
-        # 3. Assign decile labels per date, delay=1
+        # 3. Assign decile labels per date, delay=1: use T-1 factor for T's row.
         merged["decile"] = merged.groupby("date")["value"].transform(_decile_cut)
         merged["decile"] = merged.groupby("symbol")["decile"].shift(1)
 
@@ -196,9 +204,9 @@ def plot_decile_backtest(
         )
     ax.set_ylabel("NAV (log)")
     ax.set_yscale("log")
-    # Two-column legend to keep it compact
     ax.legend(loc="upper left", ncol=2, fontsize=8)
     ax.set_title("Decile NAV Curves")
+    ax.grid(True, alpha=0.3)
     ax.tick_params(axis="x", rotation=30)
 
     # --- Bottom panel: Long-Short ---
@@ -223,6 +231,7 @@ def plot_decile_backtest(
         ax.set_title(
             f"Long-Short (D10 - D1)  |  Monotonicity={result.monotonicity_score:+.3f}"
         )
+        ax.grid(True, alpha=0.3)
         ax.tick_params(axis="x", rotation=30)
 
     plt.tight_layout(rect=[0, 0, 1, 0.97])

@@ -37,13 +37,17 @@ class SimpleSimulator:
         df = market_data.copy()
         df["adj_price"] = compute_adj_price(df, self.config.price_type)
 
-        # 2. 将数据 pivot 成 wide
+        # 2. 将数据 pivot 成 wide，计算前向收益。
+        #    price_{T+1} / price_T - 1: the period that starts at T, whose
+        #    return is not yet known when the factor is computed at T close.
+        #    Matched with weight.shift(1) below → factor_{T-1} predicts
+        #    return_{T→T+1}.  No look-ahead for either c2c or o2o.
         adj_price_wide = df.pivot(index="date", columns="symbol", values="adj_price")
-        returns_wide = adj_price_wide.pct_change()
+        returns_wide = adj_price_wide.shift(-1) / adj_price_wide - 1.0
 
         # 3. 将 signals pivot 成 wide，对齐日期/股票
         weight_wide = signals.pivot(index="date", columns="symbol", values="target_weight")
-        # delay=1: T 日信号 → T+1 日生效，weight 向后错一天配 returns
+        # delay=1: T-1 日信号 → T 日 weight, 匹配 T→T+1 forward return
         weight_wide = weight_wide.shift(1)
         weight_wide = weight_wide.reindex_like(returns_wide)
         # 调仓日：不在持仓中的股票 weight 显式置为 0

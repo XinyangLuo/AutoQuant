@@ -59,12 +59,18 @@ def round_lot_for_symbol(shares: float, symbol: str) -> int:
 def cumulate_nav(daily_returns: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
     """Cumulate daily returns into NAV, starting at 1.0.
 
-    Handles the edge case where the first row is NaN (from pct_change)
-    by replacing it with 1.0 after cumprod.
+    Handles NaN at both ends: the first row (from pct_change) and the
+    last row (from forward-return shift(-1)). Leading NaN is replaced
+    with 1.0; trailing NaN is forward-filled.
     """
     nav = (1 + daily_returns).cumprod()
-    # First row: no prior day → return is NaN, cumprod gives NaN.
-    # Explicitly set to 1.0 so NAV starts at par.
-    if hasattr(nav, "iloc"):
-        nav.iloc[0] = 1.0
+    if hasattr(nav, "iloc") and nav.shape[0] > 0:
+        # First row: no prior day → return is NaN → cumprod gives NaN.
+        first = nav.iloc[0]
+        if hasattr(first, "iloc"):
+            first = first.iloc[0] if len(first) > 0 else first
+        if pd.isna(first):
+            nav.iloc[0] = 1.0
+    # Forward-fill trailing NaN from shift(-1).
+    nav = nav.ffill()
     return nav
