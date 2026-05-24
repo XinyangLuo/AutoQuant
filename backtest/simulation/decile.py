@@ -67,7 +67,7 @@ class DecileSimulator:
         if merged.empty:
             return _empty_result()
 
-        # 2. Forward daily return (delay=1 safe).
+        # 2. Forward daily return (delay=1 safe), adjusted for dividends.
         #    Factor is computed at T close → trade at T+1 open/close →
         #    return to T+2 open/close.  With decile.shift(1) the row-T
         #    decile comes from factor at T-1, so the return at row T
@@ -75,9 +75,10 @@ class DecileSimulator:
         #    at T (after factor_{T-1} is already known).
         merged = merged.sort_values(["symbol", "date"])
         price_col = "open" if self.config.price_type == "o2o" else "close"
+        merged["adj_price"] = merged[price_col] * merged["adj_factor"]
         merged["daily_return"] = (
-            merged.groupby("symbol")[price_col].shift(-1)
-            / merged[price_col] - 1.0
+            merged.groupby("symbol")["adj_price"].shift(-1)
+            / merged["adj_price"] - 1.0
         )
 
         # 3. Assign decile labels per date, delay=1: use T-1 factor for T's row.
