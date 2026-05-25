@@ -102,6 +102,38 @@ pipeline:
   ret_type: open
   benchmark: "000300.SH"
 
+  # 月频覆盖阈值（PipelineConfig.for_frequency 读取）
+  monthly:
+    icir_check_horizons: [20]
+    thresholds:
+      min_abs_ic: 0.03
+      min_annual_icir: 0.8
+      min_ic_tstat: 2.5
+      min_ic_positive_ratio: 0.65
+      min_sharpe_simple: 1.0
+      min_sharpe_detailed: 0.6
+
+# ---------------------------------------------------------------------------
+# 策略配置
+# ---------------------------------------------------------------------------
+strategy:
+  universe:
+    exclude_st: true
+    exclude_new_ipo_days: 252
+    include_cyb: true
+    include_kcb: false
+    include_bse: false
+
+# ---------------------------------------------------------------------------
+# 仿真配置
+# ---------------------------------------------------------------------------
+simulation:
+  initial_cash: 100000000
+  commission_rate: 0.0003
+  stamp_duty_rate: 0.001
+  transfer_fee_rate: 0.00002
+  allow_short: false
+
 # ---------------------------------------------------------------------------
 # Agent 投研配置
 # ---------------------------------------------------------------------------

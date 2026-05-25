@@ -69,9 +69,16 @@ class UniverseFilter:
 
         # 3. Board filter
         if not self.config.include_cyb:
-            df = df[~df["symbol"].str.startswith("30")]
+            df = df[~df["symbol"].str.startswith("30").fillna(False)]
         if not self.config.include_kcb:
-            df = df[~df["symbol"].str.startswith("68")]
+            df = df[~df["symbol"].str.startswith("68").fillna(False)]
+        if not self.config.include_bse:
+            # BSE (北交所): 8xxxxx.BJ / 4xxxxx.BJ — consistent with detect_board()
+            is_bse = (
+                df["symbol"].str.startswith(("8", "4"))
+                & df["symbol"].str.endswith(".BJ")
+            ).fillna(False)
+            df = df[~is_bse]
 
         # 4. Index membership filter
         if self.config.index_members and market_storage is not None:

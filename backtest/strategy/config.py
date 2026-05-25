@@ -7,18 +7,43 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from backtest.config_loader import get_section
+
+
+_UNIVERSE_FALLBACKS: dict[str, Any] = {
+    "exclude_st": True,
+    "exclude_new_ipo_days": 252,
+    "include_cyb": True,
+    "include_kcb": False,
+    "include_bse": False,
+    "index_members": None,
+    "min_market_cap": None,
+    "min_avg_amount": None,
+}
+
+
+def _universe_default(key: str):
+    """Read a universe default from ``config.yaml strategy.universe``."""
+    def _factory():
+        try:
+            return get_section("strategy", "universe", key)
+        except (KeyError, FileNotFoundError):
+            return _UNIVERSE_FALLBACKS[key]
+    return _factory
+
 
 @dataclass
 class UniverseConfig:
     """Universe filtering parameters."""
 
-    exclude_st: bool = True
-    exclude_new_ipo_days: int = 252
-    include_cyb: bool = True
-    include_kcb: bool = False
-    index_members: str | None = None
-    min_market_cap: float | None = None
-    min_avg_amount: float | None = None
+    exclude_st: bool = field(default_factory=_universe_default("exclude_st"))
+    exclude_new_ipo_days: int = field(default_factory=_universe_default("exclude_new_ipo_days"))
+    include_cyb: bool = field(default_factory=_universe_default("include_cyb"))
+    include_kcb: bool = field(default_factory=_universe_default("include_kcb"))
+    include_bse: bool = field(default_factory=_universe_default("include_bse"))
+    index_members: str | None = field(default_factory=_universe_default("index_members"))
+    min_market_cap: float | None = field(default_factory=_universe_default("min_market_cap"))
+    min_avg_amount: float | None = field(default_factory=_universe_default("min_avg_amount"))
 
 
 @dataclass

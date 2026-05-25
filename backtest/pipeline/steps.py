@@ -487,12 +487,7 @@ def step5_build_strategy(
         strategy_type="single_factor_topk",
         rebalance_freq=_rebalance,
         delay=1,
-        universe=UniverseConfig(
-            exclude_st=True,
-            exclude_new_ipo_days=252,
-            include_kcb=False,
-            index_members=_universe,
-        ),
+        universe=UniverseConfig(index_members=_universe),
         factors=[FactorConfig(id=config.factor_id, direction="desc")],
         selection=SelectionConfig(method="topk", top_pct=_top_pct),
         weighting=WeightingConfig(method="equal"),
@@ -539,6 +534,32 @@ def step5_build_strategy(
 # ---------------------------------------------------------------------------
 
 
+def _load_simulation_config(price_type: str = "o2o") -> SimulationConfig:
+    """Build SimulationConfig from ``config.yaml simulation`` section.
+
+    Falls back to ``SimulationConfig`` defaults when config.yaml is missing
+    or a key is absent.
+    """
+    from backtest.config_loader import get_section
+
+    defaults = SimulationConfig()
+
+    def _get(key: str):
+        try:
+            return get_section("simulation", key)
+        except (KeyError, FileNotFoundError):
+            return getattr(defaults, key)
+
+    return SimulationConfig(
+        initial_cash=float(_get("initial_cash")),
+        commission_rate=float(_get("commission_rate")),
+        stamp_duty_rate=float(_get("stamp_duty_rate")),
+        transfer_fee_rate=float(_get("transfer_fee_rate")),
+        allow_short=_get("allow_short"),
+        price_type=price_type,
+    )
+
+
 _MARKET_BUFFER_DAYS = 10
 
 
@@ -560,7 +581,8 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
         return _reject(state, "step6", "Strategy produced no signals.")
 
     market_data = _load_market_data(config, signals)
-    sim = SimpleSimulator(SimulationConfig(initial_cash=1e8))
+    sim_cfg = _load_simulation_config()
+    sim = SimpleSimulator(sim_cfg)
     result = sim.run(signals, market_data)
 
     return _backtest_gate(state, result, "step6", "simple", {
@@ -584,12 +606,9 @@ def step7_detailed_backtest(state: PipelineState) -> PipelineState:
         return _reject(state, "step7", "No strategy/signals. Run step5-6 first.")
 
     market_data, dividends = _load_market_data(config, state.signals, with_dividends=True)
-    sim = DetailedSimulator(SimulationConfig(
-        initial_cash=1e8,
-        commission_rate=0.0003,
-        price_type="o2o",
-        allow_short=False,
-    ))
+    price_type = "o2o" if config.ret_type == "open" else "c2c"
+    sim_cfg = _load_simulation_config(price_type=price_type)
+    sim = DetailedSimulator(sim_cfg)
     result = sim.run(state.signals, market_data, dividends)
 
     return _backtest_gate(state, result, "step7", "detailed", {
@@ -642,9 +661,10 @@ def _backtest_gate(
     tag = _build_tag(state)
     out_dir = Path(config.results_root) / config.factor_id / tag / sub_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+    sim_cfg = _load_simulation_config()
     result.save(str(out_dir), metadata={
         "strategy": {"name": state.strategy_config.name, "factor": config.factor_id},
-        "simulation": {"engine": sub_dir.capitalize(), "initial_cash": 1e8},
+        "simulation": {"engine": sub_dir.capitalize(), "initial_cash": sim_cfg.initial_cash},
     })
     state.artifacts[sub_dir + "_bt"] = str(out_dir)
 

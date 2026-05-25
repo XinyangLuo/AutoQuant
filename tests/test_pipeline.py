@@ -284,7 +284,7 @@ class TestStep1Coverage:
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(
             "backtest.pipeline.steps.MarketStorage",
-            lambda: mock_ms,
+            lambda **kw: mock_ms,
         )
 
         result = step1_coverage_check(state)
@@ -326,12 +326,12 @@ class TestStep1Coverage:
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(
             "backtest.pipeline.steps.MarketStorage",
-            lambda: mock_ms,
+            lambda **kw: mock_ms,
         )
 
         result = step1_coverage_check(state)
         assert result.step_results["step1"].passed is False
-        assert "Missing rate" in result.step_results["step1"].reason
+        assert "missing rate" in result.step_results["step1"].reason
 
     def test_financial_factor_higher_threshold(self, monkeypatch):
         cfg = PipelineConfig(
@@ -369,7 +369,7 @@ class TestStep1Coverage:
         mock_ms.__exit__.return_value = False
         monkeypatch.setattr(
             "backtest.pipeline.steps.MarketStorage",
-            lambda: mock_ms,
+            lambda **kw: mock_ms,
         )
 
         result = step1_coverage_check(state)
@@ -443,9 +443,9 @@ class TestThresholdConstants:
         th = StepThresholds()
         assert th.min_sharpe_simple == 0.8
         assert th.min_annual_return_simple == 0.10
-        assert th.max_max_drawdown == 0.30
+        assert th.max_max_drawdown == 0.50
         assert th.min_calmar_simple == 0.5
-        assert th.max_annual_turnover == 20.0
+        assert th.max_annual_turnover == 50.0
 
     def test_detailed_backtest_thresholds(self):
         th = StepThresholds()
@@ -459,5 +459,5 @@ class TestThresholdConstants:
 
     def test_coverage_thresholds(self):
         th = StepThresholds()
-        assert th.max_missing_rate_pv == 0.10
+        assert th.max_missing_rate_pv == 0.20
         assert th.max_missing_rate_fin == 0.30

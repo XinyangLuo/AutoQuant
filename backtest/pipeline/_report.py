@@ -665,28 +665,51 @@ def _plot_evaluation_report(state: PipelineState, plots_dir: Path) -> Path | Non
 
 
 def _get_factor_formula(factor_id: str) -> list[str] | None:
-    """Read factor metadata from registry and format as formula block."""
+    """Read factor source code from registry and format as code block.
+
+    Only reads source when the function is already cached in memory;
+    avoids triggering ``importlib.import_module`` side effects during
+    read-only report generation.
+    """
     try:
-        from backtest.factor.registry import get_factor_meta
+        import inspect
+        from backtest.factor.registry import get_factor_meta, _FACTOR_FUNCTIONS
+
         meta = get_factor_meta(factor_id)
         name = meta.get("name", "")
         desc = meta.get("description", "")
-        params = meta.get("parameters", {})
         variant = meta.get("variant", "")
         sources = meta.get("data_sources", [])
 
+        # Only use cached functions to avoid import side effects.
+        func = _FACTOR_FUNCTIONS.get(factor_id)
+        if func is not None:
+            source = inspect.getsource(func)
+            lines = [f"**因子名称**：{name}", ""]
+            if desc:
+                lines.append(f"> {desc}")
+                lines.append("")
+            lines.append(f"- 数据源：`{', '.join(sources)}`")
+            lines.append(f"- 中性化：`{variant}`")
+            lines.append("")
+            lines.append("### 因子实现代码")
+            lines.append("")
+            lines.append("```python")
+            lines.extend(source.strip().split("\n"))
+            lines.append("```")
+            lines.append("")
+            return lines
+
+        # Fallback: metadata only (function not in memory cache)
+        params = meta.get("parameters", {})
         lines = [f"**因子名称**：{name}", ""]
         if desc:
             lines.append(f"> {desc}")
             lines.append("")
-        lines.append("**公式**：")
-        # Build formula from params
-        if "window" in params:
-            w = params["window"]
-            lines.append(f"$$-\\;\\text{{std}}(\\text{{turnover\\_rate}},\\;{w})$$")
-        lines.append("")
         lines.append(f"- 数据源：`{', '.join(sources)}`")
         lines.append(f"- 中性化：`{variant}`")
+        if params:
+            lines.append(f"- 参数：`{params}`")
         lines.append("")
         return lines
     except Exception:

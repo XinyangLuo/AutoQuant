@@ -39,6 +39,7 @@ universe:
   exclude_new_ipo_days: 252
   include_cyb: true
   include_kcb: false
+  include_bse: false
   index_members: "000300.SH"    # null = 全市场
   min_market_cap: 5e8
   min_avg_amount: 1e7
@@ -90,7 +91,7 @@ signals = strategy.run("20200101", "20241231")
 
 1. **ST/*ST 过滤**：`is_st == 0`
 2. **新股过滤**：`list_date` 到当前日期的交易日数 ≥ 配置值（calendar days 近似）
-3. **板块过滤**：创业板（30xxxx）、科创板（68xxxx）可选开关
+3. **板块过滤**：创业板（30xxxx）、科创板（68xxxx）、北交所（8xxxxx.BJ / 4xxxxx.BJ）可选开关
 4. **指数成分股过滤**：查 `index_members` 表（`MarketStorage.get_index_members`，月度快照已 densify 到每个交易日）
 5. **流动性过滤**：最小流通市值、最小20日平均成交额
 

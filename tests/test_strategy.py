@@ -237,7 +237,7 @@ class TestUniverseFilter:
 
         panel = pd.DataFrame({
             "symbol": ["SMALL.SZ", "BIG.SH"],
-            "circ_mv": [5e8, 2e9],
+            "circ_mv": [5e4, 2e9],  # 5e4 万元 = 5亿元 < 10亿门槛
         })
         result = uf.filter("20240101", panel)
         assert list(result["symbol"]) == ["BIG.SH"]
@@ -258,12 +258,12 @@ class TestUniverseFilter:
             "symbol": ["A.SZ", "B.SZ", "C.SH", "D.SH", "E.SH"],
             "is_st": [0, 1, 0, 0, 0],
             "list_date": ["20000101", "20000101", "20000101", "20000101", "20000101"],
-            "circ_mv": [2e9, 2e9, 2e9, 5e8, 2e9],
+            "circ_mv": [2e9, 2e9, 2e9, 5e4, 2e9],  # D.SH = 5亿元 < 10亿门槛
         })
         result = uf.filter("20240101", panel)
         # A: pass (not ST, not KCB, cap OK)
         # B: excluded (ST)
-        # C: excluded (KCB - 68xxxx pattern? No, C.SH doesn't start with 68)
+        # C: pass (not KCB - C.SH doesn't start with 68)
         # D: excluded (cap too small)
         # E: pass
         assert set(result["symbol"]) == {"A.SZ", "C.SH", "E.SH"}

@@ -97,16 +97,35 @@ class PipelineConfig:
         frequency: Literal["D", "M"],
         **kwargs,
     ) -> PipelineConfig:
-        """Factory with frequency-specific defaults."""
+        """Factory with frequency-specific defaults.
+
+        Monthly overrides are read from ``config.yaml pipeline.monthly``.
+        """
         th = StepThresholds()
         if frequency == "M":
-            th.min_abs_ic = 0.03
-            th.min_annual_icir = 0.8
-            th.min_ic_tstat = 2.5
-            th.min_ic_positive_ratio = 0.65
-            th.min_sharpe_simple = 1.0
-            th.min_sharpe_detailed = 0.6
-        horizons = [20] if frequency == "M" else [1, 5]
+            try:
+                monthly = get_section("pipeline", "monthly")
+                monthly_th = monthly.get("thresholds", {})
+                for field_name, val in monthly_th.items():
+                    if hasattr(th, field_name):
+                        setattr(th, field_name, val)
+            except (KeyError, FileNotFoundError):
+                # Safe monthly defaults when config.yaml is missing
+                th.min_abs_ic = 0.03
+                th.min_annual_icir = 0.8
+                th.min_ic_tstat = 2.5
+                th.min_ic_positive_ratio = 0.65
+                th.min_sharpe_simple = 1.0
+                th.min_sharpe_detailed = 0.6
+
+        try:
+            if frequency == "M":
+                horizons = get_section("pipeline", "monthly", "icir_check_horizons")
+            else:
+                horizons = get_section("pipeline", "icir_check_horizons")
+        except (KeyError, FileNotFoundError):
+            horizons = [20] if frequency == "M" else [1, 5]
+
         return cls(
             frequency=frequency,
             thresholds=th,
