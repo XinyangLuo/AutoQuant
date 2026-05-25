@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m backtest.pipeline init f_001 --start 20160101 --end 20251231
+    python -m backtest.pipeline init f_001
     python -m backtest.pipeline step1 f_001
     python -m backtest.pipeline step2 f_001
     ...
@@ -10,7 +10,9 @@ Usage::
 
 Or run all steps at once::
 
-    python -m backtest.pipeline run-all f_001 --start 20160101 --end 20251231
+    python -m backtest.pipeline run-all f_001
+
+Date range is read from ``config.yaml`` (``pipeline.start_date`` / ``pipeline.end_date``).
 """
 
 from backtest.pipeline.config import PipelineConfig, StepThresholds

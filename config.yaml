@@ -77,7 +77,7 @@ thresholds:
 # Pipeline 配置
 # ---------------------------------------------------------------------------
 pipeline:
-  # 回测周期（默认值，CLI --start / --end 可覆盖）
+  # 回测周期（回测 pipeline 与 factor evaluation 的统一日期范围）
   start_date: "20160101"
   end_date: "20251231"
 

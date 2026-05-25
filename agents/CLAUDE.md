@@ -25,9 +25,9 @@ HypothesisGen (LLM) → Hypothesis2Experiment (code gen)
 使用 conda 环境 `AutoQuant`（Python 3.11.15）。
 
 ```bash
-# Agent 因子研究主循环
+# Agent 因子研究主循环（日期从 config.yaml agent.start_date/end_date 读取）
 python -m agents.rdagent.run run \
-    --max-rounds 10 --start 20160101 --end 20231231 \
+    --max-rounds 10 \
     --output-dir results/agent/run_001
 
 # 指定种子假设（跳过 Round-1 LLM 生成）

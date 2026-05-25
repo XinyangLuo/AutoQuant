@@ -49,7 +49,7 @@ python -m backtest.data.update_daily                     # 日更（所有表）
 
 # 因子 → 回测 → 入库
 python -m backtest.factor.backfill f_xxx                 # 回填因子到 work DB
-python -m backtest.pipeline run-all f_xxx --start 20210101 --end 20241231  # step1~step10 全自动
+python -m backtest.pipeline run-all f_xxx                # step1~step10 全自动
 python -m backtest.factor.admission admit f_xxx          # 人工 admit
 python -m backtest.factor.update                         # 日更 admitted 因子
 

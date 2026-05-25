@@ -246,7 +246,7 @@ CREATE TABLE IF NOT EXISTS index_daily (
 
 - 默认指数：`["000300.SH", "000905.SH", "000852.SH", "000001.SH", "399006.SZ"]`
 - 对每个 symbol：`get_max_index_date()` → 从下一交易日开始 fetch → `insert_index_daily()`
-- CLI：`python -m backtest.data.backfill_indices [--symbols A,B] [--start YYYYMMDD]`
+- CLI：`python -m backtest.data.backfill_indices [--symbols A,B]`（日期范围由脚本内部根据已有数据自动决定）
 
 ### `evaluation.benchmark.load_benchmark(code, start, end)`
 

@@ -222,7 +222,7 @@ python -m backtest.pipeline run-all f_001
 
 ```bash
 python scripts/run_factor_pipeline.py f_001 \
-    --direction desc --benchmark 000300.SH
+    --direction desc
 ```
 
 输出到 `results/<factor_id>/<tag>/{factor_eval, simple, detailed}/`。新版 pipeline 已覆盖此场景，旧脚本保留兼容。

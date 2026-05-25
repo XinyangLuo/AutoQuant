@@ -89,6 +89,22 @@ def get_section(*keys: str) -> Any:
     return cfg
 
 
+def get_section_or(default: Any, *keys: str) -> Any:
+    """Drill into the config by nested keys, returning *default* if missing.
+
+    Examples
+    --------
+    >>> get_section_or("open", "pipeline", "ret_type")
+    "open"   # when config.yaml lacks pipeline.ret_type
+    """
+    cfg = get_config()
+    for k in keys:
+        if not isinstance(cfg, dict) or k not in cfg:
+            return default
+        cfg = cfg[k]
+    return cfg
+
+
 def get_thresholds() -> dict[str, Any]:
     """Return the ``thresholds`` section."""
     return get_section("thresholds")

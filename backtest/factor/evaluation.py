@@ -743,19 +743,6 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate factor predictive power")
     parser.add_argument("factor_id", nargs="?", help="Factor ID to evaluate (e.g. f_001)")
     parser.add_argument("--all", action="store_true", help="Evaluate all registered factors")
-    parser.add_argument("--start", default=None, help="Start date YYYYMMDD (default from config.yaml)")
-    parser.add_argument("--end", default=None, help="End date YYYYMMDD (default from config.yaml)")
-    parser.add_argument(
-        "--horizons",
-        default="1,5,10,20,60",
-        help="Comma-separated forward return horizons",
-    )
-    parser.add_argument(
-        "--ret-type",
-        choices=["close", "open"],
-        default="open",
-        help="Return calculation type (default: open)",
-    )
     parser.add_argument(
         "--corr-top-k",
         type=int,
@@ -788,11 +775,13 @@ def main():
     if not args.factor_id and not args.all:
         parser.error("Specify a factor_id or --all")
 
-    # Resolve dates: CLI > config.yaml
-    from backtest.config_loader import get_section
+    # Read date range and evaluation config from config.yaml
+    from backtest.config_loader import get_section_or
 
-    start = args.start or get_section("pipeline", "start_date")
-    end = args.end or get_section("pipeline", "end_date")
+    start = get_section_or("20160101", "pipeline", "start_date")
+    end = get_section_or("20251231", "pipeline", "end_date")
+    ret_type = get_section_or("open", "pipeline", "ret_type")
+    eval_horizons = get_section_or([1, 5, 10, 20, 60], "pipeline", "eval_horizons")
 
     from backtest.factor.registry import get_registry, list_factors
 
@@ -805,7 +794,7 @@ def main():
         print("No factors registered.")
         return
 
-    horizons = [int(h.strip()) for h in args.horizons.split(",")]
+    horizons = [int(h) for h in eval_horizons]
     results: list[EvaluationResult] = []
 
     # Batch mode: preload market data once to avoid N database round-trips
@@ -822,7 +811,7 @@ def main():
                 start=start,
                 end=returns_end,
                 horizons=horizons,
-                ret_type=args.ret_type,
+                ret_type=ret_type,
             )
             print(f"  Pre-loaded market data: {len(preloaded_returns):,} return rows")
         except Exception as exc:
@@ -835,7 +824,7 @@ def main():
                 start,
                 end,
                 horizons=horizons,
-                ret_type=args.ret_type,
+                ret_type=ret_type,
                 corr_top_k=args.corr_top_k,
                 exclude_limit_up=not args.no_exclude_limit_up,
                 run_decile_backtest=args.decile,

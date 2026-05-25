@@ -18,13 +18,12 @@ to promote, or ``reject ...`` to discard. The admission CLI auto-reads
 
 Usage:
     python scripts/run_factor_pipeline.py f_001 \\
-        --start 20160101 --end 20251231 \\
-        --direction asc --benchmark 000300.SH
+        --direction asc
 
     # 显式指定绝对数量 + 周度换仓 (旧默认)
     python scripts/run_factor_pipeline.py f_001 \\
         --top-n 50 --rebalance 1W --decay 5 \\
-        --direction asc --benchmark 000300.SH
+        --direction asc
 
     # 分位选股 + 指数成分股 universe
     python scripts/run_factor_pipeline.py f_rev_05 \\
@@ -666,10 +665,6 @@ def print_decision_hint(args, eval_summary: dict, simple: dict, detailed: dict |
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the factor screening pipeline")
     p.add_argument("factor_id")
-    p.add_argument("--start", default="20160101")
-    p.add_argument("--end", default="20251231")
-    p.add_argument("--horizons", default="1,5,10,20,60")
-    p.add_argument("--ret-type", default="open", choices=["close", "open"])
     p.add_argument("--plot-horizon", type=int, default=20)
 
     sel = p.add_mutually_exclusive_group()
@@ -690,10 +685,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="限制 universe 到指定指数成分股,如 000300.SH。"
                         "需先跑 backfill_index_members 准备数据。")
 
-    p.add_argument("--initial-cash", type=float, default=1e8)
-    p.add_argument("--commission-rate", type=float, default=0.0003)
     p.add_argument("--price-type", default="o2o", choices=["o2o", "c2c"])
-    p.add_argument("--benchmark", default="000300.SH")
 
     p.add_argument("--skip-detailed", action="store_true",
                    help="Skip the detailed backtest (research mode)")
@@ -709,6 +701,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main():
     args = _build_parser().parse_args()
+
+    # Date range, evaluation config, and simulation params are read from
+    # config.yaml — single source of truth, no CLI overrides.
+    from backtest.config_loader import get_section_or
+
+    args.start = get_section_or("20160101", "pipeline", "start_date")
+    args.end = get_section_or("20251231", "pipeline", "end_date")
+    args.horizons = ",".join(str(h) for h in get_section_or([1, 5, 10, 20, 60], "pipeline", "eval_horizons"))
+    args.ret_type = get_section_or("open", "pipeline", "ret_type")
+    args.benchmark = get_section_or("000300.SH", "pipeline", "benchmark")
+    args.initial_cash = get_section_or(100_000_000, "simulation", "initial_cash")
+    args.commission_rate = get_section_or(0.0003, "simulation", "commission_rate")
+
     args.market_cap_neutral = not args.no_cap_neutral
     if args.decay == 0:
         args.decay = None

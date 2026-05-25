@@ -28,8 +28,6 @@ pip install openai
 ```bash
 python -m agents.rdagent.run run \
     --max-rounds 10 \
-    --start 20200101 \
-    --end 20231231 \
     --output-dir results/agent/run_001
 ```
 
@@ -38,13 +36,13 @@ python -m agents.rdagent.run run \
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `--max-rounds` | 10 | 最多迭代几轮 |
-| `--start` | 20160101 | 回测起始日期 |
-| `--end` | 20231231 | 回测结束日期 |
 | `--output-dir` | results/agent/run_001 | 输出目录 |
 | `--min-rankicir` | 0.25 | 候选门槛：RankICIR |
 | `--min-ic-pos` | 0.52 | 候选门槛：IC+ 比例 |
 | `--max-turnover` | 0.5 | 候选门槛：最大换手 |
 | `--min-sharpe` | 0.8 | 候选门槛：Simple Sharpe |
+
+> 日期范围从 `config.yaml` (`agent.start_date` / `agent.end_date`) 读取，CLI 不再覆盖。
 
 ### 3. 查看候选因子
 

@@ -2,13 +2,15 @@
 
 Usage::
 
-    python -m backtest.pipeline init f_001 --start 20160101 --end 20251231
+    python -m backtest.pipeline init f_001
     python -m backtest.pipeline step1 f_001
     python -m backtest.pipeline step2 f_001
     ...
     python -m backtest.pipeline step10 f_001
 
-    python -m backtest.pipeline run-all f_001 --start 20160101 --end 20251231
+    python -m backtest.pipeline run-all f_001
+
+Date range is read from ``config.yaml`` (``pipeline.start_date`` / ``pipeline.end_date``).
 """
 
 from __future__ import annotations
@@ -58,12 +60,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # init
     p_init = sub.add_parser("init", help="Initialise pipeline state")
     p_init.add_argument("factor_id")
-    p_init.add_argument("--start", default=None, help="default from config.yaml")
-    p_init.add_argument("--end", default=None, help="default from config.yaml")
     p_init.add_argument("--frequency", choices=["D", "M"], default="D")
     p_init.add_argument("--results-root", default="results")
-    p_init.add_argument("--ret-type", default="open", choices=["close", "open"])
-    p_init.add_argument("--benchmark", default="000300.SH")
 
     # step1~step10
     for i in range(1, 11):
@@ -80,28 +78,23 @@ def _build_parser() -> argparse.ArgumentParser:
     # run-all
     p_run = sub.add_parser("run-all", help="Run all steps sequentially")
     p_run.add_argument("factor_id")
-    p_run.add_argument("--start", default=None, help="default from config.yaml")
-    p_run.add_argument("--end", default=None, help="default from config.yaml")
     p_run.add_argument("--frequency", choices=["D", "M"], default="D")
     p_run.add_argument("--from-step", type=int, default=1, choices=range(1, 11))
     p_run.add_argument("--results-root", default="results")
-    p_run.add_argument("--ret-type", default="open", choices=["close", "open"])
-    p_run.add_argument("--benchmark", default="000300.SH")
 
     return parser
 
 
-def _resolve_dates(args) -> tuple[str, str]:
-    """Resolve start/end dates: CLI args take priority, fall back to config.yaml."""
-    from backtest.config_loader import get_section
+def _resolve_pipeline_cfg() -> dict[str, str]:
+    """Read pipeline config values from config.yaml."""
+    from backtest.config_loader import get_section_or
 
-    start = args.start or None  # treat empty string as None
-    end = args.end or None
-    if not start:
-        start = get_section("pipeline", "start_date")
-    if not end:
-        end = get_section("pipeline", "end_date")
-    return start, end
+    return {
+        "start_date": get_section_or("20160101", "pipeline", "start_date"),
+        "end_date": get_section_or("20251231", "pipeline", "end_date"),
+        "ret_type": get_section_or("open", "pipeline", "ret_type"),
+        "benchmark": get_section_or("000300.SH", "pipeline", "benchmark"),
+    }
 
 
 def _load_or_init_state(args) -> PipelineState:
@@ -112,15 +105,15 @@ def _load_or_init_state(args) -> PipelineState:
         return PipelineState.load(state_path)
 
     # Create new state (for run-all without prior init)
-    start_date, end_date = _resolve_dates(args)
+    cfg = _resolve_pipeline_cfg()
     config = PipelineConfig.for_frequency(
         frequency=getattr(args, "frequency", "D"),
         factor_id=args.factor_id,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=cfg["start_date"],
+        end_date=cfg["end_date"],
         results_root=args.results_root,
-        ret_type=getattr(args, "ret_type", "open"),
-        benchmark=getattr(args, "benchmark", "000300.SH"),
+        ret_type=cfg["ret_type"],
+        benchmark=cfg["benchmark"],
     )
     state = PipelineState(factor_id=args.factor_id, config=config)
     state.save(state_path)
@@ -153,15 +146,15 @@ def _output_json(step_name: str, passed: bool, reason: str | None, metrics: dict
 
 
 def cmd_init(args) -> int:
-    start_date, end_date = _resolve_dates(args)
+    cfg = _resolve_pipeline_cfg()
     config = PipelineConfig.for_frequency(
         frequency=args.frequency,
         factor_id=args.factor_id,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=cfg["start_date"],
+        end_date=cfg["end_date"],
         results_root=args.results_root,
-        ret_type=args.ret_type,
-        benchmark=args.benchmark,
+        ret_type=cfg["ret_type"],
+        benchmark=cfg["benchmark"],
     )
     state = PipelineState(factor_id=args.factor_id, config=config)
     state.save(config.state_path())
@@ -199,6 +192,9 @@ def cmd_step(args, step_name: str) -> int:
 
 
 def cmd_run_all(args) -> int:
+    state_path = Path(args.results_root) / args.factor_id / "pipeline_state.json"
+    if state_path.exists():
+        state_path.unlink()
     state = _load_or_init_state(args)
     from_step = args.from_step
     rejected_step: str | None = None
