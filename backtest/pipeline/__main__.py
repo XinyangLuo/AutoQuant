@@ -71,6 +71,7 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument("factor_id")
         p.add_argument("--results-root", default="results")
         if i == 5:
+            p.add_argument("--top-k", type=int)
             p.add_argument("--top-pct", type=float)
             p.add_argument("--decay", type=int)
             p.add_argument("--universe")
@@ -185,7 +186,7 @@ def cmd_step(args, step_name: str) -> int:
     # Build CLI kwargs for step5
     cli_kwargs = {}
     if step_name == "step5":
-        for key in ["top_pct", "decay", "universe", "rebalance"]:
+        for key in ["top_k", "top_pct", "decay", "universe", "rebalance"]:
             val = getattr(args, key, None)
             if val is not None:
                 cli_kwargs[key] = val
@@ -223,19 +224,13 @@ def cmd_run_all(args) -> int:
 
     if rejected_step:
         # Mark as rejected in registry so `admission status` reflects reality.
-        # Don't call reject() — that would delete the work DB data we want to preserve.
-        from backtest.factor.registry import _load_registry, _save_registry
-        from datetime import datetime, timezone
-        reg = _load_registry()
-        entry = reg.get(state.config.factor_id, {})
-        entry["status"] = "rejected"
-        entry["rejection"] = {
-            "step": rejected_step,
-            "reason": state.step_results.get(rejected_step, StepResult(False)).reason,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-        reg[state.config.factor_id] = entry
-        _save_registry(reg)
+        # Use mark_rejected() instead of reject() to preserve work DB data.
+        from backtest.factor.admission import mark_rejected
+        reason = state.step_results.get(rejected_step, StepResult(False)).reason
+        mark_rejected(
+            state.config.factor_id,
+            notes=f"Pipeline rejected at {rejected_step}: {reason}",
+        )
         state.status = "rejected"
         _save_state(state)
         print(f"\nPipeline REJECTED at {rejected_step}. Factor data preserved in work DB.", file=sys.stderr)

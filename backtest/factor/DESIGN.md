@@ -192,7 +192,7 @@ python -m backtest.factor.backfill --pending
 
 ```bash
 # 拿入库的因子值算 IC/RankIC/turnover/corr
-python -m backtest.factor.evaluation f_001 --start 20210101 --end 20241231 --plot
+python -m backtest.factor.evaluation f_001 --plot
 ```
 
 corr 比较只读 library DB —— 候选因子拿自己的 pipeline 输出去比已 admitted 的稳定因子。
@@ -211,8 +211,7 @@ corr 比较只读 library DB —— 候选因子拿自己的 pipeline 输出去�
 ### 3. Pipeline driver（推荐，step1~step9 带淘汰门控）
 
 ```bash
-python -m backtest.pipeline init f_001 \
-    --start 20210101 --end 20241231 --frequency D
+python -m backtest.pipeline init f_001 --frequency D
 
 python -m backtest.pipeline run-all f_001
 ```
@@ -223,7 +222,6 @@ python -m backtest.pipeline run-all f_001
 
 ```bash
 python scripts/run_factor_pipeline.py f_001 \
-    --start 20210101 --end 20241231 \
     --direction desc --benchmark 000300.SH
 ```
 
@@ -365,7 +363,7 @@ residual_icir:
   min_annual_icir: 0.05    # 年化残差 RankICIR 最低阈值
   min_abs_ic_mean: 0.001   # 残差 |IC 均值| 下限，防 IC≈0 但 std 极小导致 ICIR 虚高
   horizons: [1, 5, 20]     # 检查的预测周期
-  ridge_alpha: 0.0         # 0=OLS（彻底剥离线性信号），>0=Ridge 正则化强度
+  ridge_alpha: 1.0         # Ridge 正则化强度；0 退化为 OLS，但不推荐
 ```
 
 **边界情况**：

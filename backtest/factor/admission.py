@@ -33,7 +33,9 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -102,6 +104,195 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Alpha directory helpers
+# ---------------------------------------------------------------------------
+
+_ALPHAS_ROOT = Path(__file__).resolve().parents[2] / "alphas"
+
+
+def _infer_source(func_module: str) -> str | None:
+    """Infer factor source (user/agent) from its registered func_module."""
+    if func_module.startswith("alphas.exp.user."):
+        return "user"
+    if func_module.startswith("alphas.exp.agent."):
+        return "agent"
+    if func_module.startswith("agents.rdagent.generated."):
+        return "agent"
+    return None
+
+
+def _exp_path(factor_id: str, source: str) -> Path:
+    """Path to the factor's source file under alphas/exp/."""
+    return _ALPHAS_ROOT / "exp" / source / f"{factor_id}.py"
+
+
+def _admitted_dir(factor_id: str) -> Path:
+    """Path to the factor's admitted directory."""
+    return _ALPHAS_ROOT / "admitted" / factor_id
+
+
+def _move_factor_to_admitted(
+    factor_id: str,
+    func_module: str,
+) -> tuple[str | None, Path | None]:
+    """Move factor code from alphas/exp/ to alphas/admitted/.
+
+    Returns ``(source, admitted_dir)`` if moved, or ``(None, None)`` if the
+    factor's module is not under ``alphas.exp/`` (e.g. built-in Barra).
+    """
+    source = _infer_source(func_module)
+    if source is None:
+        return None, None
+
+    src_file = _exp_path(factor_id, source)
+    if not src_file.exists():
+        return None, None
+
+    admitted = _admitted_dir(factor_id)
+    admitted.mkdir(parents=True, exist_ok=True)
+    dst_file = admitted / "factor.py"
+    shutil.move(str(src_file), str(dst_file))
+
+    # Remove stale .pyc files
+    pycache = src_file.parent / "__pycache__"
+    if pycache.exists():
+        for pyc in pycache.glob(f"{factor_id}.*"):
+            pyc.unlink()
+
+    return source, admitted
+
+
+def _restore_factor_from_admitted(
+    factor_id: str,
+    func_module: str,
+) -> Path | None:
+    """Reverse of ``_move_factor_to_admitted`` — used by ``unadmit``.
+
+    Moves ``alphas/admitted/<factor_id>/factor.py`` back to its original
+    ``alphas/exp/<source>/<factor_id>.py`` location.
+    """
+    source = _infer_source(func_module)
+    if source is None:
+        return None
+
+    admitted_dir = _admitted_dir(factor_id)
+    src_file = admitted_dir / "factor.py"
+    if not src_file.exists():
+        return None
+
+    dst_file = _exp_path(factor_id, source)
+    dst_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src_file), str(dst_file))
+
+    # Clean up admitted directory (report/ stays until explicitly removed)
+    if admitted_dir.exists():
+        import shutil as _shutil
+        _shutil.rmtree(str(admitted_dir))
+
+    return dst_file
+
+
+def _bundle_backtest_report(
+    factor_id: str,
+    *,
+    tag: str | None = None,
+    results_root: str | Path = "results",
+) -> dict | None:
+    """Copy backtest artifacts into ``alphas/admitted/<factor_id>/report/``.
+
+    Bundles:
+      - ``pipeline.json`` (full pipeline config from ``pipeline_state.json``)
+      - ``strategy_config.json``
+      - ``eval_summary.json`` (factor evaluation)
+      - ``pipeline_report.md`` (human-readable report)
+      - ``plots/`` (all PNG charts)
+      - ``detailed_summary.json`` (detailed backtest summary)
+
+    Returns a dict with ``report_dir`` and list of bundled files, or ``None``
+    if no results directory exists.
+    """
+    factor_results = Path(results_root) / factor_id
+    if not factor_results.exists():
+        return None
+
+    # Resolve tag directory
+    tag_dir: Path | None = None
+    if tag is not None:
+        candidate = factor_results / tag
+        if candidate.exists():
+            tag_dir = candidate
+    else:
+        candidates = sorted(
+            p for p in factor_results.iterdir()
+            if p.is_dir() and p.name != "factor_eval"
+                and (p / "pipeline_report.md").exists()
+        )
+        if candidates:
+            tag_dir = candidates[0]
+
+    report_dir = _admitted_dir(factor_id) / "report"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    bundled: list[str] = []
+
+    # 1. Pipeline config (from pipeline_state.json)
+    pipeline_state = factor_results / "pipeline_state.json"
+    if pipeline_state.exists():
+        dst = report_dir / "pipeline.json"
+        shutil.copy2(str(pipeline_state), str(dst))
+        bundled.append("pipeline.json")
+
+    # 2. Strategy config
+    strategy_cfg = factor_results / "strategy_config.json"
+    if strategy_cfg.exists():
+        dst = report_dir / "strategy_config.json"
+        shutil.copy2(str(strategy_cfg), str(dst))
+        bundled.append("strategy_config.json")
+
+    # 3. Factor eval summary
+    eval_sum = factor_results / "factor_eval" / "eval_summary.json"
+    if eval_sum.exists():
+        dst = report_dir / "eval_summary.json"
+        shutil.copy2(str(eval_sum), str(dst))
+        bundled.append("eval_summary.json")
+
+    if tag_dir is None:
+        return {
+            "report_dir": str(report_dir.relative_to(_ALPHAS_ROOT)),
+            "bundled": bundled,
+            "tag": None,
+        }
+
+    # 4. Pipeline report markdown
+    report_md = tag_dir / "pipeline_report.md"
+    if report_md.exists():
+        dst = report_dir / "pipeline_report.md"
+        shutil.copy2(str(report_md), str(dst))
+        bundled.append("pipeline_report.md")
+
+    # 5. Plots
+    plots_src = tag_dir / "plots"
+    if plots_src.exists():
+        plots_dst = report_dir / "plots"
+        plots_dst.mkdir(parents=True, exist_ok=True)
+        for png in sorted(plots_src.glob("*.png")):
+            shutil.copy2(str(png), str(plots_dst / png.name))
+        bundled.append(f"plots/ ({len(list(plots_dst.glob('*.png')))} files)")
+
+    # 6. Detailed backtest summary
+    detailed_summary = tag_dir / "detailed" / "summary.json"
+    if detailed_summary.exists():
+        dst = report_dir / "detailed_summary.json"
+        shutil.copy2(str(detailed_summary), str(dst))
+        bundled.append("detailed_summary.json")
+
+    return {
+        "report_dir": str(report_dir.relative_to(_ALPHAS_ROOT)),
+        "bundled": bundled,
+        "tag": tag_dir.name,
+    }
+
+
 # Categories that bootstrap the library — they ARE the regressors used by
 # the ridge R² check, so they're admitted before the check exists for anything
 # else. Always-skip these from the gate. Only the 7 Barra L1 composites are
@@ -123,6 +314,8 @@ def _finalize_action(
     strategy_config: dict | None = None,
     ridge_check: RidgeCheckResult | None = None,
     residual_icir_check: ResidualICIRResult | None = None,
+    bundle_info: dict | None = None,
+    func_module: str | None = None,
 ) -> AdmissionAction:
     """Stamp the action onto the registry."""
     entry = {
@@ -138,10 +331,14 @@ def _finalize_action(
         entry["ridge_check"] = ridge_check.as_meta()
     if residual_icir_check is not None:
         entry["residual_icir_check"] = residual_icir_check.as_meta()
+    if bundle_info is not None:
+        entry["bundle_info"] = bundle_info
 
     meta = registry[factor_id]
     meta["status"] = status
     meta["admission"] = entry
+    if func_module is not None:
+        meta["func_module"] = func_module
     if ridge_check is not None:
         meta["tier"] = ridge_check.tier
         meta["r2"] = float(ridge_check.r2)
@@ -179,6 +376,8 @@ def admit(
     force: bool = False,
     skip_ridge_check: bool = False,
     skip_residual_icir_check: bool = False,
+    tag: str | None = None,
+    results_root: str | Path = "results",
 ) -> AdmissionAction:
     """Promote a factor from the work DB into the stable library.
 
@@ -195,7 +394,12 @@ def admit(
          unless ``force=True``; skipped for bootstrap categories.
       4. Upsert into ``FactorLibrary`` (library DB).
       5. Drop the column from the work DB.
-      6. Mark ``registry[factor_id]["status"] = "admitted"``.
+      6. Move factor code from ``alphas/exp/<source>/`` to
+         ``alphas/admitted/<factor_id>/factor.py``.
+      7. Bundle backtest artifacts into
+         ``alphas/admitted/<factor_id>/report/``.
+      8. Mark ``registry[factor_id]["status"] = "admitted"`` and update
+         ``func_module`` to point at the new location.
 
     Raises
     ------
@@ -252,6 +456,17 @@ def admit(
             )
         rows_cleared = work.delete_factor(factor_id)
 
+    # Move source code to admitted/ and bundle backtest report
+    func_module = meta.get("func_module", "")
+    source, admitted_dir = _move_factor_to_admitted(factor_id, func_module)
+    new_func_module = None
+    if admitted_dir is not None:
+        new_func_module = f"alphas.admitted.{factor_id}.factor"
+
+    bundle_info = _bundle_backtest_report(
+        factor_id, tag=tag, results_root=results_root,
+    )
+
     return _finalize_action(
         factor_id, STATUS_ADMITTED,
         rows_promoted=rows_promoted, rows_cleared=rows_cleared,
@@ -259,6 +474,8 @@ def admit(
         strategy_config=strategy_config,
         ridge_check=ridge_result,
         residual_icir_check=residual_icir_result,
+        bundle_info=bundle_info,
+        func_module=new_func_module,
     )
 
 
@@ -291,6 +508,31 @@ def reject(
     return _finalize_action(
         factor_id, STATUS_REJECTED,
         rows_promoted=0, rows_cleared=rows_cleared,
+        notes=notes, registry=target, persist=persist,
+        strategy_config=strategy_config,
+    )
+
+
+def mark_rejected(
+    factor_id: str,
+    *,
+    notes: str | None = None,
+    registry: dict | None = None,
+    strategy_config: dict | None = None,
+) -> AdmissionAction:
+    """Mark a factor as rejected in the registry WITHOUT clearing the work DB.
+
+    Use this when the pipeline rejects a factor but you want to preserve
+    its work-DB data for inspection (e.g., diagnostic reports).
+    """
+    persist = registry is None
+    target = registry if registry is not None else _load_registry()
+    if factor_id not in target:
+        raise KeyError(f"factor_id '{factor_id}' not found in registry")
+
+    return _finalize_action(
+        factor_id, STATUS_REJECTED,
+        rows_promoted=0, rows_cleared=0,
         notes=notes, registry=target, persist=persist,
         strategy_config=strategy_config,
     )
@@ -354,15 +596,25 @@ def unadmit(
     finally:
         con.close()
 
+    # Restore factor code from admitted/ back to exp/
+    func_module = target[factor_id].get("func_module", "")
+    restored = _restore_factor_from_admitted(factor_id, func_module)
+    new_func_module = None
+    if restored is not None:
+        source = _infer_source(func_module)
+        if source is not None:
+            new_func_module = f"alphas.exp.{source}.{factor_id}"
+
     # Clear stale admission metadata left from the original admit
     meta = target[factor_id]
-    for key in ("tier", "r2", "residual_icir_passed", "residual_annual_icirs"):
+    for key in ("tier", "r2", "residual_icir_passed", "residual_annual_icirs", "bundle_info"):
         meta.pop(key, None)
 
     return _finalize_action(
         factor_id, STATUS_REJECTED,
         rows_promoted=0, rows_cleared=rows_cleared,
         notes=notes, registry=target, persist=persist,
+        func_module=new_func_module,
     )
 
 
@@ -598,6 +850,8 @@ def main():
                     force=args.force,
                     skip_ridge_check=args.skip_ridge_check,
                     skip_residual_icir_check=args.skip_residual_icir_check,
+                    tag=args.tag,
+                    results_root=args.results_root,
                 )
             else:
                 action = reject(
@@ -625,6 +879,12 @@ def main():
                       f"annual_icirs={ {h: f'{v:.3f}' for h, v in annuals.items()} }, "
                       f"n_regressors={ric.get('n_regressors', 0)}, "
                       f"threshold={ric.get('threshold', 0)}")
+            bundle = entry.get("bundle_info")
+            if bundle is not None:
+                print(f"  code moved to        : alphas/admitted/{args.factor_id}/factor.py")
+                print(f"  report bundled to    : {bundle.get('report_dir', 'N/A')}")
+                for item in bundle.get("bundled", []):
+                    print(f"    - {item}")
         print()
         return
 

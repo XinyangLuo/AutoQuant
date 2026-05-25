@@ -390,7 +390,7 @@ class TestStep5BuildStrategy:
 
         assert result.step_results["step5"].passed is True
         assert result.strategy_config is not None
-        assert result.strategy_config.selection.top_pct == 0.1
+        assert result.strategy_config.selection.top_k == 100
         assert result.strategy_config.decay == 5
         assert result.strategy_config.rebalance_freq == "1D"
 
@@ -403,11 +403,11 @@ class TestStep5BuildStrategy:
         state = PipelineState(
             factor_id="f_001",
             config=cfg,
-            retry_params={"top_pct": 0.05, "decay": 10},
+            retry_params={"top_k": 30, "decay": 10},
         )
         result = step5_build_strategy(state)
 
-        assert result.strategy_config.selection.top_pct == 0.05
+        assert result.strategy_config.selection.top_k == 30
         assert result.strategy_config.decay == 10
 
     def test_cli_kwargs_override(self):
@@ -417,9 +417,9 @@ class TestStep5BuildStrategy:
             end_date="20241231",
         )
         state = PipelineState(factor_id="f_001", config=cfg)
-        result = step5_build_strategy(state, top_pct=0.2, decay=3, universe="000300.SH")
+        result = step5_build_strategy(state, top_k=20, decay=3, universe="000300.SH")
 
-        assert result.strategy_config.selection.top_pct == 0.2
+        assert result.strategy_config.selection.top_k == 20
         assert result.strategy_config.decay == 3
         assert result.strategy_config.universe.index_members == "000300.SH"
 

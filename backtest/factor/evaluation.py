@@ -743,8 +743,8 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate factor predictive power")
     parser.add_argument("factor_id", nargs="?", help="Factor ID to evaluate (e.g. f_001)")
     parser.add_argument("--all", action="store_true", help="Evaluate all registered factors")
-    parser.add_argument("--start", required=True, help="Start date YYYYMMDD")
-    parser.add_argument("--end", required=True, help="End date YYYYMMDD")
+    parser.add_argument("--start", default=None, help="Start date YYYYMMDD (default from config.yaml)")
+    parser.add_argument("--end", default=None, help="End date YYYYMMDD (default from config.yaml)")
     parser.add_argument(
         "--horizons",
         default="1,5,10,20,60",
@@ -788,6 +788,12 @@ def main():
     if not args.factor_id and not args.all:
         parser.error("Specify a factor_id or --all")
 
+    # Resolve dates: CLI > config.yaml
+    from backtest.config_loader import get_section
+
+    start = args.start or get_section("pipeline", "start_date")
+    end = args.end or get_section("pipeline", "end_date")
+
     from backtest.factor.registry import get_registry, list_factors
 
     if args.all:
@@ -808,12 +814,12 @@ def main():
     preloaded_market: pd.DataFrame | None = None
     if len(factor_ids) > 1:
         max_h = max(horizons)
-        end_dt = pd.to_datetime(args.end, format="%Y%m%d")
+        end_dt = pd.to_datetime(end, format="%Y%m%d")
         returns_end = (end_dt + pd.Timedelta(days=max_h + 5)).strftime("%Y%m%d")
         try:
             preloaded_market, preloaded_returns, preloaded_limit = _load_market_data(
                 symbols=None,  # all symbols
-                start=args.start,
+                start=start,
                 end=returns_end,
                 horizons=horizons,
                 ret_type=args.ret_type,
@@ -826,8 +832,8 @@ def main():
         try:
             result = evaluate(
                 fid,
-                args.start,
-                args.end,
+                start,
+                end,
                 horizons=horizons,
                 ret_type=args.ret_type,
                 corr_top_k=args.corr_top_k,

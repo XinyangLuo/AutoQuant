@@ -462,6 +462,7 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
 def step5_build_strategy(
     state: PipelineState,
     top_pct: float | None = None,
+    top_k: int | None = None,
     decay: int | None = None,
     universe: str | None = None,
     rebalance: str | None = None,
@@ -472,15 +473,31 @@ def step5_build_strategy(
     1. CLI kwargs passed to this function
     2. state.retry_params from a previous failed attempt
     3. PipelineConfig defaults
+
+    ``top_k`` and ``top_pct`` are mutually exclusive — exactly one must be
+    specified.  ``top_k`` takes priority if both are provided.
     """
     config = state.config
 
     # Resolve params with priority: CLI > retry_params > defaults
     rp = state.retry_params
+    _top_k = top_k if top_k is not None else rp.get("top_k", config.default_top_k)
     _top_pct = top_pct if top_pct is not None else rp.get("top_pct", config.default_top_pct)
     _decay = decay if decay is not None else rp.get("decay", config.default_decay)
     _rebalance = rebalance if rebalance is not None else rp.get("rebalance", config.default_rebalance)
     _universe = universe if universe is not None else rp.get("universe", config.default_universe)
+
+    # Determine selection: top_k takes priority if specified
+    if _top_k is not None:
+        selection = SelectionConfig(method="topk", top_k=_top_k)
+    elif _top_pct is not None:
+        selection = SelectionConfig(method="topk", top_pct=_top_pct)
+    else:
+        raise ValueError(
+            "Neither top_k nor top_pct is specified. "
+            "Set exactly one of default_top_k or default_top_pct in config.yaml, "
+            "or pass it via CLI / retry_params."
+        )
 
     strategy_config = StrategyConfig(
         name=f"{config.factor_id}_pipeline",
@@ -489,7 +506,7 @@ def step5_build_strategy(
         delay=1,
         universe=UniverseConfig(index_members=_universe),
         factors=[FactorConfig(id=config.factor_id, direction="desc")],
-        selection=SelectionConfig(method="topk", top_pct=_top_pct),
+        selection=selection,
         weighting=WeightingConfig(method="equal"),
         decay=_decay if _decay > 0 else None,
         backtest=BacktestConfig(
@@ -505,28 +522,30 @@ def step5_build_strategy(
     cfg_dir = Path(config.results_root) / config.factor_id
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = cfg_dir / "strategy_config.json"
+    artifact: dict = {
+        "name": strategy_config.name,
+        "rebalance_freq": strategy_config.rebalance_freq,
+        "decay": strategy_config.decay,
+        "universe": _universe,
+    }
+    if _top_k is not None:
+        artifact["top_k"] = _top_k
+    else:
+        artifact["top_pct"] = _top_pct
     with cfg_path.open("w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "name": strategy_config.name,
-                "rebalance_freq": strategy_config.rebalance_freq,
-                "top_pct": _top_pct,
-                "decay": _decay,
-                "universe": _universe,
-            },
-            f,
-            ensure_ascii=False,
-            indent=2,
-            default=str,
-        )
+        json.dump(artifact, f, ensure_ascii=False, indent=2, default=str)
     state.artifacts["strategy_config"] = str(cfg_path)
 
-    return _pass(state, "step5", {
-        "top_pct": _top_pct,
+    metrics: dict = {
         "decay": _decay,
         "rebalance": _rebalance,
         "universe": _universe,
-    })
+    }
+    if _top_k is not None:
+        metrics["top_k"] = _top_k
+    else:
+        metrics["top_pct"] = _top_pct
+    return _pass(state, "step5", metrics)
 
 
 # ---------------------------------------------------------------------------
@@ -774,7 +793,7 @@ def step9_residual_icir(state: PipelineState) -> PipelineState:
             horizons=th.get("horizons", [1, 5, 20]),
             threshold=float(th.get("min_annual_icir", 0.05)),
             ic_mean_threshold=float(th.get("min_abs_ic_mean", 0.001)),
-            alpha=float(th.get("ridge_alpha", 0.0)),
+            alpha=float(th.get("ridge_alpha", 1.0)),
             ret_type=config.ret_type,
             start=config.start_date,
             end=config.end_date,

@@ -69,14 +69,11 @@ python -m backtest.factor.backfill f_xxx                 # 全历史
 python -m backtest.factor.backfill f_xxx --test-days 60  # 调试只跑近 60 天
 
 # 3-7. 一条命令跑完三层评测，输出到 results/<factor_id>/{factor_eval, <tag>/{simple,detailed}}
-python scripts/run_factor_pipeline.py f_xxx \
-    --start 20210101 --end 20241231 \
-    --direction desc --benchmark 000300.SH
+python scripts/run_factor_pipeline.py f_xxx --direction desc --benchmark 000300.SH
 
-# 显式指定绝对数量 + 周度换仓 (旧默认)
+# 显式指定绝对数量 + 周度换仓
 python scripts/run_factor_pipeline.py f_xxx \
-    --start 20210101 --end 20241231 \
-    --top-n 50 --rebalance 1W --decay 5 \
+    --top-k 50 --rebalance 1W --decay 5 \
     --direction desc --benchmark 000300.SH
 
 # 跳过十段分层回测（不推荐 —— 十段分层是 IC/策略回测之外的独立验证维度，默认执行）
@@ -221,7 +218,7 @@ print(res.threshold_metrics(20))  # 4 项 admission 参考指标
 
 | 参数 | 默认 | 含义 |
 |---|---|---|
-| `--start` / `--end` | 必填 | 至少 2 年（>500 个交易日）以让 IC 序列统计稳定 |
+| `--start` / `--end` | 可选 | 默认从 `config.yaml` `pipeline.start_date/end_date` 读取；CLI 传入可覆盖 |
 | `--horizons` | `1,5,10,20,60` | 前瞻 N 个交易日的累计收益；同时给出 decay 曲线 |
 | `--ret-type` | `open` | `close`：收盘到收盘。`open`：**T+1 开盘到 T+1+h 开盘**，贴近 A 股 T+1 |
 | `--corr-top-k` | `5` | 与 **library 库** 中已 admitted 因子的相关性 Top-K；`0` 跳过 |
@@ -334,7 +331,7 @@ f_rev_03  -0.34    600
 ```bash
 python scripts/run_factor_pipeline.py f_xxx --decile
 # 或单独跑（不跑 simple/detailed）
-python -m backtest.factor.evaluation f_xxx --start 20210101 --end 20241231 --decile
+python -m backtest.factor.evaluation f_xxx --decile
 ```
 
 输出到 `results/<factor_id>/decile_backtest/<factor_id>_decile.png`：
@@ -393,10 +390,9 @@ selection:
 weighting:
   method: "equal"
 
-neutralize:
-  industry: false
-  industry_method: "group_rank"
-  market_cap: true                  # 几乎总要开
+# 中性化已下沉到因子层，策略 YAML 不再配置。
+# 因子注册时通过 @register(variant="barra_ind_size") 声明，
+# backfill 后自动应用 Barra 回归中性化（行业 dummy + Size_z）。
 
 decay: 5                            # 线性衰减加权 5 日
 
@@ -422,9 +418,18 @@ backtest:
 
 | 方法 | 输出特征 | 何时用 |
 |---|---|---|
-| `topk` | 多头 top_k 只，sum = 1 | A 股主流，**生产 80% 用这个** |
+| `topk` | 多头 top_k 只或 top_pct%，sum = 1 | A 股主流，**生产 80% 用这个** |
 | `long_short` | 多 top_k + 空 bottom_k | 研究 alpha 纯度（A 股做空成本高，仅评估） |
 | `decile` | 10 组各 sum = 1 | 验证单调性、做分层归因 |
+
+`top_k` 与 `top_pct` 互斥——恰好指定一个：
+
+```yaml
+selection:
+  method: "topk"
+  top_k: 50        # 绝对数量（如 50 支）
+  # top_pct: 0.1   # 百分比（如 top 10%），与 top_k 二选一
+```
 
 #### `weighting.method`
 
@@ -481,9 +486,8 @@ config = StrategyConfig(
     rebalance_freq="1D", delay=1,
     universe=UniverseConfig(min_market_cap=5e8, min_avg_amount=1e7),
     factors=[FactorConfig(id="f_101", direction="desc")],
-    selection=SelectionConfig(method="topk", top_pct=0.1),
+    selection=SelectionConfig(method="topk", top_k=50),
     weighting=WeightingConfig(method="equal"),
-    neutralize=NeutralizeConfig(market_cap=True),
     decay=5,
     backtest=BacktestConfig(start_date="20210101", end_date="20241231"),
 )
@@ -737,7 +741,6 @@ python -m backtest.factor.backfill f_rev_05
 
 ```bash
 python scripts/run_factor_pipeline.py f_rev_05 \
-    --start 20210101 --end 20241231 \
     --direction asc --benchmark 000300.SH
 ```
 
@@ -784,7 +787,7 @@ results/f_rev_05/
 ├── decile_backtest/          # tag 无关，仅 --decile
 │   └── f_rev_05_decile.png
 └── top100_1w_d5/             # tag = top{n|pct}_{rebalance}_d{decay}
-    ├── pipeline.json            # 机器可读：所有指标 + threshold checks
+    ├── strategy_config.json     # 机器可读：策略配置（top_k/top_pct, decay, universe）
     ├── pipeline_report.md       # 人类可读：汇总决策报告
     ├── simple/
     │   ├── nav.parquet
@@ -918,21 +921,21 @@ Admission: f_rev_05  ->  ADMITTED
 - [ ] `index_members` 表落地 → 限定股票池
 - [ ] 多因子组合的样本外参数选择器
 - [ ] Walk-forward 滚动评测：训练窗口/评估窗口分离
-- [ ] Agent 投研系统调用本 pipeline 作为底层 tool
-- [x] **P1：Barra 风格自动化 Pipeline**（已部分落地 `backtest/pipeline/`，见附录 A 和 `pipeline/DESIGN.md`；retry 逻辑待 Agent 接入）
+- [x] Agent 投研系统调用本 pipeline 作为底层 tool（`agents/rdagent/runner.py`）
+- [x] **P1：Barra 风格自动化 Pipeline**（已落地 `backtest/pipeline/` step1~step10，见附录 A 和 `pipeline/DESIGN.md`；retry 逻辑待 Agent 接入）
 
 ---
 
-## 附录 A：P1 自动化 Pipeline（设计稿，未实现）
+## 附录 A：自动化 Pipeline（step1~step10，已落地）
 
-> 本附录是 PLAN.md §4 的回填版，记录自动化 step1~step10 全套设计。**已部分实现**（`backtest/pipeline/`），详见 [`pipeline/DESIGN.md`](pipeline/DESIGN.md)。
+> 自动化 step1~step10 全套已实现在 `backtest/pipeline/`。
 > 阈值统一从 `config.yaml` 读取（单一事实来源），代码中不再 hard-code。
 >
-> **前置依赖**（已完成）：
-> 1. ~~P0-1 算子库~~ ✓ 已落地
+> **前置依赖**：
+> 1. ~~P0-1 算子库~~ ✓
 > 2. ~~P0-2 Barra 风险模型~~ ✓ 7 个 L1 因子已 admit
-> 3. ~~P0-3 交易日历~~ ✓ 已落地
-> 4. rd-agent 框架（`agents/rdagent/`）—— 提供 step6/7 重试时的决策能力
+> 3. ~~P0-3 交易日历~~ ✓
+> 4. rd-agent 框架（`agents/rdagent/`）—— 提供 step6/7 重试时的决策能力（待接入）
 
 ### A.0 总览
 
@@ -966,7 +969,7 @@ step10: admit + 写 meta + 自动生成 markdown 报告
 
 | 因子类型 | 截面缺失率上限 |
 |---|---|
-| 量价因子（用 `market_daily`） | < 10% |
+| 量价因子（用 `market_daily`） | < 20% |
 | 财务因子（用 `income_q` / `balancesheet_q` / `cashflow_q`） | < 30% |
 
 **测度**：每日截面 = `(NaN 股票数 / universe 内全部股票数)`，取时序平均。
@@ -1031,12 +1034,12 @@ $h$ 为预测周期（日频 = 1 或 5，月频 = 21）。
 
 ### A.5 step5：策略组装
 
-**默认配置**：
+**默认配置**（从 `config.yaml` `pipeline` 读取）：
 
 ```yaml
 selection:
   method: topk
-  top_pct: 0.10       # top 10%
+  top_k: 50           # 默认选前 50 支；与 top_pct 二选一
 decay: 5              # 日频因子；月频因子可设 None
 universe:
   index_members: null # 默认全 A；可选 000300/000905/000852/932000
@@ -1052,7 +1055,7 @@ delay: 1
 |---|---|---|
 | Sharpe | > 0.8 | > 1.0 |
 | 年化收益 | > 10% | > 10% |
-| 最大回撤 | < 40% | < 40% |
+| 最大回撤 | < 50% | < 50% |
 | Calmar | > 0.5 | > 0.5 |
 
 > 不检查换手率：SimpleSimulator 不模拟交易，无法计算 turnover。
@@ -1062,7 +1065,7 @@ delay: 1
 
 **重试机制（最多 3 次）**：
 1. agent 读取本次失败指标（哪些通过、哪些差多少）
-2. agent 决策：调整 `decay` ∈ {1, 3, 5, 10} / `universe` ∈ {全A, 000300, 000905, 000852} / `top_pct` ∈ {0.05, 0.10, 0.20} 中的某一项
+2. agent 决策：调整 `decay` ∈ {1, 3, 5, 10} / `universe` ∈ {全A, 000300, 000905, 000852} / `top_k` ∈ {20, 50, 100} / `top_pct` ∈ {0.05, 0.10, 0.20} 中的某一项
 3. 重跑 step5 → step6
 4. 第 3 次仍不通过 → reject
 
@@ -1072,7 +1075,7 @@ delay: 1
 |---|---|---|
 | Sharpe | > 0.4 | > 0.6 |
 | 年化收益 | > 8% | > 8% |
-| 最大回撤 | < 40% | < 40% |
+| 最大回撤 | < 50% | < 50% |
 | Calmar | > 0.5 | > 0.5 |
 | 年化双边换手率 | < 50 倍 | < 50 倍 |
 
@@ -1098,7 +1101,7 @@ residual_icir:
   min_annual_icir: 0.05
   min_abs_ic_mean: 0.001
   horizons: [1, 5, 20]
-  ridge_alpha: 0.0
+  ridge_alpha: 1.0
 ```
 
 **边界情况**：Library 中 0 个已入库因子 → 平凡通过。`force=True` 绕过。
@@ -1140,7 +1143,7 @@ residual_icir:
 | ...
 
 ## 4. 简单回测
-- 最终配置：top 10%, decay 5, universe 全A
+- 最终配置：top_k 50, decay 5, universe 全A
 - 重试次数：1
 - Sharpe / 年化 / MDD / Calmar / 换手：...
 
@@ -1151,7 +1154,7 @@ residual_icir:
 - 与 6 个 Barra 因子的回归系数 + R²
 ```
 
-报告与现有 `pipeline_report.md`（手动模式产出）并存：手动模式产 v1，自动 pipeline 产 v2。
+报告输出为 `pipeline_report.md`，与手动模式产出格式一致。
 
 ### A.10 拒绝处理
 
@@ -1185,4 +1188,4 @@ residual_icir:
 | 第 7 章 回测评测 | 内嵌在 step6/step7 中 |
 | 第 8 章 人工 admit/reject | step8（Ridge R² 自动分流）+ step9（自动 admit + 报告） |
 
-P1 落地后，手动模式仍保留作为 fallback（调试新算子时手动跑各阶段比走完整 pipeline 快）。`admit()` / `reject()` CLI 不删除，但日常入库走自动 pipeline。
+自动化 pipeline 已覆盖 step1~step10 全链路。`admit()` / `reject()` CLI 仍保留，用于最终人工确认。

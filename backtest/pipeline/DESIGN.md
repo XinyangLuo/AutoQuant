@@ -34,9 +34,8 @@ backtest/pipeline/
 ## CLI 接口
 
 ```bash
-# 初始化 state
-python -m backtest.pipeline init f_001 \
-    --start 20160101 --end 20251231 --frequency D
+# 初始化 state（日期默认从 config.yaml 读取）
+python -m backtest.pipeline init f_001 --frequency D
 
 # 逐 step 执行
 python -m backtest.pipeline step1 f_001   # coverage check
@@ -50,16 +49,15 @@ python -m backtest.pipeline step8 f_001   # ridge r2
 python -m backtest.pipeline step9 f_001   # residual icir
 python -m backtest.pipeline step10 f_001  # report + admit
 
-# 一键全跑
-python -m backtest.pipeline run-all f_001 \
-    --start 20160101 --end 20251231 --frequency D
+# 一键全跑（日期默认从 config.yaml 读取）
+python -m backtest.pipeline run-all f_001 --frequency D
 
 # 从某 step 重跑
 python -m backtest.pipeline run-all f_001 --from-step 5
 
 # step5 支持覆盖参数（retry 场景）
 python -m backtest.pipeline step5 f_001 \
-    --top-pct 0.05 --decay 10 --universe 000300.SH
+    --top-k 50 --decay 10 --universe 000300.SH
 ```
 
 每个 step CLI 的执行流程：

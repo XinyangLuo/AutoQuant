@@ -75,7 +75,8 @@ class PipelineConfig:
     max_corr_existing: float = field(default_factory=_pipe_config("max_corr_existing"))
 
     # step5: default strategy config
-    default_top_pct: float = field(default_factory=_pipe_config("default_top_pct"))
+    default_top_k: int | None = field(default_factory=_pipe_config("default_top_k"))
+    default_top_pct: float | None = field(default_factory=_pipe_config("default_top_pct"))
     default_decay: int = field(default_factory=_pipe_config("default_decay"))
     default_rebalance: str = field(default_factory=_pipe_config("default_rebalance"))
     default_universe: str | None = None
@@ -179,6 +180,7 @@ class PipelineConfig:
             max_corr_size=data.get("max_corr_size", 0.05),
             max_corr_industry=data.get("max_corr_industry", 0.05),
             max_corr_existing=data.get("max_corr_existing", 0.5),
+            default_top_k=data.get("default_top_k"),
             default_top_pct=data.get("default_top_pct", 0.1),
             default_decay=data.get("default_decay", 5),
             default_rebalance=data.get("default_rebalance", "1D"),

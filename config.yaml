@@ -33,7 +33,7 @@ thresholds:
       min_annual_icir: 0.05
       min_abs_ic_mean: 0.001  # 残差 |IC 均值| 下限，防止 ICIR 虚高（IC≈0 但 std 极小）
       horizons: [1, 5, 20]
-      ridge_alpha: 0.0      # 0=OLS（彻底剥离线性信号），>0=Ridge 正则化强度
+      ridge_alpha: 1.0      # Ridge 正则化强度；0 退化为 OLS，但不推荐
 
   # Pipeline 各 step 自动门控阈值
   pipeline:
@@ -91,7 +91,10 @@ pipeline:
   max_corr_existing: 0.5
 
   # step5: 默认策略配置
-  default_top_pct: 0.1
+  # top_k 与 top_pct 互斥 —— 恰好指定一个。
+  # null = 未指定，由代码决定使用 top_pct 作为默认。
+  default_top_k: 100
+  default_top_pct: null
   default_decay: 5
   default_rebalance: 1D
 

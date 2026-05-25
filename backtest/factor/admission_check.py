@@ -323,20 +323,12 @@ def _per_date_ridge_residuals(
         X = sub[reg_cols].to_numpy(dtype=float)
         y = sub["value"].to_numpy(dtype=float)
         try:
-            # OLS first — strips linear signal completely.
-            # Fall back to Ridge only on rank-deficient days.
-            if alpha == 0.0:
-                beta, resid, _rank, _s = np.linalg.lstsq(
-                    np.column_stack([np.ones(len(X)), X]), y, rcond=None
-                )
-                intercept = float(beta[0])
-                beta = beta[1:]
-            else:
-                beta, intercept = _ridge_fit(X, y, alpha=alpha)
+            # Ridge throughout — stability under multicollinearity beats
+            # the mathematical purity of OLS unbiasedness.
+            beta, intercept = _ridge_fit(X, y, alpha=alpha)
         except np.linalg.LinAlgError:
-            # Fall back to Ridge with configured alpha; use mild
-            # regularisation (1.0) if configured alpha is also 0.0.
-            fallback_alpha = alpha if alpha != 0.0 else 1.0
+            # Fallback to a stronger Ridge regularisation on numerical failure.
+            fallback_alpha = max(alpha * 10, 1.0)
             beta, intercept = _ridge_fit(X, y, alpha=fallback_alpha)
         y_hat = X @ beta + intercept
         residual = y - y_hat
@@ -462,7 +454,7 @@ def _get_residual_icir_config() -> dict:
             "min_annual_icir": 0.05,
             "min_abs_ic_mean": 0.001,
             "horizons": [1, 5, 20],
-            "ridge_alpha": 0.0,
+            "ridge_alpha": 1.0,
         }
 
 
@@ -503,7 +495,7 @@ def residual_icir_check(
     if ic_mean_threshold is None:
         ic_mean_threshold = float(cfg.get("min_abs_ic_mean", 0.001))
     if alpha is None:
-        alpha = float(cfg.get("ridge_alpha", 0.0))
+        alpha = float(cfg.get("ridge_alpha", 1.0))
 
     own_fs = factor_storage is None
     own_lib = library is None

@@ -27,7 +27,7 @@ class StepResult:
 class PipelineState:
     factor_id: str
     config: PipelineConfig
-    status: Literal["running", "passed", "rejected", "admitted"] = "running"
+    status: Literal["running", "passed", "rejected", "admitted", "ready_for_review"] = "running"
     current_step: StepName | None = None
     step_results: dict[str, StepResult] = field(default_factory=dict)
     retry_count: int = 0
@@ -117,6 +117,47 @@ class PipelineState:
 
 
 def _config_from_dict(data: dict) -> PipelineConfig:
+    """Rebuild PipelineConfig from JSON, refreshing strategy defaults from config.yaml."""
+    from backtest.config_loader import get_section
+
+    # Refresh fields that users edit in config.yaml between runs.
+    # CLI overrides (start_date, end_date, frequency, etc.) stay as-serialized.
+    refresh_keys = {
+        "default_top_k": ("pipeline", "default_top_k"),
+        "default_top_pct": ("pipeline", "default_top_pct"),
+        "default_decay": ("pipeline", "default_decay"),
+        "default_rebalance": ("pipeline", "default_rebalance"),
+        "default_universe": ("pipeline", "default_universe"),
+    }
+    for field_name, section_keys in refresh_keys.items():
+        try:
+            data[field_name] = get_section(*section_keys)
+        except (KeyError, FileNotFoundError, ValueError):
+            pass  # keep serialized value
+
+    # Refresh thresholds from config.yaml as well.
+    # Reuse the same mapping logic as PipelineConfig.from_yaml().
     th_dict = data.pop("thresholds", {})
+    try:
+        from backtest.config_loader import get_section as _gs
+        from backtest.pipeline.config import StepThresholds as _ST
+
+        pipeline_th = _gs("thresholds", "pipeline")
+        for section, vals in pipeline_th.items():
+            if isinstance(vals, dict):
+                for k, v in vals.items():
+                    field_name = (
+                        f"min_{k}"
+                        if k.startswith("sharpe")
+                           or k.startswith("annual_return")
+                           or k.startswith("calmar")
+                        else k
+                    )
+                    if hasattr(_ST, field_name):
+                        th_dict[field_name] = v
+            elif hasattr(_ST, section):
+                th_dict[section] = vals
+    except (KeyError, FileNotFoundError, ValueError):
+        pass  # keep serialized thresholds
     thresholds = StepThresholds(**th_dict)
     return PipelineConfig(**data, thresholds=thresholds)

@@ -38,17 +38,31 @@ def _build_tag(state: PipelineState) -> str:
     if cfg is None:
         step5 = state.step_results.get("step5")
         if step5 and step5.metrics:
-            top_pct = step5.metrics.get("top_pct", 0.1)
+            top_k = step5.metrics.get("top_k")
+            top_pct = step5.metrics.get("top_pct")
             decay = step5.metrics.get("decay", 5)
             rebalance = step5.metrics.get("rebalance", "1D")
-            return f"top{int(round(top_pct * 100))}pct_{rebalance.lower()}_d{decay}"
+            if top_k is not None:
+                tag = f"top{top_k}"
+            elif top_pct is not None:
+                tag = f"top{int(round(top_pct * 100))}pct"
+            else:
+                tag = "top10pct"
+            return f"{tag}_{rebalance.lower()}_d{decay}"
         return "default"
 
     if isinstance(cfg, dict):
-        top_pct = cfg.get("default_top_pct", 0.1)
+        top_k = cfg.get("default_top_k")
+        top_pct = cfg.get("default_top_pct")
         decay = cfg.get("default_decay", 5)
         rebalance = cfg.get("default_rebalance", "1D")
-        return f"top{int(round(top_pct * 100))}pct_{rebalance.lower()}_d{decay}"
+        if top_k is not None:
+            tag = f"top{top_k}"
+        elif top_pct is not None:
+            tag = f"top{int(round(top_pct * 100))}pct"
+        else:
+            tag = "top10pct"
+        return f"{tag}_{rebalance.lower()}_d{decay}"
 
     sel = cfg.selection
     if sel.top_pct is not None:
