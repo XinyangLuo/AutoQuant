@@ -84,6 +84,49 @@
 - **入库脚本**：`python -m backtest.data.backfill.index_members`(增量从 `get_max_index_member_date(idx)+1` 开始,日更走 `update_daily.py` Phase 5)
 - **查询路径**：`get_index_members(date, index_code) -> set[symbol]`,用于策略层 universe 过滤(`backtest/strategy/universe.py` line 77)
 
+### 分钟级行情（Parquet 存储）
+
+> **状态**：接入中（见 `backtest/data/fetcher/minute_fetcher.py` / `backfill/minute.py` / `update_minute.py`）。
+> **数据量**：全市场 5000+ 股 × 240 条/天 ≈ 120 万行/天，parquet 压缩后约 20–40 MB/天。
+
+**存储格式**：按 `freq/symbol/year.parquet` 分区的双层目录结构：
+
+```
+data/minute/
+  1min/
+    000001.SZ/
+      2024.parquet
+      2025.parquet
+    000002.SZ/
+      2024.parquet
+      2025.parquet
+  5min/
+    000001.SZ/
+      2025.parquet
+```
+
+- 每只股票每年一个 parquet 文件
+- 列：`date DATE, time TIMESTAMP, symbol VARCHAR, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume BIGINT, amount DOUBLE, pre_close DOUBLE, change DOUBLE, pct_chg DOUBLE`
+- 使用 `pyarrow` + `pandas` 读写；`pyarrow.dataset` 支持按 `symbol` / `date` 分区过滤
+- 不复权入库，复权在读取/计算层处理（与日频 `market_daily` 一致）
+
+**数据源**：Tushare `ts.pro_bar(ts_code=..., freq='1min', start_date=..., end_date=...)`，底层调用 `pro.stk_mins`
+
+**关键约束**：
+- 单股模式：`ts_code` 必填，不支持多值批量输入
+- 速率限制：基础账户约 1 次/分钟；充值后频次提升
+- **单次返回上限**：8000 行（约 33 个交易日/次 @1min，或 166 个交易日/次 @5min）
+- **Fetcher 内部自动分块**：当请求区间超过 8000 行时，自动拆分为多个子区间循环拉取并合并
+- 全市场 backfill：5000 股 × N 年，按 symbol 逐个获取，支持断点续传（检查年文件存在则跳过）
+
+**增量更新**：扫描各 symbol 目录最新年文件中的最大日期，从 `max_date + 1` 循环到今天，每只 symbol 拉取缺失区间并追加到对应年 parquet（跨年时新建下一年文件）。
+
+**查询路径**（规划中）：
+```python
+get_minute_bars(symbols, start, end, freq='1min', columns=None) -> pd.DataFrame
+```
+使用 `pyarrow.dataset` 按 `symbol` / `date` 分区过滤。
+
 ## Fetch/Merge 模式
 
 ### 日频数据 (`market_daily`)

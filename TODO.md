@@ -34,6 +34,10 @@
 - [ ] `pyproject.toml` 落地：`pip install -e .`
 - [ ] `environment.yml` 补全缺失依赖：ruff/black/matplotlib/httpx/lxml/feedparser
 - [ ] `allow_short` 默认值改 `False`：A 股不支持做空（已下沉到 `config.yaml`）
+- [ ] **分钟级数据 fetcher**：`backtest/data/fetcher/minute_fetcher.py`（Tushare `pro_bar` 1min/5min 封装，单股长区间获取以应对 1 次/分钟速率限制）
+- [ ] **分钟级数据 backfill**：`backtest/data/backfill/minute.py`（全市场历史回填，按日期分区 parquet，断点续传）
+- [ ] **分钟级数据 update**：`backtest/data/update_minute.py`（日更增量，扫描已有日期自动补新）
+- [ ] **分钟级数据读取 API**：`get_minute_bars(symbols, start, end, freq)`（pyarrow.dataset 按日期分区过滤）
 
 ### Agent 测试与扩展
 
@@ -102,7 +106,7 @@
 
 ### 数据模块远期
 
-- [ ] 分钟级数据：parquet 格式设计与接入
+- [x] 分钟级数据：parquet 格式设计与接入（方案已定，fetcher/backfill/update 落地中，见 P1 基础设施补全）
 - [ ] 分钟级数据 → 天级因子合成
 
 ### 因子挖掘 pipeline 第二阶段
