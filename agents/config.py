@@ -3,15 +3,6 @@
 All thresholds are read via ``backtest.config_loader`` so they stay in sync
 with the pipeline / admission configs.  Callers can override any field at
 construction time.
-
-**Candidate thresholds** (RankICIR / IC+ / turnover / max-corr / horizon /
-ret-type) are drawn from ``thresholds.admission``.
-
-**Backtest thresholds** (Sharpe / drawdown / Calmar / turnover) are drawn from
-``thresholds.pipeline`` — the agent uses the same gates as the pipeline.
-
-There is **no** ``thresholds.agent`` section; agent-specific knobs (high bar,
-LLM settings) live under the root ``agent:`` key.
 """
 
 from __future__ import annotations
@@ -48,9 +39,14 @@ _PIPELINE_FALLBACKS: dict[str, Any] = {
     },
 }
 
+_AGENT_FALLBACKS: dict[str, Any] = {
+    "high_bar_sharpe": 1.0,
+    "start_date": "20160101",
+    "end_date": "20251231",
+}
+
 
 def _adm(key: str):
-    """Helper: read from ``config.yaml thresholds.admission``."""
     def _factory():
         try:
             return get_section("thresholds", "admission", key)
@@ -60,7 +56,6 @@ def _adm(key: str):
 
 
 def _pipe(section: str, key: str):
-    """Helper: read from ``config.yaml thresholds.pipeline.<section>``."""
     def _factory():
         try:
             return get_section("thresholds", "pipeline", section, key)
@@ -75,16 +70,7 @@ def _pipe(section: str, key: str):
     return _factory
 
 
-# Agent-specific fallback defaults.
-_AGENT_FALLBACKS: dict[str, Any] = {
-    "high_bar_sharpe": 1.0,
-    "start_date": "20160101",
-    "end_date": "20251231",
-}
-
-
 def _agent_root(key: str):
-    """Helper: read from ``config.yaml agent`` (root level)."""
     def _factory():
         try:
             return get_section("agent", key)
@@ -97,9 +83,9 @@ def _agent_root(key: str):
 class AgentConfig:
     """Top-level agent configuration.
 
-    Candidate thresholds  → ``thresholds.admission``.
-    Backtest thresholds   → ``thresholds.pipeline``.
-    Agent-only knobs      → root ``agent`` key.
+    Candidate thresholds  -> ``thresholds.admission``.
+    Backtest thresholds   -> ``thresholds.pipeline``.
+    Agent-only knobs      -> root ``agent`` key.
     """
 
     # ---- candidate thresholds (from thresholds.admission) -----------------
@@ -135,36 +121,3 @@ class AgentConfig:
 
     #: Frequency-aware factory — see ``PipelineConfig.for_frequency``.
     frequency: str = "D"
-
-    @classmethod
-    def from_pipeline_config(cls, pipeline_config: Any) -> "AgentConfig":
-        """Build from an existing ``PipelineConfig`` instance."""
-        th = pipeline_config.thresholds
-
-        def _safe_adm(key: str):
-            try:
-                return get_section("thresholds", "admission", key)
-            except (KeyError, FileNotFoundError):
-                return _ADM_FALLBACKS[key]
-
-        def _safe_pipe(section: str, key: str):
-            try:
-                return get_section("thresholds", "pipeline", section, key)
-            except (KeyError, FileNotFoundError):
-                return _PIPELINE_FALLBACKS[section][key]
-
-        return cls(
-            min_rankicir=_safe_adm("min_rankicir"),
-            min_ic_positive_ratio=_safe_adm("min_ic_positive_ratio"),
-            max_turnover=_safe_adm("max_turnover"),
-            max_corr=pipeline_config.max_corr_existing,
-            primary_horizon=_safe_adm("primary_horizon"),
-            ret_type=pipeline_config.ret_type,
-            min_sharpe_simple=_safe_pipe("simple_backtest", "min_sharpe"),
-            min_sharpe_detailed=_safe_pipe("detailed_backtest", "min_sharpe"),
-            min_annual_return_detailed=_safe_pipe("detailed_backtest", "min_annual_return"),
-            max_max_drawdown=_safe_pipe("simple_backtest", "max_max_drawdown"),
-            min_calmar_simple=_safe_pipe("simple_backtest", "min_calmar"),
-            max_annual_turnover=_safe_pipe("simple_backtest", "max_annual_turnover"),
-            frequency=pipeline_config.frequency,
-        )

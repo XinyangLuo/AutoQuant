@@ -1,4 +1,4 @@
-"""AutoQuant factor evaluator — converts backtest metrics into structured feedback."""
+"""Factor evaluator — converts backtest metrics into structured feedback."""
 
 from __future__ import annotations
 
@@ -8,24 +8,24 @@ from typing import Any
 from backtest.factor.admission import RECOMMENDED_THRESHOLDS as _ADM_THRESHOLDS
 from backtest.pipeline.config import StepThresholds as _PipeThresh
 
-from .core.evaluation import Evaluator, Feedback
 from .experiment import AutoQuantFactorExperiment
 
 
 def _default_min_sharpe_simple() -> float:
     try:
         return _PipeThresh().min_sharpe_simple
-    except (KeyError, FileNotFoundError):
+    except Exception:
         return 0.8
 
 
 @dataclass
-class QuantFeedback(Feedback):
-    """Structured feedback for a quantitative factor experiment.
+class QuantFeedback:
+    """Structured feedback for a factor experiment run."""
 
-    Extends the base :class:`Feedback` with quantitative metrics that the
-    hypothesis generator uses to steer the next iteration.
-    """
+    decision: bool = False
+    observation: str = ""
+    suggestion: str = ""
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     # Factor evaluation metrics
     rankicir: float = float("-inf")
@@ -42,16 +42,21 @@ class QuantFeedback(Feedback):
     # Detailed backtest metrics (optional)
     detailed_sharpe: float | None = None
     detailed_annual_return: float | None = None
-    cost_drag: float | None = None  # simple vs detailed annual_return diff
+    cost_drag: float | None = None
 
     # Pipeline gate metrics
     monotonicity: float | None = None
     ridge_tier: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        base = super().to_dict()
-        # Always serialize scalar fields at the top level so round-trip works
-        # even when metrics dict was constructed separately (e.g. direct init).
+        import math
+
+        base = {
+            "decision": self.decision,
+            "observation": self.observation,
+            "suggestion": self.suggestion,
+            "metrics": self.metrics,
+        }
         extras = {
             "rankicir": self.rankicir,
             "ic_positive_ratio": self.ic_positive_ratio,
@@ -66,7 +71,6 @@ class QuantFeedback(Feedback):
             "monotonicity": self.monotonicity,
             "ridge_tier": self.ridge_tier,
         }
-        import math
         for k, v in extras.items():
             if v is not None and v != float("-inf") and v != float("inf") and not math.isnan(v):
                 base[k] = v
@@ -74,13 +78,12 @@ class QuantFeedback(Feedback):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QuantFeedback":
-        base = Feedback.from_dict(data)
         metrics = data.get("metrics", {})
         return cls(
-            decision=base.decision,
-            observation=base.observation,
-            suggestion=base.suggestion,
-            metrics=base.metrics,
+            decision=data.get("decision", False),
+            observation=data.get("observation", ""),
+            suggestion=data.get("suggestion", ""),
+            metrics=metrics,
             rankicir=data.get("rankicir", metrics.get("rankicir", float("-inf"))),
             ic_positive_ratio=data.get("ic_positive_ratio", metrics.get("ic_positive_ratio", 0.0)),
             turnover=data.get("turnover", metrics.get("turnover", float("inf"))),
@@ -97,16 +100,8 @@ class QuantFeedback(Feedback):
         )
 
 
-class AutoQuantFactorEvaluator(Evaluator):
-    """Evaluate an AutoQuant factor experiment and produce QuantFeedback.
-
-    Thresholds (tunable via constructor)
-    ------------------------------------
-    - rankicir >= 0.25
-    - ic_positive_ratio >= 0.52
-    - turnover < 0.5
-    - simple_sharpe >= 0.5
-    """
+class AutoQuantFactorEvaluator:
+    """Evaluate a factor experiment against candidate thresholds."""
 
     def __init__(
         self,
@@ -124,22 +119,11 @@ class AutoQuantFactorEvaluator(Evaluator):
         self.min_simple_sharpe = min_simple_sharpe if min_simple_sharpe is not None else _default_min_sharpe_simple()
 
     def evaluate(self, experiment: AutoQuantFactorExperiment) -> QuantFeedback:
-        """Evaluate an experiment and return structured feedback.
-
-        Parameters
-        ----------
-        experiment : AutoQuantFactorExperiment
-            Must have completed the runner pipeline (eval_result + bt metrics).
-
-        Returns
-        -------
-        QuantFeedback
-        """
+        """Evaluate a completed experiment and return structured feedback."""
         er = experiment.eval_result or {}
         sm = experiment.simple_bt_metrics or {}
         dm = experiment.detailed_bt_metrics
 
-        # Extract metrics (guard against explicit None values in dict)
         rankicir = er.get("rankicir") if er.get("rankicir") is not None else float("-inf")
         ic_pos = er.get("ic_positive_ratio") if er.get("ic_positive_ratio") is not None else 0.0
         turnover = er.get("turnover") if er.get("turnover") is not None else float("inf")
@@ -156,12 +140,10 @@ class AutoQuantFactorEvaluator(Evaluator):
             detailed_sharpe = dm.get("sharpe")
             detailed_ann_ret = dm.get("annual_return")
 
-        # Cost drag: simple - detailed annual return
         cost_drag = None
         if simple_ann_ret is not None and detailed_ann_ret is not None:
             cost_drag = simple_ann_ret - detailed_ann_ret
 
-        # Decision: candidate threshold check
         decision = (
             rankicir >= self.min_rankicir
             and ic_pos >= self.min_ic_positive_ratio
@@ -171,14 +153,11 @@ class AutoQuantFactorEvaluator(Evaluator):
             and simple_sharpe >= self.min_simple_sharpe
         )
 
-        # Observation (natural language summary)
         observation = self._format_observation(
             rankicir, ic_pos, turnover, max_corr,
             simple_sharpe, simple_mdd, simple_ann_ret,
             detailed_sharpe, detailed_ann_ret,
         )
-
-        # Suggestion (improvement direction)
         suggestion = self._generate_suggestion(
             rankicir, ic_pos, turnover, max_corr, simple_sharpe,
         )
@@ -212,36 +191,25 @@ class AutoQuantFactorEvaluator(Evaluator):
             cost_drag=cost_drag,
         )
 
-    # ------------------------------------------------------------------
-    # Formatting helpers
-    # ------------------------------------------------------------------
-
     def _format_observation(
         self,
-        rankicir: float,
-        ic_pos: float,
-        turnover: float,
-        max_corr: float,
-        simple_sharpe: float | None,
-        simple_mdd: float | None,
+        rankicir: float, ic_pos: float, turnover: float, max_corr: float,
+        simple_sharpe: float | None, simple_mdd: float | None,
         simple_ann_ret: float | None,
-        detailed_sharpe: float | None,
-        detailed_ann_ret: float | None,
+        detailed_sharpe: float | None, detailed_ann_ret: float | None,
     ) -> str:
-        """Build a natural-language summary of the experiment results."""
-        parts: list[str] = []
-
         def _status(val: float | None, thresh: float, higher_is_better: bool = True) -> str:
             if val is None:
                 return "N/A"
             passed = (val >= thresh) if higher_is_better else (val < thresh)
             return f"{val:.3f} {'PASS' if passed else 'FAIL'}"
 
-        parts.append(f"RankICIR = {_status(rankicir, self.min_rankicir)} (threshold: {self.min_rankicir})")
-        parts.append(f"IC+ ratio = {_status(ic_pos, self.min_ic_positive_ratio)} (threshold: {self.min_ic_positive_ratio})")
-        parts.append(f"Turnover = {_status(turnover, self.max_turnover, higher_is_better=False)} (threshold: <{self.max_turnover})")
-        parts.append(f"Max corr with existing = {_status(max_corr, self.max_corr, higher_is_better=False)} (threshold: <{self.max_corr})")
-
+        parts: list[str] = [
+            f"RankICIR = {_status(rankicir, self.min_rankicir)} (threshold: {self.min_rankicir})",
+            f"IC+ ratio = {_status(ic_pos, self.min_ic_positive_ratio)} (threshold: {self.min_ic_positive_ratio})",
+            f"Turnover = {_status(turnover, self.max_turnover, higher_is_better=False)} (threshold: <{self.max_turnover})",
+            f"Max corr with existing = {_status(max_corr, self.max_corr, higher_is_better=False)} (threshold: <{self.max_corr})",
+        ]
         if simple_sharpe is not None:
             parts.append(f"Simple Sharpe = {simple_sharpe:.3f}")
         if simple_mdd is not None:
@@ -252,55 +220,46 @@ class AutoQuantFactorEvaluator(Evaluator):
             parts.append(f"Detailed Sharpe = {detailed_sharpe:.3f}")
         if detailed_ann_ret is not None:
             parts.append(f"Detailed Annual Return = {detailed_ann_ret:.2%}")
-
         return "\n".join(parts)
 
     def _generate_suggestion(
         self,
-        rankicir: float,
-        ic_pos: float,
-        turnover: float,
-        max_corr: float,
-        simple_sharpe: float | None,
+        rankicir: float, ic_pos: float, turnover: float,
+        max_corr: float, simple_sharpe: float | None,
     ) -> str:
-        """Generate an improvement suggestion based on failed metrics."""
         suggestions: list[str] = []
-
         if rankicir < self.min_rankicir:
             suggestions.append(
                 f"RankICIR is low ({rankicir:.3f} < {self.min_rankicir}). "
                 "Try a longer lookback window, add a volume filter, or combine "
                 "with a secondary signal to improve persistence."
             )
-
         if ic_pos < self.min_ic_positive_ratio:
             suggestions.append(
                 f"IC+ ratio is weak ({ic_pos:.1%} < {self.min_ic_positive_ratio:.0%}). "
                 "The factor direction may be unstable. Consider inverting the signal "
                 "or adding a regime filter."
             )
-
         if turnover >= self.max_turnover:
             suggestions.append(
                 f"Turnover is too high ({turnover:.3f} >= {self.max_turnover}). "
                 "Use slower-moving inputs, increase smoothing (e.g. ts_mean), "
                 "or apply a delay/decay to reduce churn."
             )
-
         if max_corr >= self.max_corr:
             suggestions.append(
                 f"Max correlation with existing factors is high ({max_corr:.3f} >= {self.max_corr}). "
                 "The factor may be a style clone. Try a different construction "
                 "or orthogonalize against known style factors."
             )
-
         if simple_sharpe is not None and simple_sharpe < self.min_simple_sharpe:
             suggestions.append(
                 f"Simple Sharpe is weak ({simple_sharpe:.3f} < {self.min_simple_sharpe}). "
                 "Review the signal strength and consider tighter universe filtering."
             )
-
         if not suggestions:
-            return "All candidate thresholds are met. Consider pushing for the high bar (Sharpe >= 1.0) or running on a longer history."
-
+            return (
+                "All candidate thresholds are met. Consider pushing for the high bar "
+                "(Sharpe >= 1.0) or running on a longer history."
+            )
         return " ".join(suggestions)

@@ -29,7 +29,7 @@ from backtest.data.trade_calendar import get_trade_dates
 # Chunking helpers
 # ---------------------------------------------------------------------------
 
-_CHUNK_DAYS = 30  # trade days per API call — under the ~6 000 row cap
+_CHUNK_DAYS = 20  # trade days per API call — conservative: 20*250=5000 < 6000 cap
 
 
 def _trade_date_chunks(start: str, end: str) -> list[tuple[str, str]]:
@@ -53,7 +53,7 @@ def backfill_symbol(
     start_date: str,
     end_date: str,
     storage: CyqStorage,
-    sleep_sec: float = 0.05,
+    sleep_sec: float = 0.35,
 ) -> int:
     """Backfill one symbol across [start_date, end_date].
 
@@ -89,7 +89,7 @@ def backfill_cyq_chips(
     start_date: str | None = None,
     end_date: str | None = None,
     storage: CyqStorage | None = None,
-    sleep_sec: float = 0.05,
+    sleep_sec: float = 0.35,
 ) -> int:
     """Backfill cyq_chips for all symbols in the given range.
 
@@ -197,8 +197,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sleep",
         type=float,
-        default=0.05,
-        help="Seconds to sleep between API calls (default: 0.05; high-tier 5000+ pts)",
+        default=0.35,
+        help="Seconds to sleep between API calls (default: 0.35; ~171 calls/min, under 200 limit)",
 
     )
     args = parser.parse_args(argv)

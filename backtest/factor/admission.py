@@ -117,8 +117,6 @@ def _infer_source(func_module: str) -> str | None:
         return "user"
     if func_module.startswith("alphas.exp.agent."):
         return "agent"
-    if func_module.startswith("agents.rdagent.generated."):
-        return "agent"
     return None
 
 

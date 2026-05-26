@@ -927,7 +927,7 @@ Admission: f_rev_05  ->  ADMITTED
 - [ ] `index_members` 表落地 → 限定股票池
 - [ ] 多因子组合的样本外参数选择器
 - [ ] Walk-forward 滚动评测：训练窗口/评估窗口分离
-- [x] Agent 投研系统调用本 pipeline 作为底层 tool（`agents/rdagent/runner.py`）
+- [x] Agent 投研系统调用本 pipeline 作为底层 tool（`agents/runner.py`）
 - [x] **P1：Barra 风格自动化 Pipeline**（已落地 `backtest/pipeline/` step1~step10，见附录 A 和 `pipeline/DESIGN.md`；retry 逻辑待 Agent 接入）
 
 ---
@@ -941,7 +941,7 @@ Admission: f_rev_05  ->  ADMITTED
 > 1. ~~P0-1 算子库~~ ✓
 > 2. ~~P0-2 Barra 风险模型~~ ✓ 7 个 L1 因子已 admit
 > 3. ~~P0-3 交易日历~~ ✓
-> 4. rd-agent 框架（`agents/rdagent/`）—— 提供 step6/7 重试时的决策能力（待接入）
+> 4. Agent 决策能力（Claude Code subagent）—— 提供 step6/7 重试时的决策能力（待接入）
 
 ### A.0 总览
 

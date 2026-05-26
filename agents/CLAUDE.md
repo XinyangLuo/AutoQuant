@@ -1,111 +1,139 @@
 # Agent 投研系统
 
-本文件给 Claude Code 在 `agents/` 目录工作时提供导航。子模块细节走各模块 `DESIGN.md`。
-
 ## 1. 定位
 
-基于 RD-Agent（Microsoft Research）核心抽象的 A 股自动因子挖掘系统。
+**Claude Code 直接驱动**的 A 股因子迭代研究系统。不再维护独立的 Python agent 循环（原 RD-Agent），由 Claude Code 本身承担决策、代码生成、结果分析和迭代逻辑。
 
 闭环流程：
 
 ```
-HypothesisGen (LLM) → Hypothesis2Experiment (code gen)
-                            ↓
-                  AutoQuantFactorRunner (backfill → eval → BT)
-                            ↓
-                  AutoQuantFactorEvaluator (metrics → Feedback)
-                            ↓
-                  Trace / KnowledgeBase (history → next round)
+用户 (Claude Code 对话 / /factor-iterate)
+    |
+    v
+Claude Code（决策层）
+    |-- 生成/修复因子代码
+    |-- Write 到 alphas/exp/agent/<factor_id>/factor.py
+    |
+    v
+python -m agents.claude_cli run <factor_id>   （执行层）
+    |-- compute → backfill → evaluate → simple BT → detailed BT
+    |-- 输出 result.json
+    |
+    v
+Claude Code（分析层）
+    |-- Read result.json
+    |-- 写 trace.jsonl
+    |-- 决策：修复 / 调参 / 换方向 / 停止
 ```
 
-人工介入点：候选因子生成审核报告后，由人最终决定是否 `admit` 到因子库。
+**阅读网页/PDF 等能力**通过 Claude Code 的 MCP tools / skills 扩展，不在 Python 层实现。
 
-## 2. 环境与命令
+## 2. 使用方式
 
-使用 conda 环境 `AutoQuant`（Python 3.11.15）。
+### 交互式因子研究
+
+```
+/factor-iterate 成交额放量后短期反转，尤其在小盘股里更强
+/factor-iterate max_rounds=5 data_sources=market_daily,income_q 低估值盈利改善动量
+```
+
+详见 `.claude/commands/factor-iterate.md`。
+
+### 命令行工具
 
 ```bash
-# Agent 因子研究主循环（日期从 config.yaml agent.start_date/end_date 读取）
-python -m agents.rdagent.run run \
-    --max-rounds 10 \
-    --output-dir results/agent/run_001
+conda activate AutoQuant
 
-# 指定种子假设（跳过 Round-1 LLM 生成）
-python -m agents.rdagent.run run --seed "20-day momentum x volume spike"
+# 查询数据 schema（Claude 生成代码前先查可用列名）
+python -m agents.claude_cli schema --sources market_daily
+python -m agents.claude_cli schema --sources market_daily,income_q
 
-# 查看候选列表
-python -m agents.rdagent.run list-candidates results/agent/run_001
+# 单轮执行（传入因子 ID 和因子文件）
+python -m agents.claude_cli run f_auto_001 \
+    --run-dir results/agent/runs/my_run/round_001 \
+    --factor-file results/agent/runs/my_run/round_001/factor.py
 
-# Admit / Reject 候选因子
-python -m agents.rdagent.run admit f_auto_xxx --run-dir results/agent/run_001
-python -m agents.rdagent.run reject f_auto_xxx --reason "turnover too high"
-```
-
-依赖环境变量：
-
-```
-DEEPSEEK_API_KEY=...      # DeepSeek API（OpenAI-compatible）
-DEEPSEEK_BASE_URL=...     # 可选，默认 https://api.deepseek.com
+# 帮助
+python -m agents.claude_cli --help
 ```
 
 ## 3. 目录结构
 
 ```
 agents/
-├── rdagent/                    # RD-Agent × AutoQuant 集成（代码已落地）
-│   ├── core/                   # RD-Agent 核心抽象（零外部依赖）
-│   │   ├── scenario.py         # Scenario ABC
-│   │   ├── proposal.py         # Hypothesis, HypothesisGen, Hypothesis2Experiment
-│   │   ├── experiment.py       # Experiment ABC
-│   │   ├── evaluation.py       # Evaluator ABC, Feedback dataclass
-│   │   ├── evolving_framework.py  # Trace, EvolvingStrategy
-│   │   ├── knowledge_base.py   # KnowledgeBase ABC
-│   │   └── utils.py            # render_prompt, save_json, load_json
-│   ├── scenario.py             # AShareQuantScenario（A 股场景实现）
-│   ├── experiment.py           # AutoQuantFactorExperiment
-│   ├── runner.py               # AutoQuantFactorRunner（对接 backtest 流水线）
-│   ├── evaluator.py            # AutoQuantFactorEvaluator → QuantFeedback
-│   ├── hypothesis.py           # AutoQuantFactorHypothesisGen + Hypothesis2Experiment
-│   ├── experiment.py           # AutoQuantFactorExperiment
-│   ├── knowledge.py            # AShareKnowledgeBase（经验积累 + 相似检索）
-│   ├── config.py               # AgentConfig（阈值统一从 config.yaml 读取）
-│   ├── run.py                  # 主循环 + CLI
-│   ├── utils.py                # cleanup_generated_factor 等
-│   ├── prompts/                # LLM Prompt 模板（markdown）
-│   └── DESIGN.md               # 详细设计文档
-└── CLAUDE.md                   # 本文
+├── __init__.py               # 空（保持）
+├── CLAUDE.md                 # 本文
+├── claude_cli.py             # 单轮执行 CLI 入口（schema + run）
+├── config.py                 # AgentConfig：阈值从 config.yaml 读取
+├── experiment.py             # AutoQuantFactorExperiment dataclass
+├── evaluator.py              # QuantFeedback + AutoQuantFactorEvaluator
+├── runner.py                 # AutoQuantFactorRunner：对接 backtest 流水线
+├── schema.py                 # 数据 schema 查询（列名、别名映射）
+├── helpers.py                # 工具函数（代码校验、@register 注入）
+└── FACTOR_CODE_GUIDE.md      # LLM 因子代码参考手册
 ```
 
-## 4. 模块接口契约
+**不再包含**：Python agent 循环、LLM API 调用、hypothesis 生成、knowledge base、prompt 模板。这些现在由 Claude Code 本身处理。
 
-| 边界 | 提供方 | 消费方 | 形式 |
-|---|---|---|---|
-| 场景描述 | `AShareQuantScenario` | HypothesisGen / H2E | Prompt 上下文（schema / rules / thresholds） |
-| 因子注册 | `hypothesis.py` (`_inject_factor_id`) | `backtest.factor.registry` | Python 代码文件 + `@register` |
-| 因子计算 | `backtest.factor.compute` | `AutoQuantFactorRunner` | `compute_factor()` + `apply_variant_pipeline()` |
-| 因子评估 | `backtest.factor.evaluation` | `AutoQuantFactorRunner` | `evaluate()` → rankicir / IC+ / turnover |
-| 策略回测 | `backtest.simulation` | `AutoQuantFactorRunner` | `SingleFactorStrategy` + `Simple/DetailedSimulator` |
-| 评测指标 | `backtest.evaluation` | `AutoQuantFactorEvaluator` | `evaluate(result_dir)` → metrics dict |
-| 因子准入 | `backtest.factor.admission` | `run.py` CLI | `admit()` / `reject()` |
-| 历史反馈 | `Trace` | `HypothesisGen.gen()` | `trace.hist[-5:]` 最近 5 轮结果 |
-| 知识检索 | `AShareKnowledgeBase` | `HypothesisGen` | `get_sota()` + `retrieve_similar()` |
+## 4. 执行层模块
+
+### `claude_cli.py` — CLI 入口
+
+两个子命令：
+
+- `schema --sources`：输出指定数据源在 `panel` 中的可用列名（JSON）
+- `run <factor_id> --run-dir --factor-file`：运行单轮完整流水线，输出 `result.json`
+
+Claude Code 在每轮迭代中调用此 CLI，读取结构化的 JSON 结果后自行分析。
+
+### `runner.py` — 流水线执行器
+
+`AutoQuantFactorRunner` 执行：
+
+1. 写因子代码到磁盘 → import 触发 `@register`
+2. `compute_factor()` + 中性化 → work DB（`factors_pending.duckdb`）
+3. `factor_evaluate()` → IC / RankIC / turnover / corr
+4. `SingleFactorStrategy` + `SimpleSimulator`
+5. `DetailedSimulator`（conditional：RankICIR 和 Simple Sharpe 达标才跑）
+
+### `experiment.py` — 实验数据类
+
+`AutoQuantFactorExperiment` 跟踪一个因子的完整生命周期：factor_id、代码、评测结果、回测指标、状态。
+
+### `evaluator.py` — 评估器
+
+`AutoQuantFactorEvaluator` 将 backtest 指标转为结构化 `QuantFeedback`（decision / observation / suggestion / metrics），供 Claude 分析。
+
+### `config.py` — 配置
+
+`AgentConfig` 从 `config.yaml` 统一读取阈值（`thresholds.admission` + `thresholds.pipeline` + root `agent` key），与回测系统的 admission/pipeline 配置单一来源。
+
+### `schema.py` — Schema 查询
+
+提供 `get_panel_columns_for_data_sources()` + `COLUMN_ALIASES` 映射表／Claude 在生成因子代码前调用 `claude_cli schema` 获取真实列名，避免 hallucinate。
+
+### `helpers.py` — 工具函数
+
+- `validate_python_code()` — ast.parse 语法校验
+- `validate_transforms_imports()` — 检查 `backtest.factor.transforms` 中的导入是否合法
+- `force_register_factor_id()` — AST 重写 `@register` 装饰器中的 factor_id
 
 ## 5. 与回测系统的集成
 
-Agent 模块**不重复实现**任何回测逻辑，全部委托给 `backtest/`：
+Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 
-- `runner.py` → `backtest.factor.compute.compute_factor()` + `apply_variant_pipeline()`
-- `runner.py` → `backtest.factor.evaluation.evaluate()`
-- `runner.py` → `backtest.strategy.SingleFactorStrategy`
-- `runner.py` → `backtest.simulation.SimpleSimulator` / `DetailedSimulator`
-- `runner.py` → `backtest.evaluation.evaluate()`
-- `evaluator.py` → `backtest.factor.admission.RECOMMENDED_THRESHOLDS`
-- `config.py` → `backtest.config_loader.get_section()`
-
-Agent 的阈值（RankICIR / IC+ / turnover / Sharpe）与回测系统的 `admission` 和 `pipeline` 配置**单一来源**，通过 `config.yaml` 统一读取。
+| 边界 | 消费方 | 提供方 |
+|------|--------|--------|
+| 因子计算 + 中性化 | `runner.py` | `backtest.factor.compute` |
+| 因子静态评估 | `runner.py` | `backtest.factor.evaluation` |
+| 策略信号 | `runner.py` | `backtest.strategy.SingleFactorStrategy` |
+| 回测执行 | `runner.py` | `backtest.simulation.SimpleSimulator / DetailedSimulator` |
+| 策略评测 | `runner.py` | `backtest.evaluation.evaluate()` |
+| 阈值配置 | `config.py` | `backtest.config_loader` |
+| 因子准入 | Claude Code 建议 → 人工 | `backtest.factor.admission` |
 
 ## 6. 编码约定
 
 - 与根目录 `CLAUDE.md` §9 一致
-- Agent 特有：`factor_id` 前缀 `f_auto_`（AI 生成） vs `f_`（人工）
-- Prompt 模板用 markdown，变量占位符 `{{var_name}}`
+- Agent 特有：因子 ID 前缀 `f_auto_`（Claude 生成）vs `f_`（人工）
+- 因子代码遵循 `FACTOR_CODE_GUIDE.md` 规范

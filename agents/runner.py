@@ -1,4 +1,4 @@
-"""AutoQuant factor runner — executes the full backtest pipeline for a generated factor."""
+"""Factor runner — executes the full backtest pipeline for a generated factor."""
 
 from __future__ import annotations
 
@@ -37,9 +37,9 @@ class AutoQuantFactorRunner:
 
     Steps
     -----
-    1. Write code to disk → import to trigger ``@register``
-    2. Backfill: ``compute_factor()`` + neutralization → work DB
-    3. Factor evaluation: ``evaluate()`` → IC / RankIC / turnover / corr
+    1. Write code to disk -> import to trigger ``@register``
+    2. Backfill: ``compute_factor()`` + neutralization -> work DB
+    3. Factor evaluation: ``evaluate()`` -> IC / RankIC / turnover / corr
     4. Simple backtest: ``SingleFactorStrategy`` + ``SimpleSimulator``
     5. Detailed backtest (conditional): ``DetailedSimulator``
     6. Collect all metrics into the experiment
@@ -60,13 +60,12 @@ class AutoQuantFactorRunner:
         self.start_date = start_date
         self.end_date = end_date
         self.results_root = Path(results_root)
-        self.generated_dir = Path(generated_dir) if generated_dir else Path(__file__).parent / "generated"
+        self.generated_dir = Path(generated_dir) if generated_dir else Path("alphas/exp/agent")
         self.market_storage = market_storage
         self.factor_storage = factor_storage
         self.benchmark = benchmark
         self.agent_config = agent_config
 
-        # Lazily create storages only if not provided
         self._market_storage_owned = market_storage is None
         self._factor_storage_owned = factor_storage is None
         if self.market_storage is None:
@@ -74,7 +73,6 @@ class AutoQuantFactorRunner:
         if self.factor_storage is None:
             self.factor_storage = FactorStorage()
 
-        # Default strategy config for single-factor backtests
         self._default_strategy_config = StrategyConfig(
             strategy_type="single_factor_topk",
             rebalance_freq="1D",
@@ -85,10 +83,7 @@ class AutoQuantFactorRunner:
                 include_cyb=True,
                 include_kcb=False,
             ),
-            selection=SelectionConfig(
-                method="topk",
-                top_pct=0.1,
-            ),
+            selection=SelectionConfig(method="topk", top_pct=0.1),
             weighting=WeightingConfig(method="equal"),
             backtest=BacktestConfig(
                 start_date=start_date,
@@ -104,12 +99,10 @@ class AutoQuantFactorRunner:
         try:
             self._close_storages()
         except Exception:
-            # If close fails, still propagate the original exception
             pass
         return False
 
     def _close_storages(self) -> None:
-        """Explicit cleanup — idempotent."""
         if self._market_storage_owned and self.market_storage is not None:
             self.market_storage.close()
             self.market_storage = None
@@ -118,12 +111,6 @@ class AutoQuantFactorRunner:
             self.factor_storage = None
 
     def cleanup_work_db(self, factor_id: str) -> None:
-        """Remove a factor's column from the work (pending) DB.
-
-        Called automatically when a factor is rejected or fails during the
-        agent loop so ``factors_pending.duckdb`` does not grow indefinitely.
-        Only modifies storage owned by this runner.
-        """
         if self.factor_storage is None:
             return
         if not self._factor_storage_owned:
@@ -131,7 +118,6 @@ class AutoQuantFactorRunner:
         try:
             self.factor_storage.delete_factor(factor_id)
         except Exception as exc:
-            # Swallow — cleanup failure must not mask the original error.
             print(f"  [cleanup] WARN: failed to drop {factor_id} from work DB: {exc}")
 
     # ------------------------------------------------------------------
@@ -143,41 +129,16 @@ class AutoQuantFactorRunner:
         experiment: AutoQuantFactorExperiment,
         strategy_config: StrategyConfig | None = None,
     ) -> AutoQuantFactorExperiment:
-        """Execute the full pipeline for an experiment.
-
-        Parameters
-        ----------
-        experiment : AutoQuantFactorExperiment
-            Must have ``factor_id`` and ``factor_code`` set.
-        strategy_config : StrategyConfig | None
-            Override the default strategy configuration.
-
-        Returns
-        -------
-        AutoQuantFactorExperiment
-            The same object, mutated with results.
-        """
         experiment.status = "running"
         strategy_config = strategy_config or self._default_strategy_config
 
         try:
-            # Step 1: Write code and register
             self._register_factor(experiment)
-
-            # Step 2: Backfill → work DB
             self._backfill_factor(experiment)
-
-            # Step 3: Factor evaluation
             self._evaluate_factor(experiment)
-
-            # Step 4: Simple backtest
             self._run_simple_backtest(experiment, strategy_config)
-
-            # Step 5: Detailed backtest (conditional)
             self._maybe_run_detailed_backtest(experiment, strategy_config)
-
             experiment.status = "passed"
-
         except Exception as e:
             experiment.status = "rejected"
             experiment.error = f"{type(e).__name__}: {e}"
@@ -190,35 +151,28 @@ class AutoQuantFactorRunner:
     # ------------------------------------------------------------------
 
     def _register_factor(self, experiment: AutoQuantFactorExperiment) -> None:
-        """Write factor code to disk and import to trigger @register."""
         if not experiment.factor_code:
             raise ValueError("experiment.factor_code is empty")
         if not experiment.factor_id:
             raise ValueError("experiment.factor_id is empty")
 
-        # Write to generated directory
         gen_dir = self.generated_dir
         gen_dir.mkdir(parents=True, exist_ok=True)
-        # Ensure generated/ is a valid Python package for dynamic imports
         init_file = gen_dir / "__init__.py"
         if not init_file.exists():
             try:
                 init_file.write_text("# Auto-generated factor modules\n", encoding="utf-8")
             except (PermissionError, OSError) as e:
-                raise RuntimeError(
-                    f"Cannot write {init_file}: {e}. "
-                    f"Ensure the directory is writable."
-                )
-        file_path = gen_dir / f"{experiment.factor_id}.py"
+                raise RuntimeError(f"Cannot write {init_file}: {e}. Ensure the directory is writable.")
 
-        # Clean up stale module from sys.modules if reusing a factor_id
-        mod_name = f"agents.rdagent.generated.{experiment.factor_id}"
+        file_path = gen_dir / f"{experiment.factor_id}.py"
+        mod_prefix = str(gen_dir).replace("/", ".").replace("\\", ".")
+        mod_name = f"{mod_prefix}.{experiment.factor_id}"
         sys.modules.pop(mod_name, None)
 
         file_path.write_text(experiment.factor_code, encoding="utf-8")
         experiment.factor_file_path = file_path
 
-        # Import the module to trigger @register
         spec = importlib.util.spec_from_file_location(mod_name, file_path)
         if spec is None or spec.loader is None:
             raise ImportError(f"Failed to load spec for {file_path}")
@@ -231,7 +185,6 @@ class AutoQuantFactorRunner:
             unregister(experiment.factor_id)
             raise
 
-        # Persist registry
         sync_registry()
 
     # ------------------------------------------------------------------
@@ -239,10 +192,7 @@ class AutoQuantFactorRunner:
     # ------------------------------------------------------------------
 
     def _backfill_factor(self, experiment: AutoQuantFactorExperiment) -> None:
-        """Compute factor values and write to work DB."""
         meta = get_factor_meta(experiment.factor_id)
-
-        # Compute raw values
         raw_df = compute_factor(
             experiment.factor_id,
             self.start_date,
@@ -250,28 +200,23 @@ class AutoQuantFactorRunner:
             market_storage=self.market_storage,
         )
 
-        # Apply neutralization pipeline if variant != "none"
         variant = meta.get("variant", "barra_ind_size")
         if variant != "none":
             try:
                 df = apply_variant_pipeline(
-                    raw_df,
-                    experiment.factor_id,
+                    raw_df, experiment.factor_id,
                     market_storage=self.market_storage,
                     factor_storage=self.factor_storage,
                 )
             except RuntimeError as e:
                 msg = str(e).lower()
-                if "not admitted" in msg or "requires admitted factor" in msg:
-                    # Required library factor (e.g. f_barra_size) not available;
-                    # fall back to raw factor without neutralization.
+                if "admitted into" in msg:
                     df = raw_df
                 else:
                     raise
         else:
             df = raw_df
 
-        # Insert into work DB
         if df.empty:
             raise RuntimeError(
                 f"Factor {experiment.factor_id} produced empty DataFrame after compute. "
@@ -284,21 +229,14 @@ class AutoQuantFactorRunner:
     # ------------------------------------------------------------------
 
     def _evaluate_factor(self, experiment: AutoQuantFactorExperiment) -> None:
-        """Run static factor evaluation (IC / RankIC / turnover / corr)."""
         cfg = self.agent_config
         ret_type = getattr(cfg, "ret_type", "open") if cfg else "open"
         exclude_limit_up = getattr(cfg, "exclude_limit_up", True) if cfg else True
         primary_horizon = getattr(cfg, "primary_horizon", 20) if cfg else 20
         eval_result = factor_evaluate(
-            experiment.factor_id,
-            self.start_date,
-            self.end_date,
-            ret_type=ret_type,
-            corr_top_k=5,
-            exclude_limit_up=exclude_limit_up,
+            experiment.factor_id, self.start_date, self.end_date,
+            ret_type=ret_type, corr_top_k=5, exclude_limit_up=exclude_limit_up,
         )
-
-        # Flatten to dict
         thresholds = eval_result.threshold_metrics(primary_horizon=primary_horizon)
         experiment.eval_result = {
             "factor_id": eval_result.factor_id,
@@ -316,55 +254,36 @@ class AutoQuantFactorRunner:
     # ------------------------------------------------------------------
 
     def _run_simple_backtest(
-        self,
-        experiment: AutoQuantFactorExperiment,
-        strategy_config: StrategyConfig,
+        self, experiment: AutoQuantFactorExperiment, strategy_config: StrategyConfig,
     ) -> None:
-        """Run vectorized simple backtest."""
-        # Build strategy config for this factor
         config = self._build_strategy_config(strategy_config, experiment.factor_id)
-
-        # Load factor panel
         factor_panel = self.factor_storage.get_factors_long(
             factor_ids=[experiment.factor_id],
-            start=self.start_date,
-            end=self.end_date,
+            start=self.start_date, end=self.end_date,
         )
         factor_panel = factor_panel.pivot_table(
-            index=["date", "symbol"],
-            columns="factor_id",
-            values="value",
+            index=["date", "symbol"], columns="factor_id", values="value",
         ).reset_index()
-        # pivot_table may produce MultiIndex columns in some pandas versions;
-        # flatten them so SingleFactorStrategy can look up the factor_id.
         if isinstance(factor_panel.columns, pd.MultiIndex):
             factor_panel.columns = [
                 col[1] if col[0] == "value" else col[0]
                 for col in factor_panel.columns.to_flat_index()
             ]
 
-        # Load market data
         market_panel = self.market_storage.get_bars(
-            symbols=None,
-            start=self.start_date,
-            end=self.end_date,
+            symbols=None, start=self.start_date, end=self.end_date,
         )
-
-        # Generate signals
         strategy = SingleFactorStrategy(config)
         rebalance_dates = self._get_rebalance_dates(config)
         signals = strategy.generate_signals(factor_panel, market_panel, rebalance_dates)
 
-        # Run simulation
         sim = SimpleSimulator(SimulationConfig())
         result = sim.run(signals, market_panel)
 
-        # Save results
         result_dir = self.results_root / experiment.factor_id / "simple"
         result.save(str(result_dir))
         experiment.simple_bt_dir = result_dir
 
-        # Evaluate post-simulation
         report = bt_evaluate(result_dir, benchmark=self.benchmark, plot=False)
         experiment.simple_bt_metrics = report.metrics if hasattr(report, "metrics") else {}
 
@@ -373,50 +292,39 @@ class AutoQuantFactorRunner:
     # ------------------------------------------------------------------
 
     def _maybe_run_detailed_backtest(
-        self,
-        experiment: AutoQuantFactorExperiment,
-        strategy_config: StrategyConfig,
+        self, experiment: AutoQuantFactorExperiment, strategy_config: StrategyConfig,
     ) -> None:
-        """Run detailed backtest only if factor passes initial thresholds."""
         cfg = self.agent_config
         min_rankicir = getattr(cfg, "min_rankicir", 0.25) if cfg else 0.25
         min_sharpe_simple = getattr(cfg, "min_sharpe_simple", 0.5) if cfg else 0.5
 
+        import math
+
         rankicir = experiment.eval_result.get("rankicir", float("-inf"))
         simple_sharpe = (experiment.simple_bt_metrics or {}).get("sharpe", 0.0)
 
-        if rankicir < min_rankicir or simple_sharpe < min_sharpe_simple:
-            return  # Skip detailed backtest
+        if math.isnan(rankicir) or rankicir < min_rankicir or simple_sharpe < min_sharpe_simple:
+            return
 
         config = self._build_strategy_config(strategy_config, experiment.factor_id)
-
         factor_panel = self.factor_storage.get_factors_long(
             factor_ids=[experiment.factor_id],
-            start=self.start_date,
-            end=self.end_date,
+            start=self.start_date, end=self.end_date,
         )
         factor_panel = factor_panel.pivot_table(
-            index=["date", "symbol"],
-            columns="factor_id",
-            values="value",
+            index=["date", "symbol"], columns="factor_id", values="value",
         ).reset_index()
 
         market_panel = self.market_storage.get_bars(
-            symbols=None,
-            start=self.start_date,
-            end=self.end_date,
+            symbols=None, start=self.start_date, end=self.end_date,
         )
-
         strategy = SingleFactorStrategy(config)
         rebalance_dates = self._get_rebalance_dates(config)
         signals = strategy.generate_signals(factor_panel, market_panel, rebalance_dates)
 
-        # Load dividends for detailed simulation
         dividends = self.market_storage.get_dividends(
-            start=self.start_date,
-            end=self.end_date,
+            start=self.start_date, end=self.end_date,
         )
-
         sim = DetailedSimulator(SimulationConfig())
         result = sim.run(signals, market_panel, dividends_data=dividends)
 
@@ -431,12 +339,7 @@ class AutoQuantFactorRunner:
     # Helpers
     # ------------------------------------------------------------------
 
-    def _build_strategy_config(
-        self,
-        base: StrategyConfig,
-        factor_id: str,
-    ) -> StrategyConfig:
-        """Clone base config and inject the target factor."""
+    def _build_strategy_config(self, base: StrategyConfig, factor_id: str) -> StrategyConfig:
         return StrategyConfig(
             strategy_type=base.strategy_type,
             rebalance_freq=base.rebalance_freq,
@@ -453,7 +356,6 @@ class AutoQuantFactorRunner:
         )
 
     def _get_rebalance_dates(self, config: StrategyConfig) -> list[str]:
-        """Generate rebalancing dates from trade calendar."""
         from backtest.data.trade_calendar import get_trade_dates
 
         dates = get_trade_dates(self.start_date, self.end_date)
@@ -461,17 +363,15 @@ class AutoQuantFactorRunner:
 
         if freq == "1D":
             return dates
-        elif freq == "5D":
+        elif freq in ("5D",):
             return dates[::5]
-        elif freq == "1W":
-            # Weekly: every 5 trading days (~1 week)
+        elif freq in ("1W",):
             return dates[::5]
-        elif freq == "2W":
+        elif freq in ("2W",):
             return dates[::10]
-        elif freq == "1M" or freq == "EOM":
-            # Monthly: pick last trading day of each month
+        elif freq in ("1M", "EOM"):
             df = pd.DataFrame({"date": pd.to_datetime(dates)})
             df["ym"] = df["date"].dt.to_period("M")
             return df.groupby("ym")["date"].last().dt.strftime("%Y%m%d").tolist()
         else:
-            return dates[::5]  # Default to weekly
+            return dates[::5]

@@ -165,7 +165,7 @@ def main(argv: list[str] | None = None):
         print("\n=== Phase 6: cyq_chips ===")
         backfill_cyq_chips(
             symbols=stock_list["ts_code"].tolist(),
-            sleep_sec=0.05,
+            sleep_sec=0.35,
         )
 
         if args.include_sw_industry:
