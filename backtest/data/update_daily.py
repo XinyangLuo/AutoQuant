@@ -35,6 +35,7 @@ from backtest.data.backfill.indices import (
     DEFAULT_INDICES as INDICES_DEFAULT,
     backfill_indices,
 )
+from backtest.data.backfill.cyq_chips import backfill_cyq_chips
 from backtest.data.backfill.sw_industry import backfill_sw_industry
 from backtest.data.fetcher.daily_fetcher import build_list_date_map, process_trade_date
 from backtest.data.fetcher.dividends_fetcher import fetch_dividend_by_ann_date
@@ -161,8 +162,14 @@ def main(argv: list[str] | None = None):
         print("\n=== Phase 5: index_members ===")
         backfill_index_members(INDEX_MEMBERS_DEFAULT)
 
+        print("\n=== Phase 6: cyq_chips ===")
+        backfill_cyq_chips(
+            symbols=stock_list["ts_code"].tolist(),
+            sleep_sec=0.05,
+        )
+
         if args.include_sw_industry:
-            print("\n=== Phase 6: sw_industry (full rebuild) ===")
+            print("\n=== Phase 7: sw_industry (full rebuild) ===")
             backfill_sw_industry(["L1", "L2"])
 
     print("\n" + "=" * 50)

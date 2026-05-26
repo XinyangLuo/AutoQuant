@@ -27,6 +27,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from backtest.data._pipeline import print_stats
+from backtest.data.backfill.cyq_chips import backfill_cyq_chips
 from backtest.data.backfill.dividends import backfill_dividends
 from backtest.data.backfill.fundamentals import backfill_fundamentals
 from backtest.data.backfill.index_members import (
@@ -136,6 +137,13 @@ def main():
 
         print("\n=== Phase 6: sw_industry ===")
         backfill_sw_industry(["L1", "L2"])
+
+        print("\n=== Phase 7: cyq_chips ===")
+        backfill_cyq_chips(
+            symbols=stock_list["ts_code"].tolist(),
+            start_date=earliest_list_date,
+            sleep_sec=0.05,
+        )
 
         print("\n" + "=" * 50)
         print("Cold start complete.")

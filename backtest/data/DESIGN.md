@@ -127,6 +127,68 @@ get_minute_bars(symbols, start, end, freq='1min', columns=None) -> pd.DataFrame
 ```
 使用 `pyarrow.dataset` 按 `symbol` / `date` 分区过滤。
 
+### `cyq_chips`（筹码分布，DuckDB LIST 存储）
+
+> **状态**：已接入。见 `backtest/data/cyq_storage.py`、`backtest/data/fetcher/cyq_fetcher.py`、`backtest/data/backfill/cyq_chips.py`。
+> **数据量**：全市场 5000 股 × 250 交易日 × 平均 100 档 ≈ 1.25 亿个 price/percent 对。
+
+**为什么用 LIST 数组而不是宽表/长表**：
+
+| 方案 | 问题 |
+|---|---|
+| 宽表（每档一列）| 档位数 59~175 不固定，schema 会膨胀到 175+ 列 |
+| 长表（`date, symbol, price, percent`）| ~1.25 亿行/年，按 `(date, symbol)` 读需扫多行再 reassemble |
+| **LIST（本方案）** | ~125 万行/年，`(date, symbol)` 点查**一行**返回完整分布 |
+
+**Schema**：
+
+```sql
+CREATE TABLE cyq_chips (
+    date      DATE,
+    symbol    VARCHAR,
+    n_bins    INTEGER,        -- len(prices) == len(percents)
+    prices    DOUBLE[],       -- 价格档位数组（升序）
+    percents  DOUBLE[],       -- 筹码占比数组
+    PRIMARY KEY (date, symbol)
+);
+```
+
+- 每只股票每天**只有一行**
+- `prices` 和 `percents` 是等长变长数组，长度即该股票当天档位数
+- DuckDB 列式压缩后约 **0.5–1 GB/年**，10 年全量 ~5–10 GB
+
+**数据源**：Tushare `pro.cyq_chips(ts_code=..., trade_date=...)`
+
+**关键约束**：
+- `ts_code` 是**必填参数**，不支持全量一次拉取
+- 支持 `start_date` / `end_date` 按 symbol 批量拉取一段区间
+- **单次返回上限**：约 6000 行（约 35 个交易日/次，对高 bin 股票）
+- **Backfill 按 symbol + chunk 循环**：每个 symbol 拆成 30 交易日 chunk，避免触发上限
+- 基础账户速率限制较严，fetcher 内留 `sleep_sec` 参数
+
+**增量更新**：从 `MAX(date)+1` 开始，按 symbol 逐个 chunk 拉取并 UPSERT（`ON CONFLICT` 覆盖）。
+
+**查询路径**：
+```python
+from backtest.data.cyq_storage import CyqStorage
+
+with CyqStorage() as store:
+    # 单票单日 → tidy DataFrame [price, percent]
+    store.get_cyq(date="20250526", symbol="600519.SH")
+
+    # 某日横截面 → [date, symbol, n_bins, prices, percents]
+    store.get_cyq_panel(date="20250526", symbols=[...])
+
+    # 单票历史 → [date, n_bins, prices, percents]
+    store.get_cyq_history(symbol="600519.SH", start="20240101", end="20250526")
+
+    # SQL 层聚合示例：筹码重心
+    store.get_weighted_prices(date="20250526")
+
+    # SQL 层聚合示例：峰值档位价格
+    store.get_peak_prices(date="20250526")
+```
+
 ## Fetch/Merge 模式
 
 ### 日频数据 (`market_daily`)
@@ -412,6 +474,13 @@ get_dividend(symbol, start, end)                              # 分红事件
 get_index_bars(symbols, start, end, columns=[...])            # 指数日行情时序
 get_industry_panel(date, level='L1')                          # 申万行业归属 D 日横截面
 get_industry_history(symbol, level=None)                      # 申万行业归属全历史(各分段)
+
+# cyq_chips (筹码分布) —— 见 backtest/data/cyq_storage.py
+CyqStorage.get_cyq(date, symbol)                              # 单票单日 → [price, percent]
+CyqStorage.get_cyq_panel(date, symbols=None)                  # 某日横截面 → [date, symbol, n_bins, prices, percents]
+CyqStorage.get_cyq_history(symbol, start, end)                # 单票历史 → [date, n_bins, prices, percents]
+CyqStorage.get_weighted_prices(date, symbols=None)            # SQL 层：筹码重心
+CyqStorage.get_peak_prices(date, symbols=None)                # SQL 层：峰值档位价格
 ```
 
 ---
