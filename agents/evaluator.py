@@ -78,8 +78,12 @@ class QuantFeedback:
             "residual_annual_icir": self.residual_annual_icir,
         }
         for k, v in extras.items():
-            if v is not None and v != float("-inf") and v != float("inf") and not math.isnan(v):
-                base[k] = v
+            if v is None:
+                continue
+            if isinstance(v, float):
+                if v == float("-inf") or v == float("inf") or math.isnan(v):
+                    continue
+            base[k] = v
         return base
 
     @classmethod
