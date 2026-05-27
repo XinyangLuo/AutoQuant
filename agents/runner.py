@@ -203,7 +203,9 @@ class AutoQuantFactorRunner:
             market_storage=self.market_storage,
         )
 
-        variant = meta.get("variant", "barra_ind_size")
+        from backtest.factor.variants import DEFAULT_VARIANT
+
+        variant = meta.get("variant", DEFAULT_VARIANT)
         if variant != "none":
             try:
                 df = apply_variant_pipeline(
