@@ -87,6 +87,8 @@ class RidgeCheckResult:
     tier: Tier
     n_obs: int
     n_regressors: int
+    r2_stats: dict[str, float]
+    residuals_df: pd.DataFrame | None = None
 
     def as_meta(self) -> dict:
         """Subset suitable for stamping onto ``registry.json`` meta."""
@@ -165,9 +167,13 @@ def ridge_r2_check(
     end: str | None = None,
     factor_storage: FactorStorage | None = None,
     library: FactorLibrary | None = None,
-    regressors: tuple[str, ...] = BARRA_L1_REGRESSORS,
+    regressors: tuple[str, ...] | None = None,
 ) -> RidgeCheckResult:
-    """Classify a work-DB candidate against the 6 Barra L1 styles in the library.
+    """Classify a work-DB candidate against admitted factors via Ridge regression.
+
+    When ``regressors`` is ``None`` (the default), ALL admitted factors in the
+    library are used — same set as step9's residual ICIR check.  Pass an
+    explicit tuple to restrict to a subset (e.g. Barra L1 only, for tests).
 
     Parameters
     ----------
@@ -182,7 +188,8 @@ def ridge_r2_check(
         Optional pre-opened handles. The function opens (and closes) its own
         connections when these are ``None``.
     regressors
-        Override the regressor list (mostly useful for tests).
+        List of factor IDs to use as regressors.  ``None`` means all admitted
+        factors (same behaviour as step9).
 
     Returns
     -------
@@ -195,6 +202,14 @@ def ridge_r2_check(
             factor_storage = FactorStorage()
         if library is None:
             library = FactorLibrary()
+
+        if regressors is None:
+            regressors = tuple(_get_all_regressor_ids(factor_id, library))
+
+        if not regressors:
+            raise LibraryNotBootstrappedError(
+                "No admitted factors in library. Admit the Barra L1 composites first."
+            )
 
         candidate = factor_storage.get_factor(factor_id, start=start, end=end)
         if candidate.empty:
@@ -217,15 +232,20 @@ def ridge_r2_check(
         for sub in wide_parts[1:]:
             reg_df = reg_df.merge(sub, on=["date", "symbol"], how="outer")
 
-        r2, _residual, keys = _pooled_r2(candidate, reg_df, alpha=alpha)
+        # Per-date Ridge — one pass produces both residuals (for step9 reuse)
+        # and per-date R² distribution stats.
+        residuals_df, r2_stats = _per_date_ridge_residuals(candidate, reg_df, alpha=alpha)
+        r2 = r2_stats["mean"]
         tier = _classify(r2)
 
         return RidgeCheckResult(
             factor_id=factor_id,
             r2=float(r2),
             tier=tier,
-            n_obs=int(keys.shape[0]),
+            n_obs=int(len(residuals_df)),
             n_regressors=len(regressors),
+            r2_stats=r2_stats,
+            residuals_df=residuals_df,
         )
     finally:
         if own_fs and factor_storage is not None:
@@ -280,8 +300,11 @@ def _per_date_ridge_residuals(
     *,
     alpha: float = 1.0,
     min_obs_per_date: int | None = None,
-) -> pd.DataFrame:
-    """For each date, fit ridge on the cross-section and return per-row residual.
+) -> tuple[pd.DataFrame, dict[str, float]]:
+    """Per-date Ridge regression → residuals + R² distribution stats.
+
+    One pass over all dates — used by both step8 (R² gate) and step9
+    (residual ICIR).  Returns ``(residuals_df, r2_stats)``.
 
     Parameters
     ----------
@@ -296,8 +319,9 @@ def _per_date_ridge_residuals(
 
     Returns
     -------
-    pd.DataFrame
-        Columns ``[date, symbol, residual]``.
+    tuple[pd.DataFrame, dict]
+        ``residuals_df`` columns: ``[date, symbol, residual]``.
+        ``r2_stats`` keys: ``mean``, ``median``, ``p90``, ``p95``, ``p99``.
 
     Raises
     ------
@@ -316,18 +340,16 @@ def _per_date_ridge_residuals(
         min_obs_per_date = n_reg + 2
 
     residuals_parts: list[pd.DataFrame] = []
-    for date, group in merged.groupby("date"):
+    r2s: list[float] = []
+    for _, group in merged.groupby("date"):
         sub = group.dropna(subset=["value", *reg_cols])
         if len(sub) < min_obs_per_date:
             continue
         X = sub[reg_cols].to_numpy(dtype=float)
         y = sub["value"].to_numpy(dtype=float)
         try:
-            # Ridge throughout — stability under multicollinearity beats
-            # the mathematical purity of OLS unbiasedness.
             beta, intercept = _ridge_fit(X, y, alpha=alpha)
         except np.linalg.LinAlgError:
-            # Fallback to a stronger Ridge regularisation on numerical failure.
             fallback_alpha = max(alpha * 10, 1.0)
             beta, intercept = _ridge_fit(X, y, alpha=fallback_alpha)
         y_hat = X @ beta + intercept
@@ -337,6 +359,10 @@ def _per_date_ridge_residuals(
                 {"date": sub["date"], "symbol": sub["symbol"], "residual": residual}
             )
         )
+        # Per-date R²
+        ss_res = float((residual ** 2).sum())
+        ss_tot = float(((y - y.mean()) ** 2).sum())
+        r2s.append(1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0)
 
     if not residuals_parts:
         raise InsufficientOverlapError(
@@ -344,7 +370,33 @@ def _per_date_ridge_residuals(
             f"for {n_reg} regressors."
         )
 
-    return pd.concat(residuals_parts, ignore_index=True)
+    residuals_df = pd.concat(residuals_parts, ignore_index=True)
+
+    # R² distribution stats
+    if r2s:
+        arr = np.array(r2s)
+        r2_stats = {
+            "mean": float(np.mean(arr)),
+            "median": float(np.median(arr)),
+            "p90": float(np.percentile(arr, 90)),
+            "p95": float(np.percentile(arr, 95)),
+            "p99": float(np.percentile(arr, 99)),
+        }
+    else:
+        r2_stats = {"mean": 0.0, "median": 0.0, "p90": 0.0, "p95": 0.0, "p99": 0.0}
+
+    return residuals_df, r2_stats
+
+
+def _get_all_regressor_ids(
+    factor_id: str,
+    library: FactorLibrary,
+) -> list[str]:
+    """Return all admitted factor IDs in the library, excluding *factor_id*."""
+    others = library.get_factors_long(start=None, end=None, exclude=factor_id)
+    if others.empty:
+        return []
+    return sorted(others["factor_id"].unique().tolist())
 
 
 def _load_all_admitted_regressors(
@@ -470,15 +522,19 @@ def residual_icir_check(
     end: str | None = None,
     factor_storage: FactorStorage | None = None,
     library: FactorLibrary | None = None,
+    precomputed_residuals: pd.DataFrame | None = None,
 ) -> ResidualICIRResult:
     """Check if candidate adds incremental predictive power beyond ALL admitted factors.
+
+    When *precomputed_residuals* is passed (from step8), the per-date Ridge
+    regression is skipped — step8 and step9 share a single fit.
 
     Steps:
 
     1. Load candidate from work DB.
     2. Load ALL admitted factors from library DB as regressors.
     3. If 0 regressors: trivial pass.
-    4. Per-date Ridge regression -> residuals.
+    4. Per-date Ridge regression -> residuals (skipped if precomputed).
     5. Compute forward returns for configured horizons.
     6. Per-date RankIC of residuals vs returns per horizon -> ICIR.
     7. Annualize ICIR, pass if ANY horizon > threshold.
@@ -511,34 +567,38 @@ def residual_icir_check(
                 f"Candidate {factor_id} has no rows in the work DB. Backfill first."
             )
 
-        reg_df = _load_all_admitted_regressors(
-            factor_id,
-            start=start or candidate["date"].min().strftime("%Y%m%d"),
-            end=end or candidate["date"].max().strftime("%Y%m%d"),
-            library=library,
-        )
-        reg_cols = [c for c in reg_df.columns if c not in ("date", "symbol")]
-        n_regressors = len(reg_cols)
-
-        if n_regressors == 0:
-            return ResidualICIRResult(
-                factor_id=factor_id,
-                residual_rank_icirs={h: float("nan") for h in horizons},
-                residual_rank_ic_means={h: float("nan") for h in horizons},
-                residual_rank_ic_stds={h: float("nan") for h in horizons},
-                residual_rank_ic_pos_ratios={h: float("nan") for h in horizons},
-                annual_icirs={h: float("nan") for h in horizons},
-                n_regressors=0,
-                n_dates=0,
-                n_obs_total=0,
-                threshold=threshold,
-                ic_mean_threshold=ic_mean_threshold,
-                passed=True,
+        if precomputed_residuals is not None:
+            residuals = precomputed_residuals
+            n_regressors = -1  # unknown when precomputed
+        else:
+            reg_df = _load_all_admitted_regressors(
+                factor_id,
+                start=start or candidate["date"].min().strftime("%Y%m%d"),
+                end=end or candidate["date"].max().strftime("%Y%m%d"),
+                library=library,
             )
+            reg_cols = [c for c in reg_df.columns if c not in ("date", "symbol")]
+            n_regressors = len(reg_cols)
 
-        residuals = _per_date_ridge_residuals(
-            candidate, reg_df, alpha=alpha
-        )
+            if n_regressors == 0:
+                return ResidualICIRResult(
+                    factor_id=factor_id,
+                    residual_rank_icirs={h: float("nan") for h in horizons},
+                    residual_rank_ic_means={h: float("nan") for h in horizons},
+                    residual_rank_ic_stds={h: float("nan") for h in horizons},
+                    residual_rank_ic_pos_ratios={h: float("nan") for h in horizons},
+                    annual_icirs={h: float("nan") for h in horizons},
+                    n_regressors=0,
+                    n_dates=0,
+                    n_obs_total=0,
+                    threshold=threshold,
+                    ic_mean_threshold=ic_mean_threshold,
+                    passed=True,
+                )
+
+            residuals, _r2_unused = _per_date_ridge_residuals(
+                candidate, reg_df, alpha=alpha
+            )
 
         use_start = (
             start or candidate["date"].min().strftime("%Y%m%d")

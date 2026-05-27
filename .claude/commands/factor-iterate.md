@@ -103,7 +103,7 @@ Use `result.json.failure_type` as the first signal, then refine from traceback a
 - `monotonicity_fail`: step4 — decile returns not monotonic.
 - `config_error`: step5 — strategy config error (top_k/top_pct/decay).
 - `backtest_fail`: step6 or step7 — simple or detailed backtest metrics below threshold.
-- `ridge_fail`: step8 — Ridge R² too high, factor is a style clone.
+- `ridge_fail`: step8 — Ridge R² too high, factor is redundant with already-admitted factors (Barra L1 + user alphas).
 - `residual_fail`: step9 — residual ICIR too low, no incremental predictive power.
 - `execution_error`: infrastructure or unexpected runtime error.
 
@@ -129,7 +129,10 @@ Use `result.json.failure_type` as the first signal, then refine from traceback a
 - `backtest_fail`:
   - Add smoothing/decay, lengthen window, or reduce signal churn to improve Sharpe/drawdown.
 - `ridge_fail`:
-  - Factor is redundant with existing Barra factors; change construction approach or target a different risk dimension.
+  - Check `experiment.step_results.step2.metrics.max_existing_corr` to identify which admitted factor is driving the overlap.
+  - If `max_existing_corr > 0.85` with an admitted user alpha → this is a near-duplicate. Do NOT retry the same hypothesis; start a new direction.
+  - If the overlap is primarily with Barra L1 factors → change construction approach or target a different risk dimension.
+  - If unsure, set `same_direction=true` for one retry with a materially different construction (different window, different transform, or additional conditioning).
 - `residual_fail`:
   - Factor has no incremental value beyond already-admitted factors; try a different hypothesis.
 - Three consecutive same-direction failures with no metric improvement:

@@ -11,6 +11,10 @@
 > 严格「立刻 / 阻塞其他工作」。
 
 - [ ] **P0.1** `run-all` 中 Agent 驱动 retry 落地：step6/7 失败后，Agent 分析 feedback 决定调参策略（如放宽 top_pct、缩短 horizon），通过 step5 override 重新生成信号再跑，最多 3 次。`state.retry_count` / `retry_params` 已定义但从未写入
+- [ ] **P0.2** **残差入库因子的 DAG 回补**：step8 R² 超标 + step9 残差 ICIR 通过 → 因子以残差值（per-date Ridge 剥离全部已入库因子）入库。这类因子在冷启动/日更时必须按依赖拓扑排序——先算 Barra L1（无依赖），再算直接依赖它们的残差因子，再算二层依赖（残差因子可能被后续残差因子依赖，形成 chain）。需实现：
+  - registry 记录每个因子的 `depends_on: [factor_id, ...]` 依赖列表
+  - 回补/更新模块支持拓扑执行（`networkx` or 手工 Kahn）
+  - 残差值写入时标记 `admission_mode=residual` 以便下游区分
 
 ---
 

@@ -363,7 +363,10 @@ def step3_icir_check(state: PipelineState) -> PipelineState:
         }
 
     all_ic = {
-        h: eval_result.ic_metrics.get(h, {})
+        h: {
+            **eval_result.ic_metrics.get(h, {}),
+            **{f"rank_{k}": v for k, v in eval_result.rank_ic_metrics.get(h, {}).items()},
+        }
         for h in config.eval_horizons
     }
 
@@ -761,7 +764,12 @@ def _build_tag(state: PipelineState) -> str:
 
 
 def step8_ridge_r2(state: PipelineState) -> PipelineState:
-    """Ridge R2 classification against Barra L1 factors."""
+    """Per-date Ridge R² classification against ALL admitted factors.
+
+    When R² exceeds the smart_beta threshold, the factor is NOT rejected
+    outright — instead it is marked ``needs_residual`` and step9 decides
+    whether the residual has predictive power worth admitting.
+    """
     config = state.config
 
     try:
@@ -771,25 +779,23 @@ def step8_ridge_r2(state: PipelineState) -> PipelineState:
 
     state.ridge_result = ridge_result
 
-    passed = ridge_result.tier != TIER_REJECT
+    th = get_section("thresholds", "admission", "ridge_r2")
+    needs_residual = ridge_result.r2 >= th["smart_beta_max"]
 
     metrics = {
         "r2": float(ridge_result.r2),
-        "tier": ridge_result.tier,
+        "tier": ridge_result.tier if not needs_residual else TIER_REJECT,
         "n_obs": ridge_result.n_obs,
+        "needs_residual": needs_residual,
+        "r2_stats": ridge_result.r2_stats,
     }
 
-    if passed:
-        return _pass(state, "step8", metrics)
+    if needs_residual:
+        return _pass(
+            state, "step8", metrics,
+        )
 
-    th = get_section("thresholds", "admission", "ridge_r2")
-    reject_at = th["smart_beta_max"]
-    return _reject(
-        state, "step8",
-        f"R2={ridge_result.r2:.3f} >= {reject_at}, "
-        f"tier={TIER_REJECT} (style clone)",
-        metrics,
-    )
+    return _pass(state, "step8", metrics)
 
 
 # ---------------------------------------------------------------------------
@@ -798,12 +804,19 @@ def step8_ridge_r2(state: PipelineState) -> PipelineState:
 
 
 def step9_residual_icir(state: PipelineState) -> PipelineState:
-    """Regress candidate against ALL admitted factors, check residual RankICIR.
+    """Per-date Ridge regression against ALL admitted factors, residual RankICIR.
 
-    Passes if the annualised residual RankICIR exceeds the configured
-    threshold for at least one forward-return horizon (1D / 5D / 20D).
+    Two admission paths:
+    - **Normal**: step8 R² < smart_beta_max → admit raw factor values.
+    - **Residual**: step8 R² ≥ smart_beta_max but residual ICIR passes →
+      admit the *residualised* factor (orthogonal to existing factors).
+
+    If residual ICIR fails in either case → reject.
     """
     config = state.config
+
+    # Reuse step8's precomputed per-date residuals to avoid a second Ridge fit
+    precomputed = getattr(state.ridge_result, "residuals_df", None) if state.ridge_result else None
 
     try:
         th = get_section("thresholds", "admission", "residual_icir")
@@ -816,6 +829,7 @@ def step9_residual_icir(state: PipelineState) -> PipelineState:
             ret_type=config.ret_type,
             start=config.start_date,
             end=config.end_date,
+            precomputed_residuals=precomputed,
         )
     except (ValueError, KeyError, InsufficientOverlapError,
             CandidateNotBackfilledError) as exc:
@@ -823,7 +837,13 @@ def step9_residual_icir(state: PipelineState) -> PipelineState:
 
     state.residual_icir_result = result
 
-    passed = result.passed
+    sr8 = state.step_results.get("step8")
+    needs_residual = sr8.metrics.get("needs_residual", False) if sr8 else False
+
+    admission_mode = "residual" if (needs_residual and result.passed) else (
+        "raw" if result.passed else "reject"
+    )
+
     metrics = {
         "residual_rank_icirs": result.residual_rank_icirs,
         "annual_icirs": result.annual_icirs,
@@ -835,9 +855,10 @@ def step9_residual_icir(state: PipelineState) -> PipelineState:
         "threshold": result.threshold,
         "ic_mean_threshold": result.ic_mean_threshold,
         "passed": result.passed,
+        "admission_mode": admission_mode,
     }
 
-    if passed:
+    if result.passed:
         return _pass(state, "step9", metrics)
 
     max_annual = max(

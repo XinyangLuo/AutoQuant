@@ -52,10 +52,11 @@ def _build_tag(state: PipelineState) -> str:
         return "default"
 
     if isinstance(cfg, dict):
-        top_k = cfg.get("default_top_k")
-        top_pct = cfg.get("default_top_pct")
-        decay = cfg.get("default_decay", 5)
-        rebalance = cfg.get("default_rebalance", "1D")
+        selection = cfg.get("selection", {})
+        top_k = selection.get("top_k")
+        top_pct = selection.get("top_pct")
+        decay = cfg.get("decay", 5)
+        rebalance = cfg.get("rebalance_freq", "1D")
         if top_k is not None:
             tag = f"top{top_k}"
         elif top_pct is not None:
@@ -277,7 +278,7 @@ def _render_step3(state: PipelineState, plots_dir: Path) -> list[str]:
     # IC metrics table
     all_ic = result.metrics.get("all_ic_metrics", {})
     if all_ic:
-        lines.append("### IC 指标")
+        lines.append("### IC 指标（Pearson）")
         lines.append("")
         lines.append(f"*成交类型：{state.config.ret_type}（{'开盘' if state.config.ret_type == 'open' else '收盘'}价），已排除涨停无法成交样本*")
         lines.append("")
@@ -290,6 +291,21 @@ def _render_step3(state: PipelineState, plots_dir: Path) -> list[str]:
                 f"{_fmt(ic.get('ic_tstat'), 'f4')} | {_fmt(ic.get('ic_positive_ratio'), 'pct')} |"
             )
         lines.append("")
+
+        # RankIC (Spearman) — less sensitive to outliers, preferred for A-shares
+        has_rankic = any("rank_ic_mean" in ic for ic in all_ic.values())
+        if has_rankic:
+            lines.append("### RankIC 指标（Spearman）")
+            lines.append("")
+            lines.append("| 周期 | RankIC 均值 | RankIC 标准差 | RankICIR | RankIC t 值 | RankIC 正向占比 |")
+            lines.append("|------|-------------|---------------|----------|--------------|----------------|")
+            for h_str, ic in sorted(all_ic.items(), key=lambda x: int(x[0])):
+                lines.append(
+                    f"| {h_str}天 | {_fmt(ic.get('rank_ic_mean'), 'f4')} | "
+                    f"{_fmt(ic.get('rank_ic_std'), 'f4')} | {_fmt(ic.get('rank_icir'), 'f4')} | "
+                    f"{_fmt(ic.get('rank_ic_tstat'), 'f4')} | {_fmt(ic.get('rank_ic_positive_ratio'), 'pct')} |"
+                )
+            lines.append("")
 
     # IC decay overview
     p = _plot_ic_decay(all_ic, plots_dir)
@@ -383,21 +399,38 @@ def _render_step8(state: PipelineState, plots_dir: Path) -> list[str]:
 
     r2 = result.metrics.get("r2")
     tier = result.metrics.get("tier")
-    tier_names = {"pure_alpha": "纯 Alpha", "smart_beta": "Smart Beta", "reject": "风格克隆"}
+    needs_residual = result.metrics.get("needs_residual", False)
+    r2_stats = result.metrics.get("r2_stats", {})
+    tier_names = {"pure_alpha": "纯 Alpha", "smart_beta": "Smart Beta", "reject": "风格克隆（需残差化）"}
     tier_cn = tier_names.get(tier, str(tier))
 
     lines = [
-        f"- **R²**：{_fmt(r2, 'f4')}",
+        f"- **方法**：每日截面 Ridge 回归（与 step9 一致），逐日 R² 取分布统计",
+        f"- **R² 均值**：{_fmt(r2, 'f4')}（门控用）",
+        f"- **R² 中位数**：{_fmt(r2_stats.get('median'), 'f4')}",
+        f"- **R² P90**：{_fmt(r2_stats.get('p90'), 'f4')}",
+        f"- **R² P95**：{_fmt(r2_stats.get('p95'), 'f4')}",
+        f"- **R² P99**：{_fmt(r2_stats.get('p99'), 'f4')}",
         f"- **分档**：`{tier}`（{tier_cn}）",
         f"- **样本数**：{result.metrics.get('n_obs'):,}",
         "",
-        "| 分档 | R² 范围 | 含义 |",
-        "|------|---------|------|",
-        "| `pure_alpha` | R² < 0.2 | 与现有风格正交 — 入库 |",
-        "| `smart_beta` | 0.2 ≤ R² < 0.7 | 部分风格暴露 — 入库 |",
-        "| `reject` | R² ≥ 0.7 | 风格克隆 — 拒绝 |",
-        "",
     ]
+    if needs_residual:
+        lines.append(
+            f"> R² 超出阈值，因子与现有因子高度重叠。"
+            f"不直接拒绝——交由 step9 检查残差预测力，"
+            f"若残差 ICIR 通过则以**残差值**入库。"
+        )
+        lines.append("")
+    else:
+        lines.extend([
+            "| 分档 | R² 范围 | 含义 |",
+            "|------|---------|------|",
+            "| `pure_alpha` | R² < 0.2 | 与现有风格正交 — 原值入库 |",
+            "| `smart_beta` | 0.2 ≤ R² < 0.7 | 部分风格暴露 — 原值入库 |",
+            "| `reject` | R² ≥ 0.7 | 委托 step9 残差 ICIR 检查 |",
+            "",
+        ])
     return lines
 
 
@@ -416,12 +449,20 @@ def _render_step9_residual_icir(state: PipelineState, plots_dir: Path) -> list[s
     n_regressors = m.get("n_regressors", 0)
     n_dates = m.get("n_dates", 0)
     passed = m.get("passed", False)
+    admission_mode = m.get("admission_mode", "reject")
+
+    mode_desc = {
+        "raw": "原值入库（因子与现有因子正交）",
+        "residual": "**残差入库**（剥离风格克隆部分，仅保留纯净 alpha）",
+        "reject": "**拒绝**",
+    }.get(admission_mode, str(admission_mode))
 
     lines = [
+        f"- **方法**：每日截面 Ridge 回归取残差 → RankIC vs 远期收益",
         f"- **回归因子数**：{n_regressors}",
         f"- **有效日期数**：{n_dates}",
         f"- **年化阈值**：{threshold}",
-        f"- **结论**：{'通过' if passed else '**拒绝**'}（增量信息检查）",
+        f"- **入库模式**：{mode_desc}",
         "",
         "| 周期 | 原始 RankICIR | 年化 RankICIR | RankIC 均值 | RankIC 标准差 |",
         "|------|---------------|---------------|-------------|---------------|",
@@ -510,23 +551,49 @@ def _plot_ic_decay(all_ic: dict, plots_dir: Path) -> Path | None:
     def _get(h: int, key: str):
         return (all_ic.get(h, {}) or all_ic.get(str(h), {})).get(key, np.nan)
 
-    means = [_get(h, "ic_mean") for h in horizons]
-    stds = [_get(h, "ic_std") for h in horizons]
-    icirs = [_get(h, "icir") for h in horizons]
+    ic_means = [_get(h, "ic_mean") for h in horizons]
+    ic_stds = [_get(h, "ic_std") for h in horizons]
+    ic_icirs = [_get(h, "icir") for h in horizons]
+    ric_means = [_get(h, "rank_ic_mean") for h in horizons]
+    ric_stds = [_get(h, "rank_ic_std") for h in horizons]
+    ric_icirs = [_get(h, "rank_icir") for h in horizons]
+    has_rankic = any(not np.isnan(v) for v in ric_means)
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=_FIGSIZE_WIDE)
-    ax1.errorbar(horizons, means, yerr=stds, marker="o", color="steelblue", capsize=4, linewidth=1.5)
+    n_cols = 4 if has_rankic else 2
+    fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5))
+    if n_cols == 2:
+        axes = [axes, None, None, None]  # type: ignore[assignment]
+
+    ax1, ax2, ax3, ax4 = axes[0], axes[1], axes[2], axes[3]
+
+    # Pearson IC
+    ax1.errorbar(horizons, ic_means, yerr=ic_stds, marker="o", color="steelblue", capsize=4, linewidth=1.5)
     ax1.axhline(0, color="gray", linestyle="--", linewidth=0.8)
     ax1.set_xlabel("预测周期（天）")
     ax1.set_ylabel("IC")
-    ax1.set_title("IC 均值 ± 标准差")
+    ax1.set_title("IC 均值 ± 标准差（Pearson）")
     ax1.grid(True, alpha=0.3)
-    ax2.bar(horizons, icirs, color="darkorange", alpha=0.8)
+    ax2.bar(horizons, ic_icirs, color="darkorange", alpha=0.8)
     ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
     ax2.set_xlabel("预测周期（天）")
     ax2.set_ylabel("ICIR")
-    ax2.set_title("ICIR")
+    ax2.set_title("ICIR（Pearson）")
     ax2.grid(True, alpha=0.3, axis="y")
+
+    # RankIC (Spearman) — if available
+    if has_rankic:
+        ax3.errorbar(horizons, ric_means, yerr=ric_stds, marker="o", color="seagreen", capsize=4, linewidth=1.5)
+        ax3.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax3.set_xlabel("预测周期（天）")
+        ax3.set_ylabel("RankIC")
+        ax3.set_title("RankIC 均值 ± 标准差（Spearman）")
+        ax3.grid(True, alpha=0.3)
+        ax4.bar(horizons, ric_icirs, color="mediumpurple", alpha=0.8)
+        ax4.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax4.set_xlabel("预测周期（天）")
+        ax4.set_ylabel("RankICIR")
+        ax4.set_title("RankICIR（Spearman）")
+        ax4.grid(True, alpha=0.3, axis="y")
     fig.tight_layout()
     out = plots_dir / "eval_ic_decay.png"
     fig.savefig(out, dpi=_DPI, bbox_inches="tight")

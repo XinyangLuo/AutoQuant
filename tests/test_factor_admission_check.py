@@ -264,7 +264,7 @@ class TestRidgeR2CheckIntegration:
             pass
 
         with FactorStorage(db_path=work_path) as ws, FactorLibrary(db_path=lib_path) as lb:
-            with pytest.raises(ValueError, match="Regressor.*missing from library"):
+            with pytest.raises(ValueError, match="No admitted factors in library"):
                 ridge_r2_check(
                     "f_alpha_candidate", factor_storage=ws, library=lb,
                 )
@@ -291,4 +291,5 @@ class TestRidgeR2CheckIntegration:
             with pytest.raises(ValueError, match="no rows in the work DB"):
                 ridge_r2_check(
                     "f_alpha_candidate", factor_storage=ws, library=lb,
+                    regressors=BARRA_L1_REGRESSORS,
                 )

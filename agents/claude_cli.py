@@ -209,14 +209,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     _write_json(result_path, result)
 
     if status == "pass":
-        # Find pipeline report under run_dir/<factor_id>/<tag>/
+        # Find report + plots under run_dir/<factor_id>/<tag>/
         report_path: Path | None = None
+        plots_path: Path | None = None
         report_dir = run_dir / factor_id
         if report_dir.exists():
             for p in report_dir.rglob("pipeline_report.md"):
                 report_path = p
+                plots_dir = p.parent / "plots"
+                if plots_dir.is_dir():
+                    plots_path = plots_dir
                 break
-        _write_candidate(experiment, factor_id, result_path, report_path)
+        _write_candidate(experiment, factor_id, result_path, report_path, plots_path)
 
     print(json.dumps(_clean_json(result), ensure_ascii=False, indent=2, allow_nan=False))
     return 0 if status != "error" else 1
@@ -227,6 +231,7 @@ def _write_candidate(
     factor_id: str,
     result_path: Path,
     report_path: Path | None = None,
+    plots_path: Path | None = None,
 ) -> None:
     """Write passing factor to ``results/agent/candidates/<factor_id>/`` for human review."""
     candidates_root = Path("results/agent/candidates")
@@ -241,6 +246,12 @@ def _write_candidate(
 
     if report_path and report_path.exists():
         shutil.copy2(report_path, candidate_dir / "pipeline_report.md")
+
+    if plots_path and plots_path.is_dir():
+        dst_plots = candidate_dir / "plots"
+        if dst_plots.exists():
+            shutil.rmtree(dst_plots)
+        shutil.copytree(plots_path, dst_plots)
 
     state = {
         "factor_id": factor_id,

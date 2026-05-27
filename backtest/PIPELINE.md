@@ -43,9 +43,9 @@ step6: 简单回测（向量化）+ 必检阈值 → 失败回 step5，最多 3 
   ↓
 step7: 详细回测（含分红/成本）+ 必检阈值 → 失败回 step5，最多 3 次重试
   ↓
-step8: 与 Barra 一级因子做 Ridge Regression，按 R² 分流入库
+step8: 对全部已入库因子做逐日截面 Ridge 回归，输出 R² 分布（均值做门控）→ 不拒绝，委托 step9
   ↓
-step9: 对所有已入库因子逐日 Ridge 回归取残差，残差年化 ICIR 检查
+step9: 复用 step8 残差 → 计算残差 RankICIR → 决定原值入库 / 残差入库 / 拒绝
   ↓
 step10: 生成报告 + 人工 admit
 ```
@@ -523,36 +523,44 @@ result = sim.run(signals, market_data, dividends)
 
 ---
 
-## 8. step8：Ridge R² 风格分类
+## 8. step8：每日截面 Ridge R² 分布
 
 ### 8.1 逻辑
 
-候选因子对 Barra 一级因子（如 size、value、momentum、volatility、quality、leverage、growth）做 Ridge 回归，计算 R²，按 R² 分流入库：
+候选因子对 library 中**全部已入库因子**（含 Barra L1 + 已 admit 的 alpha），逐日做**截面 Ridge 回归**，得到每日 R² 的分布。门控使用 **R² 均值**，同时输出中位数 / P90 / P95 / P99 作为参考。
 
-| R² 范围 | 分类 | 含义 |
+| 均值 R² 范围 | 分类 | 含义 |
 |---|---|---|
-| R² < `pure_alpha_threshold`（默认 0.15） | `pure_alpha` | 与 Barra 风格因子几乎正交，独立 alpha |
-| `pure_alpha_threshold` ≤ R² < `smart_beta_threshold`（默认 0.50） | `smart_beta` | 包含一定的风格暴露，但仍有独立信息 |
-| R² ≥ `smart_beta_threshold` | **reject** | 风格克隆，不通过 |
+| R² < `pure_alpha_max`（默认 0.2） | `pure_alpha` | 与现有因子几乎正交，原值入库 |
+| `pure_alpha_max` ≤ R² < `smart_beta_max`（默认 0.7） | `smart_beta` | 部分风格暴露，原值入库 |
+| R² ≥ `smart_beta_max` | 标记 `needs_residual` | **不拒绝**，委托 step9 残差 ICIR 判定 |
 
-> 阈值定义在 `config.yaml` → `thresholds.pipeline.ridge_r2`。
+> 阈值定义在 `config.yaml` → `thresholds.admission.ridge_r2`。与 step9 共享同一次逐日 Ridge 拟合（残差复用，不重复计算）。
 
 ### 8.2 边界情况
 
-- Library 中尚无 Barra 因子 → 平凡通过，标记为 `pure_alpha`
+- Library 中尚无任何已入库因子 → 抛出 `LibraryNotBootstrappedError`
 
 ---
 
 ## 9. step9：残差 ICIR 增量信息
 
-### 9.1 检查逻辑
+### 9.1 逻辑
 
-1. 候选因子对 library 中**全部已入库因子**逐日做 Ridge 回归取残差
+1. 复用 step8 预计算的**逐日截面 Ridge 残差**（避免重复拟合）
 2. 计算残差对 1D / 5D / 20D 远期收益的逐日 RankIC
 3. 年化 ICIR = raw_icir × √(252/h)
 4. **任一周期同时满足年化残差 RankICIR > 阈值（默认 0.05）且 |IC 均值| > 下限（默认 0.001）** → 通过
 
-> 阈值定义在 `config.yaml` → `thresholds.pipeline.residual_icir`。
+### 9.2 入库模式
+
+| step8 结果 | 残差 ICIR | 入库模式 | 说明 |
+|-----------|----------|---------|------|
+| 非 `needs_residual` | 通过 | `raw` | 原值入库 |
+| `needs_residual` | 通过 | `residual` | **残差入库**（剥离风格克隆部分，仅保留纯净 alpha） |
+| 任意 | 不通过 | `reject` | 拒绝 |
+
+> 阈值定义在 `config.yaml` → `thresholds.admission.residual_icir`。
 
 ### 9.2 边界情况
 
