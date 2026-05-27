@@ -844,12 +844,19 @@ def step9_residual_icir(state: PipelineState) -> PipelineState:
         "raw" if result.passed else "reject"
     )
 
+    # When using precomputed residuals, n_regressors from step8
+    n_reg = (
+        state.ridge_result.n_regressors
+        if (precomputed is not None and state.ridge_result)
+        else result.n_regressors
+    )
+
     metrics = {
         "residual_rank_icirs": result.residual_rank_icirs,
         "annual_icirs": result.annual_icirs,
         "residual_rank_ic_means": result.residual_rank_ic_means,
         "residual_rank_ic_stds": result.residual_rank_ic_stds,
-        "n_regressors": result.n_regressors,
+        "n_regressors": n_reg,
         "n_dates": result.n_dates,
         "n_obs_total": result.n_obs_total,
         "threshold": result.threshold,

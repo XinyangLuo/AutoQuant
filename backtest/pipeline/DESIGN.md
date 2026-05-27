@@ -111,8 +111,8 @@ python -m backtest.pipeline step5 f_001 \
 | step5 | Strategy Config | 构建默认策略配置 | 无淘汰（总是通过） |
 | step6 | Simple Backtest | 向量化回测（无成本） | Sharpe≤0.8 或 ann_ret≤10% 或 max_dd≤-40% 或 Calmar≤0.5。不检查换手率（SimpleSimulator 不计算） |
 | step7 | Detailed Backtest | 事件驱动回测（含成本） | Sharpe≤0.4 或 ann_ret≤8% 或 max_dd≤-40% 或 Calmar≤0.5 或 turnover≥50x |
-| step8 | Ridge R² | 风格克隆检测（对 6 个 Barra L1 做 ridge 回归） | tier == reject（R² ≥ smart_beta_max，见下方分档） |
-| step9 | Residual ICIR | 增量信息检测（对所有已 admit 因子逐日 Ridge，残差 ICIR） | 各周期年化残差 RankICIR 均 ≤ 阈值（默认 0.1） |
+| step8 | Ridge R² | 逐日截面 Ridge 回归（全部已入库因子），输出 R² 均值/中位数/P90/P95/P99 分布 | **不再淘汰**——标记 `needs_residual` 后委托 step9 判定 |
+| step9 | Residual ICIR | 复用 step8 残差 → RankIC → 决定入库模式 | 残差 ICIR 不通过 → 拒绝；通过 + needs_residual → **残差入库**；通过 + 非 needs_residual → 原值入库 |
 | step10 | Report | 生成诊断报告，标记 ready_for_review | 无淘汰（总是通过）。需人工 `admit` |
 
 ### 阈值来源
@@ -121,13 +121,21 @@ python -m backtest.pipeline step5 f_001 \
 
 ### Ridge R² 分档（config.yaml → thresholds.admission.ridge_r2）
 
-| R² 范围 | Tier | 含义 |
-|---------|------|------|
-| R² < 0.2 | `pure_alpha` | 与现有风格正交 — 入库 |
-| 0.2 ≤ R² < 0.7 | `smart_beta` | 部分风格暴露 — 入库 |
-| R² ≥ 0.7 | `reject` | 风格克隆 — 拒绝 |
+对全部已入库因子逐日截面 Ridge，取每日 R² 分布的**均值**做门控：
 
-不再有 `edge_smart_beta` 和 residual ICIR 二次判定。
+| 均值 R² 范围 | Tier | 行为 |
+|---------|------|------|
+| R² < 0.2 | `pure_alpha` | 原值入库 |
+| 0.2 ≤ R² < 0.7 | `smart_beta` | 原值入库 |
+| R² ≥ 0.7 | `reject`（标记 `needs_residual`） | 不拒绝，交 step9 判定。残差 ICIR 通过 → **残差入库**；不通过 → 拒绝 |
+
+### 入库模式（step9 输出）
+
+| step8 结果 | 残差 ICIR | `admission_mode` |
+|-----------|----------|-----------------|
+| 非 `needs_residual` | 通过 | `raw` — 原值入库 |
+| `needs_residual` | 通过 | `residual` — **残差入库**（per-date Ridge 剥离全部已入库因子后的纯净 alpha） |
+| 任意 | 不通过 | `reject` — 拒绝 |
 
 ### Retry 逻辑
 
