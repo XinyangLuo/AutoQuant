@@ -76,7 +76,6 @@ from backtest.factor.variants import DEFAULT_VARIANT
 from backtest.strategy import (
     BacktestConfig,
     FactorConfig,
-    NeutralizeConfig,
     SelectionConfig,
     SingleFactorStrategy,
     StrategyConfig,
@@ -117,7 +116,6 @@ def _strategy_config_dict(args) -> dict:
         "rebalance": args.rebalance,
         "direction": args.direction,
         "decay": args.decay,
-        "market_cap_neutral": args.market_cap_neutral,
         "min_market_cap": args.min_market_cap,
         "min_avg_amount": args.min_avg_amount,
         "index_members": args.index_members,
@@ -248,7 +246,6 @@ def _build_strategy_config(args) -> StrategyConfig:
             top_pct=args.top_pct,
         ),
         weighting=WeightingConfig(method="equal"),
-        neutralize=NeutralizeConfig(market_cap=args.market_cap_neutral),
         decay=args.decay,
         backtest=BacktestConfig(
             start_date=args.start, end_date=args.end, benchmark=args.benchmark,
@@ -422,7 +419,6 @@ def write_pipeline_markdown(
         ["调仓频率", args.rebalance],
         ["方向", "降序(大→小)" if args.direction == "desc" else "升序(小→大)"],
         ["衰减窗口", str(args.decay or 0)],
-        ["市值中性化", "是" if args.market_cap_neutral else "否"],
         ["最小市值", f"{args.min_market_cap:,.0f}"],
         ["最小日均成交额", f"{args.min_avg_amount:,.0f}"],
         ["基准指数", args.benchmark],
@@ -677,8 +673,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--direction", default="desc", choices=["desc", "asc"])
     p.add_argument("--decay", type=int, default=5,
                    help="Linear decay window; pass 0 to disable")
-    p.add_argument("--no-cap-neutral", action="store_true",
-                   help="Disable market-cap neutralisation")
     p.add_argument("--min-market-cap", type=float, default=5e8)
     p.add_argument("--min-avg-amount", type=float, default=1e7)
     p.add_argument("--index-members", default=None,
@@ -714,7 +708,6 @@ def main():
     args.initial_cash = get_section_or(100_000_000, "simulation", "initial_cash")
     args.commission_rate = get_section_or(0.0003, "simulation", "commission_rate")
 
-    args.market_cap_neutral = not args.no_cap_neutral
     if args.decay == 0:
         args.decay = None
     # 默认行为:两者都没传 → top_pct=0.1(前10%),保持旧脚本兼容。

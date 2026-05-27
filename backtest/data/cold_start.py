@@ -142,7 +142,7 @@ def main():
         backfill_cyq_chips(
             symbols=stock_list["ts_code"].tolist(),
             start_date=earliest_list_date,
-            sleep_sec=0.35,
+            sleep_sec=0.01,
         )
 
         print("\n" + "=" * 50)

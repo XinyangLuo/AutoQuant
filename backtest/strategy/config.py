@@ -85,22 +85,6 @@ class WeightingConfig:
 
 
 @dataclass
-class NeutralizeConfig:
-    """Neutralization parameters.
-
-    .. deprecated::
-        中性化已下沉到因子层(参见 :mod:`backtest.factor.transforms` 与
-        :mod:`backtest.factor.variants`)。策略通过 :class:`FactorConfig`
-        的 ``variant`` 选择已经中性化的因子值,所以这里的开关不会再生效。
-        仅保留 dataclass 以兼容旧 yaml,不抛错。
-    """
-
-    industry: bool = False
-    industry_method: str = "group_rank"
-    market_cap: bool = False
-
-
-@dataclass
 class RiskConfig:
     """Risk control parameters (mostly reserved for future engine-level enforcement)."""
 
@@ -132,7 +116,6 @@ class StrategyConfig:
     combine_method: str = "zscore_equal"  # "zscore_equal" / "ic_weighted" / "icir_weighted"
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     weighting: WeightingConfig = field(default_factory=WeightingConfig)
-    neutralize: NeutralizeConfig = field(default_factory=NeutralizeConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
 
@@ -148,7 +131,6 @@ class StrategyConfig:
         factors = [FactorConfig(**f) for f in d.get("factors", [])]
         selection = SelectionConfig(**d.get("selection", {}))
         weighting = WeightingConfig(**d.get("weighting", {}))
-        neutralize = NeutralizeConfig(**d.get("neutralize", {}))
         risk = RiskConfig(**d.get("risk", {}))
         backtest = BacktestConfig(**d.get("backtest", {}))
 
@@ -162,7 +144,6 @@ class StrategyConfig:
             combine_method=d.get("combine_method", "zscore_equal"),
             selection=selection,
             weighting=weighting,
-            neutralize=neutralize,
             risk=risk,
             backtest=backtest,
             decay=d.get("decay"),
@@ -223,15 +204,6 @@ class StrategyConfig:
             raise ValueError(
                 f"Weighting method must be 'equal', 'market_cap', or 'factor_value', "
                 f"got {self.weighting.method}"
-            )
-
-        if self.neutralize.industry_method not in (
-            "group_rank", "group_demean", "group_zscore"
-        ):
-            raise ValueError(
-                f"Industry neutralization method must be 'group_rank', "
-                f"'group_demean', or 'group_zscore', "
-                f"got {self.neutralize.industry_method}"
             )
 
         if self.combine_method not in ("zscore_equal", "ic_weighted", "icir_weighted", "risk_parity"):

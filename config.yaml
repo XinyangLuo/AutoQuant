@@ -126,6 +126,8 @@ strategy:
     include_cyb: true
     include_kcb: false
     include_bse: false
+    min_market_cap: 500000000
+    min_avg_amount: 10000000
 
 # ---------------------------------------------------------------------------
 # 仿真配置

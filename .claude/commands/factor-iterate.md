@@ -80,7 +80,7 @@ Append exactly one object per round:
   "round": 1,
   "factor_id": "f_auto_20260527_001",
   "status": "pass|fail|error",
-  "failure_type": "code_error|schema_error|weak_signal|high_turnover|high_corr|weak_backtest|execution_error|metrics_fail|null",
+  "failure_type": "code_error|schema_error|coverage_fail|neutralization_fail|icir_fail|monotonicity_fail|config_error|backtest_fail|ridge_fail|residual_fail|execution_error|metrics_fail|null",
   "error_signature": "NameError: abs_",
   "diagnosis": "The code used a missing transform; preserve the reversal-volume idea and fix the import.",
   "fix_strategy": "Replace the invalid transform and rerun the same hypothesis.",
@@ -97,10 +97,14 @@ Use `result.json.failure_type` as the first signal, then refine from traceback a
 
 - `code_error`: SyntaxError, NameError, TypeError, ImportError, invalid transform.
 - `schema_error`: KeyError, missing column, wrong data source prefix.
-- `weak_signal`: RankICIR or IC+ below threshold.
-- `high_turnover`: turnover above threshold.
-- `high_corr`: max correlation above threshold.
-- `weak_backtest`: factor eval is acceptable but Sharpe/drawdown/Calmar fails.
+- `coverage_fail`: step1 — too many missing values in factor coverage check.
+- `neutralization_fail`: step2 — factor too correlated with size/industry after neutralization.
+- `icir_fail`: step3 — RankICIR or IC+ below pipeline threshold.
+- `monotonicity_fail`: step4 — decile returns not monotonic.
+- `config_error`: step5 — strategy config error (top_k/top_pct/decay).
+- `backtest_fail`: step6 or step7 — simple or detailed backtest metrics below threshold.
+- `ridge_fail`: step8 — Ridge R² too high, factor is a style clone.
+- `residual_fail`: step9 — residual ICIR too low, no incremental predictive power.
 - `execution_error`: infrastructure or unexpected runtime error.
 
 ## Repair Policy
@@ -109,14 +113,25 @@ Use `result.json.failure_type` as the first signal, then refine from traceback a
   - Set `same_direction=true`.
   - Keep the original economic hypothesis.
   - Fix only code, import, transform, or column names.
-- `weak_signal`:
+- `coverage_fail`:
+  - Set `same_direction=true`.
+  - Check data source availability, widen universe, or adjust missing-value handling.
+- `neutralization_fail`:
+  - Set `same_direction=true`.
+  - Try different neutralization variant (`barra_ind_size` → `barra_l3`) or adjust factor construction.
+- `icir_fail`:
   - Set `same_direction=true` while there is still a plausible adjustment.
   - Try one change at a time: window, horizon, smoothing, normalization, or sign.
   - Do not repeat parameter combinations found in trace.
-- `high_turnover`:
-  - Add smoothing/decay, lengthen window, or reduce signal churn.
-- `high_corr`:
-  - Preserve the idea but change construction, conditioning, or neutralization.
+- `monotonicity_fail`:
+  - Set `same_direction=true`.
+  - Factor may only work at extremes; add secondary filter or change construction.
+- `backtest_fail`:
+  - Add smoothing/decay, lengthen window, or reduce signal churn to improve Sharpe/drawdown.
+- `ridge_fail`:
+  - Factor is redundant with existing Barra factors; change construction approach or target a different risk dimension.
+- `residual_fail`:
+  - Factor has no incremental value beyond already-admitted factors; try a different hypothesis.
 - Three consecutive same-direction failures with no metric improvement:
   - Stop and report why the hypothesis appears weak, or ask the user whether to continue with a new direction.
 
@@ -124,11 +139,17 @@ Use `result.json.failure_type` as the first signal, then refine from traceback a
 
 Treat the factor as candidate if `result.json.status == "pass"`.
 
+On pass, the CLI automatically writes the factor to `results/agent/candidates/<factor_id>/` containing:
+
+- `factor.py` — factor source code
+- `pipeline_state.json` — full step1~step10 pass/fail status and metrics
+- `result.json` — complete CLI output
+
 On pass:
 
 1. Append final trace record with `status="pass"`.
-2. Summarize factor id, path, core formula, key metrics, and run directory.
-3. Do not automatically admit the factor unless the user explicitly asks.
+2. Summarize factor id, path, core formula, key metrics, and candidates directory.
+3. Do not automatically admit the factor. To admit, manually run: `python -m backtest.factor.admission admit <factor_id>`
 
 ## Common Column / Transform Corrections
 

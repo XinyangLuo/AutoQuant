@@ -76,6 +76,25 @@ def _pass(state: PipelineState, step: str, metrics: dict | None = None) -> Pipel
     return state
 
 
+def _build_universe(index_members: str | None = None) -> UniverseConfig:
+    """Build UniverseConfig from ``config.yaml`` → ``strategy.universe``.
+
+    Falls back to safe defaults when config.yaml is missing a key.
+    """
+    from backtest.config_loader import get_section_or
+
+    return UniverseConfig(
+        exclude_st=get_section_or(True, "strategy", "universe", "exclude_st"),
+        exclude_new_ipo_days=get_section_or(252, "strategy", "universe", "exclude_new_ipo_days"),
+        include_cyb=get_section_or(True, "strategy", "universe", "include_cyb"),
+        include_kcb=get_section_or(False, "strategy", "universe", "include_kcb"),
+        include_bse=get_section_or(False, "strategy", "universe", "include_bse"),
+        index_members=index_members,
+        min_market_cap=get_section_or(500000000, "strategy", "universe", "min_market_cap"),
+        min_avg_amount=get_section_or(10000000, "strategy", "universe", "min_avg_amount"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Step 1: Coverage check
 # ---------------------------------------------------------------------------
@@ -504,7 +523,7 @@ def step5_build_strategy(
         strategy_type="single_factor_topk",
         rebalance_freq=_rebalance,
         delay=1,
-        universe=UniverseConfig(index_members=_universe),
+        universe=_build_universe(_universe),
         factors=[FactorConfig(id=config.factor_id, direction="desc")],
         selection=selection,
         weighting=WeightingConfig(method="equal"),

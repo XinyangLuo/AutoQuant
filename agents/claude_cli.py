@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import os
+import shutil
 import sys
 import traceback
 from pathlib import Path
@@ -35,6 +36,18 @@ _CODE_ERROR_TYPES = (
     "AttributeError",
     "ValueError",
 )
+
+_STEP_FAILURE_MAP: dict[str, str] = {
+    "step1": "coverage_fail",
+    "step2": "neutralization_fail",
+    "step3": "icir_fail",
+    "step4": "monotonicity_fail",
+    "step5": "config_error",
+    "step6": "backtest_fail",
+    "step7": "backtest_fail",
+    "step8": "ridge_fail",
+    "step9": "residual_fail",
+}
 
 
 def _clean_json(value: Any) -> Any:
@@ -75,8 +88,13 @@ def _classify_failure(
     *,
     error: str | None,
     feedback: QuantFeedback | None,
-    cfg: AgentConfig,
 ) -> str | None:
+    """Classify the failure reason from exception or pipeline step result.
+
+    When a pipeline step rejects the factor, the failed_step name is mapped
+    to a stable failure type for the trace JSONL.  Exception-based failures
+    (code / schema / execution) are classified from the traceback text.
+    """
     if error:
         if "KeyError" in error or "not in index" in error or "column" in error.lower():
             return "schema_error"
@@ -87,16 +105,9 @@ def _classify_failure(
     if feedback is None or feedback.decision:
         return None
 
-    if feedback.turnover is not None and feedback.turnover >= cfg.max_turnover:
-        return "high_turnover"
-    if feedback.max_corr is not None and feedback.max_corr >= cfg.max_corr:
-        return "high_corr"
-    if feedback.rankicir is not None and feedback.rankicir < cfg.min_rankicir:
-        return "weak_signal"
-    if feedback.simple_sharpe is None or feedback.simple_sharpe < cfg.min_sharpe_simple:
-        return "weak_backtest"
-    if feedback.ic_positive_ratio is not None and feedback.ic_positive_ratio < cfg.min_ic_positive_ratio:
-        return "weak_signal"
+    failed = feedback.failed_step
+    if failed:
+        return _STEP_FAILURE_MAP.get(failed, "metrics_fail")
     return "metrics_fail"
 
 
@@ -144,14 +155,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         sanitized_code_path.write_text(code, encoding="utf-8")
 
         experiment.factor_code = code
-
-        evaluator = AutoQuantFactorEvaluator(
-            min_rankicir=cfg.min_rankicir,
-            min_ic_positive_ratio=cfg.min_ic_positive_ratio,
-            max_turnover=cfg.max_turnover,
-            max_corr=cfg.max_corr,
-            min_simple_sharpe=cfg.min_sharpe_simple,
-        )
+        evaluator = AutoQuantFactorEvaluator()
 
         with AutoQuantFactorRunner(
             start_date=cfg.start_date,
@@ -178,8 +182,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         tb = traceback.format_exc()
         experiment.error = error
 
-    failure_type = _classify_failure(error=error, feedback=feedback, cfg=cfg)
-    status = "error" if error else ("pass" if feedback and feedback.decision else "fail")
+    failure_type = _classify_failure(error=error, feedback=feedback)
+
+    if error:
+        status = "error"
+    elif experiment.status == "candidate":
+        status = "pass"
+    else:
+        status = "fail"
 
     result = {
         "factor_id": factor_id,
@@ -191,21 +201,60 @@ def cmd_run(args: argparse.Namespace) -> int:
         "sanitized_factor_file": str(sanitized_code_path) if sanitized_code_path else None,
         "result_path": str(result_path),
         "run_dir": str(run_dir),
-        "thresholds": {
-            "min_rankicir": cfg.min_rankicir,
-            "min_ic_positive_ratio": cfg.min_ic_positive_ratio,
-            "max_turnover": cfg.max_turnover,
-            "max_corr": cfg.max_corr,
-            "min_simple_sharpe": cfg.min_sharpe_simple,
-        },
+        "thresholds": _read_pipeline_thresholds(),
         "metrics": feedback.metrics if feedback else {},
         "feedback": feedback.to_dict() if feedback else None,
         "experiment": experiment.to_dict(),
     }
 
     _write_json(result_path, result)
+
+    if status == "pass":
+        _write_candidate(experiment, factor_id, result_path)
+
     print(json.dumps(_clean_json(result), ensure_ascii=False, indent=2, allow_nan=False))
     return 0 if status != "error" else 1
+
+
+def _write_candidate(
+    experiment: AutoQuantFactorExperiment,
+    factor_id: str,
+    result_path: Path,
+) -> None:
+    """Write passing factor to ``results/agent/candidates/<factor_id>/`` for human review."""
+    candidates_root = Path("results/agent/candidates")
+    candidate_dir = candidates_root / factor_id
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+
+    if experiment.factor_code:
+        (candidate_dir / "factor.py").write_text(experiment.factor_code, encoding="utf-8")
+
+    if result_path.exists():
+        shutil.copy2(result_path, candidate_dir / "result.json")
+
+    state = {
+        "factor_id": factor_id,
+        "status": experiment.status,
+        "step_results": experiment.step_results,
+        "eval_result": experiment.eval_result,
+        "simple_bt_metrics": experiment.simple_bt_metrics,
+        "detailed_bt_metrics": experiment.detailed_bt_metrics,
+        "ridge_result": experiment.ridge_result,
+        "residual_icir_result": experiment.residual_icir_result,
+    }
+    _write_json(candidate_dir / "pipeline_state.json", state)
+
+
+def _read_pipeline_thresholds() -> dict[str, Any]:
+    """Read pipeline step thresholds from config.yaml via StepThresholds."""
+    try:
+        from dataclasses import asdict
+
+        from backtest.pipeline.config import StepThresholds
+
+        return asdict(StepThresholds())
+    except Exception:
+        return {}
 
 
 def build_parser() -> argparse.ArgumentParser:

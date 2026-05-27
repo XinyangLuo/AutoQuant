@@ -14,6 +14,9 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 
 import pandas as pd
@@ -29,7 +32,7 @@ from backtest.data.trade_calendar import get_trade_dates
 # Chunking helpers
 # ---------------------------------------------------------------------------
 
-_CHUNK_DAYS = 20  # trade days per API call — conservative: 20*250=5000 < 6000 cap
+_CHUNK_DAYS = 25  # trade days per API call — max observed 195 bins/day; 25*240=6000 safe
 
 
 def _trade_date_chunks(start: str, end: str) -> list[tuple[str, str]]:
@@ -45,43 +48,67 @@ def _trade_date_chunks(start: str, end: str) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Rate limiter
+# ---------------------------------------------------------------------------
+
+class RateLimiter:
+    """Thread-safe rate limiter — caps API calls per minute across all threads."""
+
+    def __init__(self, max_per_minute: int) -> None:
+        self._min_interval = 60.0 / max_per_minute
+        self._last = 0.0
+        self._lock = threading.Lock()
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            wait = self._last + self._min_interval - now
+            if wait > 0:
+                time.sleep(wait)
+            self._last = time.monotonic()
+
+
+# ---------------------------------------------------------------------------
 # Backfill core
 # ---------------------------------------------------------------------------
 
-def backfill_symbol(
+def _is_rate_limit_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("rate", "limit", "throttle", "频次", "频率", "too many", "429"))
+
+
+# Exception types that indicate programmer error, not transient failures.
+# These should never be retried.
+_NON_RETRYABLE = frozenset({
+    TypeError, AttributeError, NameError, SyntaxError,
+    ImportError, KeyError, IndexError, ValueError,
+})
+
+
+def _retry_fetch(
     symbol: str,
-    start_date: str,
-    end_date: str,
-    storage: CyqStorage,
-    sleep_sec: float = 0.35,
-) -> int:
-    """Backfill one symbol across [start_date, end_date].
-
-    Returns packed row count (one per (date, symbol) inserted).
-    """
-    chunks = _trade_date_chunks(start_date, end_date)
-    if not chunks:
-        return 0
-
-    total_packed = 0
-    for chunk_start, chunk_end in chunks:
-        if sleep_sec > 0:
-            import time
-            time.sleep(sleep_sec)
-
+    chunk_start: str,
+    chunk_end: str,
+    max_retries: int = 3,
+) -> list[pd.DataFrame]:
+    """Fetch with retry on transient errors (rate-limit, connection)."""
+    last_exc: Exception | None = None
+    for attempt in range(max_retries + 1):
         try:
-            df_list = fetch_cyq_for_symbol_range(symbol, chunk_start, chunk_end)
+            return fetch_cyq_for_symbol_range(symbol, chunk_start, chunk_end)
         except Exception as exc:
-            tqdm.write(f"  {symbol} {chunk_start}~{chunk_end}: fetch failed ({exc})")
-            continue
+            last_exc = exc
+            if attempt == max_retries or type(exc) in _NON_RETRYABLE:
+                raise
+            wait = (5 * (2 ** attempt)) if _is_rate_limit_error(exc) else (2 * (attempt + 1))
+            tqdm.write(
+                f"  {symbol} {chunk_start}~{chunk_end}: "
+                f"attempt {attempt + 1} failed ({exc}), retrying in {wait}s..."
+            )
+            time.sleep(wait)
 
-        for df in df_list:
-            if df.empty:
-                continue
-            storage.insert_cyq(df)
-            total_packed += df["date"].nunique()
-
-    return total_packed
+    tqdm.write(f"  {symbol} {chunk_start}~{chunk_end}: all retries exhausted ({last_exc})")
+    return [pd.DataFrame(columns=["date", "symbol", "price", "percent"])]
 
 
 def backfill_cyq_chips(
@@ -89,9 +116,12 @@ def backfill_cyq_chips(
     start_date: str | None = None,
     end_date: str | None = None,
     storage: CyqStorage | None = None,
-    sleep_sec: float = 0.35,
+    sleep_sec: float = 0.01,
+    max_workers: int = 4,
 ) -> int:
     """Backfill cyq_chips for all symbols in the given range.
+
+    Uses multi-threaded parallel fetching with a global rate limiter.
 
     Parameters
     ----------
@@ -105,7 +135,9 @@ def backfill_cyq_chips(
     storage : CyqStorage | None
         Reuse an existing storage instance.
     sleep_sec : float
-        Pause between API calls to respect Tushare rate limits.
+        Ignored in parallel mode (rate limiter handles pacing).
+    max_workers : int
+        Number of parallel threads.  Default 6.
 
     Returns
     -------
@@ -136,7 +168,7 @@ def backfill_cyq_chips(
                     datetime.strptime(max_date, "%Y%m%d") + timedelta(days=1)
                 ).strftime("%Y%m%d")
             else:
-                start_date = "20100101"  # earliest A-share data reasonable default
+                start_date = "20100101"
 
         start_dt = datetime.strptime(start_date, "%Y%m%d")
         if start_dt > end_dt:
@@ -148,22 +180,50 @@ def backfill_cyq_chips(
             print(f"cyq_chips: no trade dates in {start_date} ~ {end_date}.")
             return 0
 
-        n_trade_dates = sum(
-            len(get_trade_dates(s, e)) for s, e in chunks
-        )
+        n_trade_dates = sum(len(get_trade_dates(s, e)) for s, e in chunks)
         print(
             f"cyq_chips: {len(symbols)} symbols, "
             f"{n_trade_dates} trade days ({start_date} ~ {end_date}), "
-            f"{len(chunks)} chunks/symbol"
+            f"{len(chunks)} chunks/symbol, "
+            f"{max_workers} workers"
         )
 
+        # --- Parallel fetch with rate limiter & serialized writes ---
+        rate_limiter = RateLimiter(max_per_minute=900)  # 90% of 1000 limit
+        write_lock = threading.Lock()
+        pbar_lock = threading.Lock()
+        pbar = tqdm(total=len(symbols), desc="cyq_chips backfill")
         total_packed = 0
-        for symbol in tqdm(symbols, desc="cyq_chips backfill"):
-            n_packed = backfill_symbol(
-                symbol, start_date, end_date, storage, sleep_sec=sleep_sec
-            )
-            if n_packed:
-                total_packed += n_packed
+
+        def _process_symbol(sym: str) -> int:
+            packed = 0
+            try:
+                for cs, ce in chunks:
+                    rate_limiter.acquire()
+                    df_list = _retry_fetch(sym, cs, ce)
+                    with write_lock:
+                        for df in df_list:
+                            if df.empty:
+                                continue
+                            storage.insert_cyq(df)
+                            packed += df["date"].nunique()
+            finally:
+                with pbar_lock:
+                    pbar.update(1)
+            return packed
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_process_symbol, s): s for s in symbols}
+            for future in as_completed(futures):
+                try:
+                    n = future.result()
+                    if n:
+                        total_packed += n
+                except Exception as exc:
+                    sym = futures[future]
+                    tqdm.write(f"  {sym}: worker crashed ({exc})")
+
+        pbar.close()
 
         stats = storage.get_stats()
         print(
@@ -197,9 +257,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sleep",
         type=float,
-        default=0.35,
-        help="Seconds to sleep between API calls (default: 0.35; ~171 calls/min, under 200 limit)",
+        default=0.01,
+        help="Seconds to sleep between API calls (default: 0.01; natural rate ~700/min, under 1000 limit)",
 
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of parallel fetch threads (default: 4)",
     )
     args = parser.parse_args(argv)
 
@@ -212,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
         start_date=args.start,
         end_date=args.end,
         sleep_sec=args.sleep,
+        max_workers=args.workers,
     )
     return 0
 

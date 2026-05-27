@@ -1,45 +1,46 @@
-"""Factor evaluator — converts backtest metrics into structured feedback."""
+"""Factor evaluator — converts pipeline step results into structured feedback."""
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
-
-from backtest.factor.admission import RECOMMENDED_THRESHOLDS as _ADM_THRESHOLDS
-from backtest.pipeline.config import StepThresholds as _PipeThresh
 
 from .experiment import AutoQuantFactorExperiment
 
 
-def _default_min_sharpe_simple() -> float:
-    try:
-        return _PipeThresh().min_sharpe_simple
-    except Exception:
-        return 0.8
-
-
 @dataclass
 class QuantFeedback:
-    """Structured feedback for a factor experiment run."""
+    """Structured feedback for a factor experiment run.
+
+    Builds the decision from per-step results rather than re-computing
+    thresholds — the canonical thresholds live in ``PipelineConfig`` /
+    ``StepThresholds`` and are enforced by the pipeline step functions.
+    """
 
     decision: bool = False
     observation: str = ""
     suggestion: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
 
-    # Factor evaluation metrics
-    rankicir: float = float("-inf")
-    ic_positive_ratio: float = 0.0
+    # Step-level results summary
+    passed_steps: list[str] = field(default_factory=list)
+    failed_step: str | None = None
+    failure_reason: str | None = None
+
+    # Factor evaluation metrics (from step3)
+    annual_icir: float = float("-inf")
+    pos_ratio: float = 0.0
     turnover: float = float("inf")
     max_corr: float = 0.0
 
-    # Simple backtest metrics
+    # Simple backtest metrics (from step6)
     simple_sharpe: float | None = None
     simple_mdd: float | None = None
     simple_annual_return: float | None = None
     simple_calmar: float | None = None
 
-    # Detailed backtest metrics (optional)
+    # Detailed backtest metrics (from step7)
     detailed_sharpe: float | None = None
     detailed_annual_return: float | None = None
     cost_drag: float | None = None
@@ -47,6 +48,7 @@ class QuantFeedback:
     # Pipeline gate metrics
     monotonicity: float | None = None
     ridge_tier: str | None = None
+    residual_annual_icir: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         import math
@@ -56,10 +58,13 @@ class QuantFeedback:
             "observation": self.observation,
             "suggestion": self.suggestion,
             "metrics": self.metrics,
+            "passed_steps": self.passed_steps,
+            "failed_step": self.failed_step,
+            "failure_reason": self.failure_reason,
         }
         extras = {
-            "rankicir": self.rankicir,
-            "ic_positive_ratio": self.ic_positive_ratio,
+            "annual_icir": self.annual_icir,
+            "pos_ratio": self.pos_ratio,
             "turnover": self.turnover,
             "max_corr": self.max_corr,
             "simple_sharpe": self.simple_sharpe,
@@ -70,6 +75,7 @@ class QuantFeedback:
             "cost_drag": self.cost_drag,
             "monotonicity": self.monotonicity,
             "ridge_tier": self.ridge_tier,
+            "residual_annual_icir": self.residual_annual_icir,
         }
         for k, v in extras.items():
             if v is not None and v != float("-inf") and v != float("inf") and not math.isnan(v):
@@ -84,8 +90,11 @@ class QuantFeedback:
             observation=data.get("observation", ""),
             suggestion=data.get("suggestion", ""),
             metrics=metrics,
-            rankicir=data.get("rankicir", metrics.get("rankicir", float("-inf"))),
-            ic_positive_ratio=data.get("ic_positive_ratio", metrics.get("ic_positive_ratio", 0.0)),
+            passed_steps=data.get("passed_steps", []),
+            failed_step=data.get("failed_step"),
+            failure_reason=data.get("failure_reason"),
+            annual_icir=data.get("annual_icir", metrics.get("annual_icir", float("-inf"))),
+            pos_ratio=data.get("pos_ratio", metrics.get("pos_ratio", 0.0)),
             turnover=data.get("turnover", metrics.get("turnover", float("inf"))),
             max_corr=data.get("max_corr", metrics.get("max_corr", 0.0)),
             simple_sharpe=data.get("simple_sharpe", metrics.get("simple_sharpe")),
@@ -97,78 +106,86 @@ class QuantFeedback:
             cost_drag=data.get("cost_drag", metrics.get("cost_drag")),
             monotonicity=data.get("monotonicity", metrics.get("monotonicity")),
             ridge_tier=data.get("ridge_tier", metrics.get("ridge_tier")),
+            residual_annual_icir=data.get("residual_annual_icir"),
         )
 
 
 class AutoQuantFactorEvaluator:
-    """Evaluate a factor experiment against candidate thresholds."""
+    """Evaluate a factor experiment from pipeline step results.
 
-    def __init__(
-        self,
-        *,
-        min_rankicir: float | None = None,
-        min_ic_positive_ratio: float | None = None,
-        max_turnover: float | None = None,
-        max_corr: float | None = None,
-        min_simple_sharpe: float | None = None,
-    ):
-        self.min_rankicir = min_rankicir if min_rankicir is not None else _ADM_THRESHOLDS["min_rankicir"]
-        self.min_ic_positive_ratio = min_ic_positive_ratio if min_ic_positive_ratio is not None else _ADM_THRESHOLDS["min_ic_positive_ratio"]
-        self.max_turnover = max_turnover if max_turnover is not None else _ADM_THRESHOLDS["max_turnover"]
-        self.max_corr = max_corr if max_corr is not None else _ADM_THRESHOLDS["max_corr"]
-        self.min_simple_sharpe = min_simple_sharpe if min_simple_sharpe is not None else _default_min_sharpe_simple()
+    The decision is derived from the per-step pass/fail status recorded
+    by the canonical pipeline — no thresholds are re-computed here.
+    """
 
     def evaluate(self, experiment: AutoQuantFactorExperiment) -> QuantFeedback:
         """Evaluate a completed experiment and return structured feedback."""
-        er = experiment.eval_result or {}
-        sm = experiment.simple_bt_metrics or {}
-        dm = experiment.detailed_bt_metrics
+        step_results = experiment.step_results or {}
 
-        rankicir = er.get("rankicir") if er.get("rankicir") is not None else float("-inf")
-        ic_pos = er.get("ic_positive_ratio") if er.get("ic_positive_ratio") is not None else 0.0
-        turnover = er.get("turnover") if er.get("turnover") is not None else float("inf")
-        max_corr = er.get("max_corr") if er.get("max_corr") is not None else 0.0
+        passed_steps = [name for name, sr in step_results.items() if sr.get("passed", False)]
+        failed_steps = [name for name, sr in step_results.items() if not sr.get("passed", True)]
 
-        simple_sharpe = sm.get("sharpe")
-        simple_mdd = sm.get("max_drawdown")
-        simple_ann_ret = sm.get("annual_return")
-        simple_calmar = sm.get("calmar")
+        failed_step = failed_steps[0] if failed_steps else None
+        failure_reason = None
+        if failed_step:
+            failure_reason = step_results[failed_step].get("reason")
 
-        detailed_sharpe = None
-        detailed_ann_ret = None
-        if dm:
-            detailed_sharpe = dm.get("sharpe")
-            detailed_ann_ret = dm.get("annual_return")
+        # Gate steps are step1-step9; step10 is a report step that always passes
+        gate_step_names = {f"step{i}" for i in range(1, 10)}
+        gate_passed = [s for s in passed_steps if s in gate_step_names]
+        decision = len(failed_steps) == 0 and len(gate_passed) == len(gate_step_names)
+
+        # Extract metrics from step results
+        sr3 = step_results.get("step3", {}).get("metrics", {})
+        sr4 = step_results.get("step4", {}).get("metrics", {})
+        sr6 = experiment.simple_bt_metrics or {}
+        sr7 = experiment.detailed_bt_metrics or {}
+        sr8 = step_results.get("step8", {}).get("metrics", {})
+        sr9 = step_results.get("step9", {}).get("metrics", {})
+
+        annual_icir = sr3.get("annual_icir", float("-inf"))
+        ic_pos = sr3.get("pos_ratio", 0.0)
+        turnover = float("inf")
+        max_corr = 0.0
+        monotonicity = sr4.get("spearman")
+        simple_sharpe = sr6.get("sharpe")
+        simple_mdd = sr6.get("max_drawdown")
+        simple_ann_ret = sr6.get("annual_return")
+        simple_calmar = sr6.get("calmar")
+        detailed_sharpe = sr7.get("sharpe")
+        detailed_ann_ret = sr7.get("annual_return")
+        ridge_tier = sr8.get("tier")
+        annual_icirs = sr9.get("annual_icirs", {})
+        residual_annual_icir = (
+            max(v for v in annual_icirs.values() if v is not None and not math.isnan(v))
+            if annual_icirs else None
+        )
 
         cost_drag = None
         if simple_ann_ret is not None and detailed_ann_ret is not None:
             cost_drag = simple_ann_ret - detailed_ann_ret
 
-        decision = (
-            rankicir >= self.min_rankicir
-            and ic_pos >= self.min_ic_positive_ratio
-            and turnover < self.max_turnover
-            and max_corr < self.max_corr
-            and simple_sharpe is not None
-            and simple_sharpe >= self.min_simple_sharpe
-        )
-
         observation = self._format_observation(
-            rankicir, ic_pos, turnover, max_corr,
+            passed_steps, failed_step, failure_reason,
+            annual_icir, ic_pos, turnover, max_corr, monotonicity,
             simple_sharpe, simple_mdd, simple_ann_ret,
             detailed_sharpe, detailed_ann_ret,
+            ridge_tier, residual_annual_icir,
         )
         suggestion = self._generate_suggestion(
-            rankicir, ic_pos, turnover, max_corr, simple_sharpe,
+            decision, failed_step,
+            annual_icir, ic_pos, turnover, max_corr, simple_sharpe,
         )
 
         return QuantFeedback(
             decision=decision,
             observation=observation,
             suggestion=suggestion,
+            passed_steps=passed_steps,
+            failed_step=failed_step,
+            failure_reason=failure_reason,
             metrics={
-                "rankicir": rankicir,
-                "ic_positive_ratio": ic_pos,
+                "annual_icir": annual_icir,
+                "pos_ratio": ic_pos,
                 "turnover": turnover,
                 "max_corr": max_corr,
                 "simple_sharpe": simple_sharpe,
@@ -177,9 +194,12 @@ class AutoQuantFactorEvaluator:
                 "detailed_sharpe": detailed_sharpe,
                 "detailed_annual_return": detailed_ann_ret,
                 "cost_drag": cost_drag,
+                "monotonicity": monotonicity,
+                "ridge_tier": ridge_tier,
+                "residual_annual_icir": residual_annual_icir,
             },
-            rankicir=rankicir,
-            ic_positive_ratio=ic_pos,
+            annual_icir=annual_icir,
+            pos_ratio=ic_pos,
             turnover=turnover,
             max_corr=max_corr,
             simple_sharpe=simple_sharpe,
@@ -189,27 +209,35 @@ class AutoQuantFactorEvaluator:
             detailed_sharpe=detailed_sharpe,
             detailed_annual_return=detailed_ann_ret,
             cost_drag=cost_drag,
+            monotonicity=monotonicity,
+            ridge_tier=ridge_tier,
+            residual_annual_icir=residual_annual_icir,
         )
 
     def _format_observation(
         self,
-        rankicir: float, ic_pos: float, turnover: float, max_corr: float,
+        passed_steps: list[str],
+        failed_step: str | None,
+        failure_reason: str | None,
+        annual_icir: float, ic_pos: float, turnover: float, max_corr: float,
+        monotonicity: float | None,
         simple_sharpe: float | None, simple_mdd: float | None,
         simple_ann_ret: float | None,
         detailed_sharpe: float | None, detailed_ann_ret: float | None,
+        ridge_tier: str | None,
+        residual_annual_icir: float | None,
     ) -> str:
-        def _status(val: float | None, thresh: float, higher_is_better: bool = True) -> str:
-            if val is None:
-                return "N/A"
-            passed = (val >= thresh) if higher_is_better else (val < thresh)
-            return f"{val:.3f} {'PASS' if passed else 'FAIL'}"
+        parts: list[str] = []
 
-        parts: list[str] = [
-            f"RankICIR = {_status(rankicir, self.min_rankicir)} (threshold: {self.min_rankicir})",
-            f"IC+ ratio = {_status(ic_pos, self.min_ic_positive_ratio)} (threshold: {self.min_ic_positive_ratio})",
-            f"Turnover = {_status(turnover, self.max_turnover, higher_is_better=False)} (threshold: <{self.max_turnover})",
-            f"Max corr with existing = {_status(max_corr, self.max_corr, higher_is_better=False)} (threshold: <{self.max_corr})",
-        ]
+        if failed_step:
+            parts.append(f"Failed at {failed_step}: {failure_reason or 'unknown'}")
+        parts.append(f"Passed steps: {', '.join(passed_steps) if passed_steps else 'none'}")
+
+        if annual_icir != float("-inf"):
+            parts.append(f"Annual ICIR = {annual_icir:.3f}")
+        parts.append(f"IC+ ratio = {ic_pos:.1%}")
+        if monotonicity is not None:
+            parts.append(f"Monotonicity = {monotonicity:.3f}")
         if simple_sharpe is not None:
             parts.append(f"Simple Sharpe = {simple_sharpe:.3f}")
         if simple_mdd is not None:
@@ -220,46 +248,46 @@ class AutoQuantFactorEvaluator:
             parts.append(f"Detailed Sharpe = {detailed_sharpe:.3f}")
         if detailed_ann_ret is not None:
             parts.append(f"Detailed Annual Return = {detailed_ann_ret:.2%}")
+        if ridge_tier:
+            parts.append(f"Ridge tier = {ridge_tier}")
+        if residual_annual_icir is not None:
+            parts.append(f"Residual annual ICIR = {residual_annual_icir:.3f}")
         return "\n".join(parts)
 
     def _generate_suggestion(
         self,
-        rankicir: float, ic_pos: float, turnover: float,
+        decision: bool,
+        failed_step: str | None,
+        annual_icir: float, ic_pos: float, turnover: float,
         max_corr: float, simple_sharpe: float | None,
     ) -> str:
-        suggestions: list[str] = []
-        if rankicir < self.min_rankicir:
-            suggestions.append(
-                f"RankICIR is low ({rankicir:.3f} < {self.min_rankicir}). "
-                "Try a longer lookback window, add a volume filter, or combine "
-                "with a secondary signal to improve persistence."
-            )
-        if ic_pos < self.min_ic_positive_ratio:
-            suggestions.append(
-                f"IC+ ratio is weak ({ic_pos:.1%} < {self.min_ic_positive_ratio:.0%}). "
-                "The factor direction may be unstable. Consider inverting the signal "
-                "or adding a regime filter."
-            )
-        if turnover >= self.max_turnover:
-            suggestions.append(
-                f"Turnover is too high ({turnover:.3f} >= {self.max_turnover}). "
-                "Use slower-moving inputs, increase smoothing (e.g. ts_mean), "
-                "or apply a delay/decay to reduce churn."
-            )
-        if max_corr >= self.max_corr:
-            suggestions.append(
-                f"Max correlation with existing factors is high ({max_corr:.3f} >= {self.max_corr}). "
-                "The factor may be a style clone. Try a different construction "
-                "or orthogonalize against known style factors."
-            )
-        if simple_sharpe is not None and simple_sharpe < self.min_simple_sharpe:
-            suggestions.append(
-                f"Simple Sharpe is weak ({simple_sharpe:.3f} < {self.min_simple_sharpe}). "
-                "Review the signal strength and consider tighter universe filtering."
-            )
-        if not suggestions:
+        if decision:
             return (
-                "All candidate thresholds are met. Consider pushing for the high bar "
-                "(Sharpe >= 1.0) or running on a longer history."
+                "All pipeline steps passed. The factor is a candidate for admission. "
+                "Review the pipeline report in results/agent/candidates/ before admitting."
             )
-        return " ".join(suggestions)
+
+        if failed_step is None:
+            return "Pipeline did not complete. Check the error log for details."
+
+        step_suggestions = {
+            "step1": "Coverage check failed. The factor has too many missing values. "
+                      "Check data source availability or widen the universe.",
+            "step2": "Neutralization failed — factor is too correlated with size or industry. "
+                     "The Barra neutralization pipeline may need review.",
+            "step3": f"ICIR check failed (Annual ICIR={annual_icir:.3f}). "
+                     "Try a longer lookback window, add a volume filter, or change the construction.",
+            "step4": "Monotonicity check failed — decile returns are not monotonic. "
+                     "The factor may only work at extremes. Consider adding a secondary filter.",
+            "step5": "Strategy config error. Check top_k/top_pct/decay settings in config.yaml.",
+            "step6": f"Simple backtest failed (Sharpe={simple_sharpe or 'N/A'}). "
+                     "Try adjusting decay, universe, or top_k via config.yaml pipeline defaults.",
+            "step7": "Detailed backtest failed. Costs or market frictions may be eating the alpha. "
+                     "Review turnover and fee impact.",
+            "step8": "Ridge R² check failed — factor is a style clone of existing Barra factors. "
+                     "The factor does not add independent information.",
+            "step9": "Residual ICIR check failed — factor has no incremental predictive power "
+                     "beyond already-admitted factors.",
+            "step10": "Report generation failed. Check results directory permissions.",
+        }
+        return step_suggestions.get(failed_step, f"Pipeline stopped at {failed_step}.")

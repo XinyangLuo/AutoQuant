@@ -1,33 +1,34 @@
-"""Factor runner — executes the full backtest pipeline for a generated factor."""
+"""Factor runner — executes the full backtest pipeline for a generated factor.
+
+Delegates step3~step10 to ``backtest.pipeline.steps`` so the agent pipeline
+stays in lockstep with the canonical step1~step10 defined in PIPELINE.md.
+"""
 
 from __future__ import annotations
 
-import copy
 import importlib.util
 import sys
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
-
 from backtest.data.storage import MarketStorage
-from backtest.evaluation import evaluate as bt_evaluate
 from backtest.factor.compute import apply_variant_pipeline, compute_factor
-from backtest.factor.evaluation import evaluate as factor_evaluate
 from backtest.factor.registry import get_factor_meta, sync_registry, unregister
 from backtest.factor.storage import FactorStorage
-from backtest.simulation.config import SimulationConfig
-from backtest.simulation.detailed import DetailedSimulator
-from backtest.simulation.simple import SimpleSimulator
-from backtest.strategy.config import (
-    BacktestConfig,
-    FactorConfig,
-    SelectionConfig,
-    StrategyConfig,
-    UniverseConfig,
-    WeightingConfig,
+from backtest.pipeline import (
+    PipelineConfig,
+    PipelineState,
+    step1_coverage_check,
+    step2_neutralization_check,
+    step3_icir_check,
+    step4_monotonicity_check,
+    step5_build_strategy,
+    step6_simple_backtest,
+    step7_detailed_backtest,
+    step8_ridge_r2,
+    step9_residual_icir,
+    step10_report_and_admit,
 )
-from backtest.strategy.strategies.single_factor import SingleFactorStrategy
 
 from .experiment import AutoQuantFactorExperiment
 
@@ -39,10 +40,7 @@ class AutoQuantFactorRunner:
     -----
     1. Write code to disk -> import to trigger ``@register``
     2. Backfill: ``compute_factor()`` + neutralization -> work DB
-    3. Factor evaluation: ``evaluate()`` -> IC / RankIC / turnover / corr
-    4. Simple backtest: ``SingleFactorStrategy`` + ``SimpleSimulator``
-    5. Detailed backtest (conditional): ``DetailedSimulator``
-    6. Collect all metrics into the experiment
+    3-10. Canonical pipeline steps (delegated to ``backtest.pipeline.steps``)
     """
 
     def __init__(
@@ -72,25 +70,6 @@ class AutoQuantFactorRunner:
             self.market_storage = MarketStorage(read_only=True)
         if self.factor_storage is None:
             self.factor_storage = FactorStorage()
-
-        self._default_strategy_config = StrategyConfig(
-            strategy_type="single_factor_topk",
-            rebalance_freq="1D",
-            delay=1,
-            universe=UniverseConfig(
-                exclude_st=True,
-                exclude_new_ipo_days=252,
-                include_cyb=True,
-                include_kcb=False,
-            ),
-            selection=SelectionConfig(method="topk", top_pct=0.1),
-            weighting=WeightingConfig(method="equal"),
-            backtest=BacktestConfig(
-                start_date=start_date,
-                end_date=end_date,
-                benchmark=benchmark,
-            ),
-        )
 
     def __enter__(self):
         return self
@@ -127,18 +106,28 @@ class AutoQuantFactorRunner:
     def run(
         self,
         experiment: AutoQuantFactorExperiment,
-        strategy_config: StrategyConfig | None = None,
     ) -> AutoQuantFactorExperiment:
         experiment.status = "running"
-        strategy_config = strategy_config or self._default_strategy_config
 
         try:
+            # Phase A: register + backfill (agent-owned, not in pipeline steps)
             self._register_factor(experiment)
             self._backfill_factor(experiment)
-            self._evaluate_factor(experiment)
-            self._run_simple_backtest(experiment, strategy_config)
-            self._maybe_run_detailed_backtest(experiment, strategy_config)
-            experiment.status = "passed"
+
+            # Phase B: canonical step1~step10 pipeline
+            state = self._run_pipeline(experiment)
+            experiment = self._collect_results(experiment, state)
+
+            if state.status == "ready_for_review":
+                experiment.status = "candidate"
+            elif state.is_rejected():
+                experiment.status = "rejected"
+                # Build a combined error message from the failing step
+                last_step = state.last_step()
+                if last_step and last_step in state.step_results:
+                    sr = state.step_results[last_step]
+                    if sr.reason:
+                        experiment.error = f"[{last_step}] {sr.reason}"
         except Exception as e:
             experiment.status = "rejected"
             experiment.error = f"{type(e).__name__}: {e}"
@@ -147,7 +136,7 @@ class AutoQuantFactorRunner:
         return experiment
 
     # ------------------------------------------------------------------
-    # Step 1: Code registration
+    # Phase A: Registration + backfill
     # ------------------------------------------------------------------
 
     def _register_factor(self, experiment: AutoQuantFactorExperiment) -> None:
@@ -187,10 +176,6 @@ class AutoQuantFactorRunner:
 
         sync_registry()
 
-    # ------------------------------------------------------------------
-    # Step 2: Backfill
-    # ------------------------------------------------------------------
-
     def _backfill_factor(self, experiment: AutoQuantFactorExperiment) -> None:
         meta = get_factor_meta(experiment.factor_id)
         raw_df = compute_factor(
@@ -225,153 +210,76 @@ class AutoQuantFactorRunner:
         self.factor_storage.insert_factors(df)
 
     # ------------------------------------------------------------------
-    # Step 3: Factor evaluation
+    # Phase B: Canonical pipeline (step1~step10)
     # ------------------------------------------------------------------
 
-    def _evaluate_factor(self, experiment: AutoQuantFactorExperiment) -> None:
-        cfg = self.agent_config
-        ret_type = getattr(cfg, "ret_type", "open") if cfg else "open"
-        exclude_limit_up = getattr(cfg, "exclude_limit_up", True) if cfg else True
-        primary_horizon = getattr(cfg, "primary_horizon", 20) if cfg else 20
-        eval_result = factor_evaluate(
-            experiment.factor_id, self.start_date, self.end_date,
-            ret_type=ret_type, corr_top_k=5, exclude_limit_up=exclude_limit_up,
+    def _run_pipeline(self, experiment: AutoQuantFactorExperiment) -> PipelineState:
+        """Execute step1~step10 in sequence, stopping on first rejection."""
+        config = PipelineConfig(
+            factor_id=experiment.factor_id,
+            start_date=self.start_date,
+            end_date=self.end_date,
+            results_root=str(self.results_root),
+            benchmark=self.benchmark,
         )
-        thresholds = eval_result.threshold_metrics(primary_horizon=primary_horizon)
-        experiment.eval_result = {
-            "factor_id": eval_result.factor_id,
-            "variant": eval_result.variant,
-            "horizons": eval_result.horizons,
-            "rankicir": thresholds.get("rankicir"),
-            "ic_positive_ratio": thresholds.get("ic_positive_ratio"),
-            "turnover": thresholds.get("turnover"),
-            "max_corr": thresholds.get("max_corr"),
-            "summary": eval_result.summary().to_dict("records"),
+        state = PipelineState(factor_id=experiment.factor_id, config=config)
+
+        steps: list[tuple[str, Any]] = [
+            ("step1", step1_coverage_check),
+            ("step2", step2_neutralization_check),
+            ("step3", step3_icir_check),
+            ("step4", step4_monotonicity_check),
+            ("step5", step5_build_strategy),
+            ("step6", step6_simple_backtest),
+            ("step7", step7_detailed_backtest),
+            ("step8", step8_ridge_r2),
+            ("step9", step9_residual_icir),
+        ]
+
+        for step_name, step_fn in steps:
+            if state.is_rejected():
+                break
+            state = step_fn(state)
+
+        # step10: generate report for candidates (does not auto-admit)
+        if not state.is_rejected():
+            state = step10_report_and_admit(state)
+
+        return state
+
+    def _collect_results(
+        self,
+        experiment: AutoQuantFactorExperiment,
+        state: PipelineState,
+    ) -> AutoQuantFactorExperiment:
+        """Extract pipeline state into the experiment for feedback."""
+        # Store step results
+        experiment.step_results = {
+            name: {"passed": sr.passed, "reason": sr.reason, "metrics": sr.metrics}
+            for name, sr in state.step_results.items()
         }
 
-    # ------------------------------------------------------------------
-    # Step 4: Simple backtest
-    # ------------------------------------------------------------------
+        # Extract factor evaluation from step3
+        sr3 = state.step_results.get("step3")
+        if sr3 and sr3.metrics:
+            experiment.eval_result = sr3.metrics
 
-    def _run_simple_backtest(
-        self, experiment: AutoQuantFactorExperiment, strategy_config: StrategyConfig,
-    ) -> None:
-        config = self._build_strategy_config(strategy_config, experiment.factor_id)
-        factor_panel = self.factor_storage.get_factors_long(
-            factor_ids=[experiment.factor_id],
-            start=self.start_date, end=self.end_date,
-        )
-        factor_panel = factor_panel.pivot_table(
-            index=["date", "symbol"], columns="factor_id", values="value",
-        ).reset_index()
-        if isinstance(factor_panel.columns, pd.MultiIndex):
-            factor_panel.columns = [
-                col[1] if col[0] == "value" else col[0]
-                for col in factor_panel.columns.to_flat_index()
-            ]
+        # Extract simple backtest metrics from step6
+        if state.simple_bt_metrics:
+            experiment.simple_bt_metrics = state.simple_bt_metrics
 
-        market_panel = self.market_storage.get_bars(
-            symbols=None, start=self.start_date, end=self.end_date,
-        )
-        strategy = SingleFactorStrategy(config)
-        rebalance_dates = self._get_rebalance_dates(config)
-        signals = strategy.generate_signals(factor_panel, market_panel, rebalance_dates)
+        # Extract detailed backtest metrics from step7
+        if state.detailed_bt_metrics:
+            experiment.detailed_bt_metrics = state.detailed_bt_metrics
 
-        sim = SimpleSimulator(SimulationConfig())
-        result = sim.run(signals, market_panel)
+        # Extract Ridge R² result from step8
+        sr8 = state.step_results.get("step8")
+        if sr8 and sr8.metrics:
+            experiment.ridge_result = sr8.metrics
 
-        result_dir = self.results_root / experiment.factor_id / "simple"
-        result.save(str(result_dir))
-        experiment.simple_bt_dir = result_dir
+        # Extract residual ICIR result from step9
+        sr9 = state.step_results.get("step9")
+        if sr9 and sr9.metrics:
+            experiment.residual_icir_result = sr9.metrics
 
-        report = bt_evaluate(result_dir, benchmark=self.benchmark, plot=False)
-        experiment.simple_bt_metrics = report.metrics if hasattr(report, "metrics") else {}
-
-    # ------------------------------------------------------------------
-    # Step 5: Detailed backtest (conditional)
-    # ------------------------------------------------------------------
-
-    def _maybe_run_detailed_backtest(
-        self, experiment: AutoQuantFactorExperiment, strategy_config: StrategyConfig,
-    ) -> None:
-        cfg = self.agent_config
-        min_rankicir = getattr(cfg, "min_rankicir", 0.25) if cfg else 0.25
-        min_sharpe_simple = getattr(cfg, "min_sharpe_simple", 0.5) if cfg else 0.5
-
-        import math
-
-        rankicir = experiment.eval_result.get("rankicir", float("-inf"))
-        simple_sharpe = (experiment.simple_bt_metrics or {}).get("sharpe", 0.0)
-
-        if math.isnan(rankicir) or rankicir < min_rankicir or simple_sharpe < min_sharpe_simple:
-            return
-
-        config = self._build_strategy_config(strategy_config, experiment.factor_id)
-        factor_panel = self.factor_storage.get_factors_long(
-            factor_ids=[experiment.factor_id],
-            start=self.start_date, end=self.end_date,
-        )
-        factor_panel = factor_panel.pivot_table(
-            index=["date", "symbol"], columns="factor_id", values="value",
-        ).reset_index()
-
-        market_panel = self.market_storage.get_bars(
-            symbols=None, start=self.start_date, end=self.end_date,
-        )
-        strategy = SingleFactorStrategy(config)
-        rebalance_dates = self._get_rebalance_dates(config)
-        signals = strategy.generate_signals(factor_panel, market_panel, rebalance_dates)
-
-        dividends = self.market_storage.get_dividends(
-            start=self.start_date, end=self.end_date,
-        )
-        sim = DetailedSimulator(SimulationConfig())
-        result = sim.run(signals, market_panel, dividends_data=dividends)
-
-        result_dir = self.results_root / experiment.factor_id / "detailed"
-        result.save(str(result_dir))
-        experiment.detailed_bt_dir = result_dir
-
-        report = bt_evaluate(result_dir, benchmark=self.benchmark, plot=False)
-        experiment.detailed_bt_metrics = report.metrics if hasattr(report, "metrics") else {}
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _build_strategy_config(self, base: StrategyConfig, factor_id: str) -> StrategyConfig:
-        return StrategyConfig(
-            strategy_type=base.strategy_type,
-            rebalance_freq=base.rebalance_freq,
-            delay=base.delay,
-            universe=copy.deepcopy(base.universe),
-            factors=[FactorConfig(id=factor_id, direction="desc", weight=1.0)],
-            combine_method=base.combine_method,
-            selection=copy.deepcopy(base.selection),
-            weighting=copy.deepcopy(base.weighting),
-            neutralize=copy.deepcopy(base.neutralize) if base.neutralize is not None else None,
-            risk=copy.deepcopy(base.risk) if base.risk is not None else None,
-            backtest=copy.deepcopy(base.backtest),
-            decay=copy.deepcopy(base.decay) if base.decay is not None else None,
-        )
-
-    def _get_rebalance_dates(self, config: StrategyConfig) -> list[str]:
-        from backtest.data.trade_calendar import get_trade_dates
-
-        dates = get_trade_dates(self.start_date, self.end_date)
-        freq = config.rebalance_freq
-
-        if freq == "1D":
-            return dates
-        elif freq in ("5D",):
-            return dates[::5]
-        elif freq in ("1W",):
-            return dates[::5]
-        elif freq in ("2W",):
-            return dates[::10]
-        elif freq in ("1M", "EOM"):
-            df = pd.DataFrame({"date": pd.to_datetime(dates)})
-            df["ym"] = df["date"].dt.to_period("M")
-            return df.groupby("ym")["date"].last().dt.strftime("%Y%m%d").tolist()
-        else:
-            return dates[::5]
+        return experiment

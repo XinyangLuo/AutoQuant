@@ -16,16 +16,25 @@ class AutoQuantFactorExperiment:
     factor_code: str = ""
     factor_file_path: Path | None = None
 
-    # Factor evaluation (from backtest.factor.evaluate)
+    # Factor evaluation (from step3)
     eval_result: dict[str, Any] = field(default_factory=dict)
 
-    # Simple backtest metrics
+    # Simple backtest metrics (from step6)
     simple_bt_metrics: dict[str, Any] | None = None
     simple_bt_dir: Path | None = None
 
-    # Detailed backtest metrics
+    # Detailed backtest metrics (from step7)
     detailed_bt_metrics: dict[str, Any] | None = None
     detailed_bt_dir: Path | None = None
+
+    # Ridge R² result (from step8)
+    ridge_result: dict[str, Any] | None = None
+
+    # Residual ICIR result (from step9)
+    residual_icir_result: dict[str, Any] | None = None
+
+    # Per-step results: {step_name: {passed, reason, metrics}}
+    step_results: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # Hypothesis metadata (for knowledge base / trace)
     category: str = ""
@@ -38,7 +47,6 @@ class AutoQuantFactorExperiment:
     status: Literal["pending", "running", "passed", "rejected", "candidate"] = "pending"
 
     def __post_init__(self) -> None:
-        # Legacy compat: alias for code that uses experiment_id / source_code
         object.__setattr__(self, "experiment_id", self.factor_id)
         object.__setattr__(self, "source_code", self.factor_code)
 
@@ -52,6 +60,9 @@ class AutoQuantFactorExperiment:
             "simple_bt_dir": str(self.simple_bt_dir) if self.simple_bt_dir else None,
             "detailed_bt_metrics": self.detailed_bt_metrics,
             "detailed_bt_dir": str(self.detailed_bt_dir) if self.detailed_bt_dir else None,
+            "ridge_result": self.ridge_result,
+            "residual_icir_result": self.residual_icir_result,
+            "step_results": self.step_results,
             "category": self.category,
             "keywords": self.keywords,
             "error": self.error,
@@ -69,6 +80,9 @@ class AutoQuantFactorExperiment:
             simple_bt_dir=Path(data["simple_bt_dir"]) if data.get("simple_bt_dir") else None,
             detailed_bt_metrics=data.get("detailed_bt_metrics"),
             detailed_bt_dir=Path(data["detailed_bt_dir"]) if data.get("detailed_bt_dir") else None,
+            ridge_result=data.get("ridge_result"),
+            residual_icir_result=data.get("residual_icir_result"),
+            step_results=data.get("step_results", {}),
             category=data.get("category", ""),
             keywords=data.get("keywords", []),
             error=data.get("error"),
