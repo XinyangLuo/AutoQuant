@@ -18,6 +18,7 @@ Date range is read from ``config.yaml`` (``pipeline.start_date`` / ``pipeline.en
 from backtest.pipeline.config import PipelineConfig, StepThresholds
 from backtest.pipeline.state import PipelineState, StepResult
 from backtest.pipeline.steps import (
+    run_pipeline,
     step1_coverage_check,
     step2_neutralization_check,
     step3_icir_check,
@@ -35,6 +36,7 @@ __all__ = [
     "StepThresholds",
     "PipelineState",
     "StepResult",
+    "run_pipeline",
     "step1_coverage_check",
     "step2_neutralization_check",
     "step3_icir_check",

@@ -1,7 +1,8 @@
 """Factor runner — executes the full backtest pipeline for a generated factor.
 
-Delegates step3~step10 to ``backtest.pipeline.steps`` so the agent pipeline
-stays in lockstep with the canonical step1~step10 defined in PIPELINE.md.
+Delegates to ``backtest.pipeline.steps.run_pipeline()`` — the same shared
+function used by ``python -m backtest.pipeline run-all``.  Both paths get
+identical pipeline behavior, state persistence, and artifacts.
 """
 
 from __future__ import annotations
@@ -9,26 +10,14 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from typing import Any
 
+from backtest.config_loader import get_section_or
 from backtest.data.storage import MarketStorage
 from backtest.factor.compute import apply_variant_pipeline, compute_factor
 from backtest.factor.registry import get_factor_meta, sync_registry, unregister
 from backtest.factor.storage import FactorStorage
-from backtest.pipeline import (
-    PipelineConfig,
-    PipelineState,
-    step1_coverage_check,
-    step2_neutralization_check,
-    step3_icir_check,
-    step4_monotonicity_check,
-    step5_build_strategy,
-    step6_simple_backtest,
-    step7_detailed_backtest,
-    step8_ridge_r2,
-    step9_residual_icir,
-    step10_report_and_admit,
-)
+from backtest.pipeline import PipelineState
+from backtest.pipeline.steps import run_pipeline
 
 from .experiment import AutoQuantFactorExperiment
 
@@ -53,7 +42,6 @@ class AutoQuantFactorRunner:
         market_storage: MarketStorage | None = None,
         factor_storage: FactorStorage | None = None,
         benchmark: str = "000300.SH",
-        agent_config: Any = None,
     ):
         self.start_date = start_date
         self.end_date = end_date
@@ -62,7 +50,6 @@ class AutoQuantFactorRunner:
         self.market_storage = market_storage
         self.factor_storage = factor_storage
         self.benchmark = benchmark
-        self.agent_config = agent_config
 
         self._market_storage_owned = market_storage is None
         self._factor_storage_owned = factor_storage is None
@@ -114,15 +101,46 @@ class AutoQuantFactorRunner:
             self._register_factor(experiment)
             self._backfill_factor(experiment)
 
-            # Phase B: canonical step1~step10 pipeline
-            state = self._run_pipeline(experiment)
-            experiment = self._collect_results(experiment, state)
+            # Phase B: canonical step1~step10 (shared with manual CLI)
+            ret_type = get_section_or("open", "pipeline", "ret_type")
+            state = run_pipeline(
+                factor_id=experiment.factor_id,
+                frequency="D",
+                start_date=self.start_date,
+                end_date=self.end_date,
+                results_root=str(self.results_root),
+                ret_type=ret_type,
+                benchmark=self.benchmark,
+                skip_mark_rejected=True,
+            )
+
+            # Map pipeline state back to experiment
+            experiment.step_results = {
+                name: {"passed": sr.passed, "reason": sr.reason, "metrics": sr.metrics}
+                for name, sr in state.step_results.items()
+            }
+
+            sr3 = state.step_results.get("step3")
+            if sr3 and sr3.metrics:
+                experiment.eval_result = sr3.metrics
+
+            if state.simple_bt_metrics:
+                experiment.simple_bt_metrics = state.simple_bt_metrics
+            if state.detailed_bt_metrics:
+                experiment.detailed_bt_metrics = state.detailed_bt_metrics
+
+            sr8 = state.step_results.get("step8")
+            if sr8 and sr8.metrics:
+                experiment.ridge_result = sr8.metrics
+
+            sr9 = state.step_results.get("step9")
+            if sr9 and sr9.metrics:
+                experiment.residual_icir_result = sr9.metrics
 
             if state.status == "ready_for_review":
                 experiment.status = "candidate"
             elif state.is_rejected():
                 experiment.status = "rejected"
-                # Build a combined error message from the failing step
                 last_step = state.last_step()
                 if last_step and last_step in state.step_results:
                     sr = state.step_results[last_step]
@@ -208,78 +226,3 @@ class AutoQuantFactorRunner:
                 "Check that the factor function returns non-NaN values."
             )
         self.factor_storage.insert_factors(df)
-
-    # ------------------------------------------------------------------
-    # Phase B: Canonical pipeline (step1~step10)
-    # ------------------------------------------------------------------
-
-    def _run_pipeline(self, experiment: AutoQuantFactorExperiment) -> PipelineState:
-        """Execute step1~step10 in sequence, stopping on first rejection."""
-        config = PipelineConfig(
-            factor_id=experiment.factor_id,
-            start_date=self.start_date,
-            end_date=self.end_date,
-            results_root=str(self.results_root),
-            benchmark=self.benchmark,
-        )
-        state = PipelineState(factor_id=experiment.factor_id, config=config)
-
-        steps: list[tuple[str, Any]] = [
-            ("step1", step1_coverage_check),
-            ("step2", step2_neutralization_check),
-            ("step3", step3_icir_check),
-            ("step4", step4_monotonicity_check),
-            ("step5", step5_build_strategy),
-            ("step6", step6_simple_backtest),
-            ("step7", step7_detailed_backtest),
-            ("step8", step8_ridge_r2),
-            ("step9", step9_residual_icir),
-        ]
-
-        for step_name, step_fn in steps:
-            if state.is_rejected():
-                break
-            state = step_fn(state)
-
-        # step10: generate report for candidates (does not auto-admit)
-        if not state.is_rejected():
-            state = step10_report_and_admit(state)
-
-        return state
-
-    def _collect_results(
-        self,
-        experiment: AutoQuantFactorExperiment,
-        state: PipelineState,
-    ) -> AutoQuantFactorExperiment:
-        """Extract pipeline state into the experiment for feedback."""
-        # Store step results
-        experiment.step_results = {
-            name: {"passed": sr.passed, "reason": sr.reason, "metrics": sr.metrics}
-            for name, sr in state.step_results.items()
-        }
-
-        # Extract factor evaluation from step3
-        sr3 = state.step_results.get("step3")
-        if sr3 and sr3.metrics:
-            experiment.eval_result = sr3.metrics
-
-        # Extract simple backtest metrics from step6
-        if state.simple_bt_metrics:
-            experiment.simple_bt_metrics = state.simple_bt_metrics
-
-        # Extract detailed backtest metrics from step7
-        if state.detailed_bt_metrics:
-            experiment.detailed_bt_metrics = state.detailed_bt_metrics
-
-        # Extract Ridge R² result from step8
-        sr8 = state.step_results.get("step8")
-        if sr8 and sr8.metrics:
-            experiment.ridge_result = sr8.metrics
-
-        # Extract residual ICIR result from step9
-        sr9 = state.step_results.get("step9")
-        if sr9 and sr9.metrics:
-            experiment.residual_icir_result = sr9.metrics
-
-        return experiment

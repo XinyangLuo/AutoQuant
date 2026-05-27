@@ -22,33 +22,10 @@ from pathlib import Path
 
 from backtest.pipeline.config import PipelineConfig
 from backtest.pipeline.state import PipelineState, StepResult
-from backtest.pipeline.steps import (
-    step1_coverage_check,
-    step2_neutralization_check,
-    step3_icir_check,
-    step4_monotonicity_check,
-    step5_build_strategy,
-    step6_simple_backtest,
-    step7_detailed_backtest,
-    step8_ridge_r2,
-    step9_residual_icir,
-    step10_report_and_admit,
-)
+from backtest.pipeline.steps import _STEP_ORDER
 
-STEP_FUNCTIONS = {
-    "step1": step1_coverage_check,
-    "step2": step2_neutralization_check,
-    "step3": step3_icir_check,
-    "step4": step4_monotonicity_check,
-    "step5": step5_build_strategy,
-    "step6": step6_simple_backtest,
-    "step7": step7_detailed_backtest,
-    "step8": step8_ridge_r2,
-    "step9": step9_residual_icir,
-    "step10": step10_report_and_admit,
-}
-
-STEP_ORDER = ["step1", "step2", "step3", "step4", "step5", "step6", "step7", "step8", "step9", "step10"]
+STEP_FUNCTIONS = dict(_STEP_ORDER)
+STEP_ORDER = [name for name, _ in _STEP_ORDER]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -192,44 +169,31 @@ def cmd_step(args, step_name: str) -> int:
 
 
 def cmd_run_all(args) -> int:
-    state_path = Path(args.results_root) / args.factor_id / "pipeline_state.json"
-    if state_path.exists():
-        state_path.unlink()
-    state = _load_or_init_state(args)
-    from_step = args.from_step
-    rejected_step: str | None = None
+    from backtest.pipeline.steps import run_pipeline
 
-    for step_name in STEP_ORDER[from_step - 1:]:
-        print(f"\n--- Running {step_name} ---", file=sys.stderr)
+    cfg = _resolve_pipeline_cfg()
+    state = run_pipeline(
+        factor_id=args.factor_id,
+        frequency=args.frequency,
+        start_date=cfg["start_date"],
+        end_date=cfg["end_date"],
+        results_root=args.results_root,
+        ret_type=cfg["ret_type"],
+        benchmark=cfg["benchmark"],
+        from_step=args.from_step,
+    )
 
-        passed, reason, metrics = _run_step(step_name, state)
-        _save_state(state)
-        _output_json(step_name, passed, reason, metrics)
+    for step_name in [s for s in STEP_ORDER if s in state.step_results]:
+        sr = state.step_results[step_name]
+        _output_json(step_name, sr.passed, sr.reason, sr.metrics)
 
-        if not passed:
-            print(f"\nREJECTED at {step_name}: {reason}", file=sys.stderr)
-            rejected_step = step_name
-            # Stop running further steps but still generate report below.
-            break
-
-    # Always generate a diagnostic report — even on rejection.
-    from backtest.pipeline._report import generate_pipeline_report
-
-    report_path = generate_pipeline_report(state)
+    report_path = state.artifacts.get("report", "")
     print(f"\nReport: {report_path}", file=sys.stderr)
 
-    if rejected_step:
-        # Mark as rejected in registry so `admission status` reflects reality.
-        # Use mark_rejected() instead of reject() to preserve work DB data.
-        from backtest.factor.admission import mark_rejected
-        reason = state.step_results.get(rejected_step, StepResult(False)).reason
-        mark_rejected(
-            state.config.factor_id,
-            notes=f"Pipeline rejected at {rejected_step}: {reason}",
-        )
-        state.status = "rejected"
-        _save_state(state)
-        print(f"\nPipeline REJECTED at {rejected_step}. Factor data preserved in work DB.", file=sys.stderr)
+    if state.is_rejected():
+        last = state.last_step()
+        reason = state.step_results.get(last, StepResult(False)).reason if last else "unknown"
+        print(f"\nPipeline REJECTED at {last}: {reason}", file=sys.stderr)
         return 1
 
     print(f"\nPipeline complete: {state.status}", file=sys.stderr)

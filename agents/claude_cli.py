@@ -162,7 +162,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             end_date=cfg.end_date,
             results_root=run_dir,
             generated_dir=generated_dir,
-            agent_config=cfg,
         ) as runner:
             try:
                 experiment = runner.run(experiment)
