@@ -19,6 +19,13 @@ def main():
             SELECT DISTINCT date
             FROM market_daily
             WHERE margin_rzye IS NULL
+               OR margin_rqye IS NULL
+               OR margin_rzmre IS NULL
+               OR margin_rqyl IS NULL
+               OR margin_rzche IS NULL
+               OR margin_rqchl IS NULL
+               OR margin_rqmcl IS NULL
+               OR margin_rzrqye IS NULL
             ORDER BY date
         """).fetchdf()["date"].tolist()
 
@@ -45,12 +52,14 @@ def main():
                     set_clause = ", ".join(
                         f'"{c}" = t."{c}"' for c in MARGIN_COLS if c in margin_df.columns
                     )
+                    if not set_clause:
+                        continue
                     result = storage.conn.execute(f"""
                         UPDATE market_daily m
                         SET {set_clause}
                         FROM tmp_margin t
-                        WHERE m.date = strptime(t.trade_date, '%Y%m%d')::DATE
-                          AND m.symbol = t.ts_code
+                        WHERE m.date = strptime(t.date, '%Y%m%d')::DATE
+                          AND m.symbol = t.symbol
                     """)
                     updated_total += result.fetchone()[0]
                 finally:

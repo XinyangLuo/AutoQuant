@@ -6,6 +6,8 @@
 
 - **主键**：`(date, symbol)`，按 `date` 分区
 - **列**：`open / high / low / close / volume / amount / pre_close / change / pct_chg / adj_factor / is_st / list_date / limit_up / limit_down / turnover_rate / turnover_rate_f / volume_ratio / pe / pe_ttm / pb / ps / ps_ttm / dv_ratio / dv_ttm / total_share / float_share / free_share / total_mv / circ_mv`
+  - **融资融券**（`pro.margin_detail`）：`margin_rzye / margin_rqye / margin_rzmre / margin_rqyl / margin_rzche / margin_rqchl / margin_rqmcl / margin_rzrqye`
+  - **资金流向**（`pro.moneyflow`）：`mf_buy_sm_vol / mf_buy_sm_amount / mf_sell_sm_vol / mf_sell_sm_amount / mf_buy_md_vol / mf_buy_md_amount / mf_sell_md_vol / mf_sell_md_amount / mf_buy_lg_vol / mf_buy_lg_amount / mf_sell_lg_vol / mf_sell_lg_amount / mf_buy_elg_vol / mf_buy_elg_amount / mf_sell_elg_vol / mf_sell_elg_amount / mf_net_mf_vol / mf_net_mf_amount`
 - **日更**：只 append 最新交易日的行，历史行永不动
 - **扩列**：偶发，走 `ALTER TABLE ... ADD COLUMN` + 历史回填脚本
 - **查询路径**：`get_panel(date)` 横截面 / `get_bars(symbols, start, end)` 时序
@@ -199,6 +201,8 @@ pro.adj_factor   → DataFrame → pandas merge (LEFT JOIN on date+symbol)
 pro.stock_st     → DataFrame → merge
 pro.stk_limit    → DataFrame → merge（列名 up_limit/down_limit → rename 为 limit_up/limit_down）
 pro.daily_basic  → DataFrame → merge
+pro.margin_detail → DataFrame → merge（8 列，rename 加 margin_ 前缀）
+pro.moneyflow    → DataFrame → merge（18 列，rename 加 mf_ 前缀；单位转换 手→股 / 万元→元）
 → 统一宽 DataFrame → UPSERT INTO market_daily
 ```
 

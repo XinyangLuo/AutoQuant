@@ -37,6 +37,8 @@ def get_panel_columns_for_data_sources(
         "mf_buy_sm_vol", "mf_buy_sm_amount",
         "mf_sell_sm_vol", "mf_sell_sm_amount",
         "mf_net_mf_vol", "mf_net_mf_amount",
+        "margin_rzye", "margin_rqye", "margin_rzmre", "margin_rqyl",
+        "margin_rzche", "margin_rqchl", "margin_rqmcl", "margin_rzrqye",
     ]
 
     _income_cols = [

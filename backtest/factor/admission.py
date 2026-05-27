@@ -113,16 +113,16 @@ _ALPHAS_ROOT = Path(__file__).resolve().parents[2] / "alphas"
 
 def _infer_source(func_module: str) -> str | None:
     """Infer factor source (user/agent) from its registered func_module."""
-    if func_module.startswith("alphas.exp.user."):
+    if "alphas.exp.user" in func_module:
         return "user"
-    if func_module.startswith("alphas.exp.agent."):
+    if "alphas.exp.agent" in func_module:
         return "agent"
     return None
 
 
 def _exp_path(factor_id: str, source: str) -> Path:
     """Path to the factor's source file under alphas/exp/."""
-    return _ALPHAS_ROOT / "exp" / source / f"{factor_id}.py"
+    return _ALPHAS_ROOT / "exp" / source / factor_id / "factor.py"
 
 
 def _admitted_dir(factor_id: str) -> Path:
@@ -168,7 +168,7 @@ def _restore_factor_from_admitted(
     """Reverse of ``_move_factor_to_admitted`` — used by ``unadmit``.
 
     Moves ``alphas/admitted/<factor_id>/factor.py`` back to its original
-    ``alphas/exp/<source>/<factor_id>.py`` location.
+    ``alphas/exp/<source>/<factor_id>/factor.py`` location.
     """
     source = _infer_source(func_module)
     if source is None:

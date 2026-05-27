@@ -53,6 +53,8 @@ def main():
                     set_clause = ", ".join(
                         f'"{c}" = t."{c}"' for c in MONEYFLOW_COLS if c in mf_df.columns
                     )
+                    if not set_clause:
+                        continue
                     result = storage.conn.execute(f"""
                         UPDATE market_daily m
                         SET {set_clause}

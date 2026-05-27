@@ -75,11 +75,11 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 def _read_factor_code(
     factor_id: str, factor_file: Path | None, generated_dir: Path,
 ) -> tuple[str, Path]:
-    path = factor_file or generated_dir / f"{factor_id}.py"
+    path = factor_file or generated_dir / factor_id / "factor.py"
     if not path.exists():
         raise FileNotFoundError(
             f"Factor file not found: {path}. Pass --factor-file or create "
-            f"{generated_dir / (factor_id + '.py')}"
+            f"{generated_dir / factor_id / 'factor.py'}"
         )
     return path.read_text(encoding="utf-8"), path
 

@@ -172,9 +172,11 @@ class AutoQuantFactorRunner:
             except (PermissionError, OSError) as e:
                 raise RuntimeError(f"Cannot write {init_file}: {e}. Ensure the directory is writable.")
 
-        file_path = gen_dir / f"{experiment.factor_id}.py"
+        factor_dir = gen_dir / experiment.factor_id
+        factor_dir.mkdir(parents=True, exist_ok=True)
+        file_path = factor_dir / "factor.py"
         mod_prefix = str(gen_dir).replace("/", ".").replace("\\", ".")
-        mod_name = f"{mod_prefix}.{experiment.factor_id}"
+        mod_name = f"{mod_prefix}.{experiment.factor_id}.factor"
         sys.modules.pop(mod_name, None)
 
         file_path.write_text(experiment.factor_code, encoding="utf-8")
