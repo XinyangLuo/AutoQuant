@@ -12,7 +12,7 @@ from backtest.data.storage import MarketStorage
 from backtest.factor.builtin.barra._common import apply_l3_pipeline
 from backtest.factor.registry import get_factor_function, get_factor_meta
 from backtest.factor.storage import FactorLibrary, FactorStorage
-from backtest.factor.transforms import cs_ols_residualize, cs_zscore
+from backtest.factor.transforms import cs_ols_residualize, cs_zscore, industry_median_fill
 from backtest.factor.variants import (
     BARRA_IND_SIZE_VARIANT,
     BARRA_L3_VARIANT,
@@ -273,12 +273,24 @@ def apply_variant_pipeline(
     if variant == NONE_VARIANT:
         series = raw_series
     elif variant in (BARRA_L3_VARIANT, BARRA_IND_SIZE_VARIANT):
-        own_market = market_storage is None
-        try:
-            if market_storage is None:
-                market_storage = MarketStorage(read_only=True)
-            start = raw_df["date"].min().strftime("%Y%m%d")
-            end = raw_df["date"].max().strftime("%Y%m%d")
+        series = raw_series
+    else:
+        raise ValueError(f"Unknown variant {variant!r} for {factor_id}")
+
+    own_market = market_storage is None
+    try:
+        if market_storage is None:
+            market_storage = MarketStorage(read_only=True)
+        start = raw_df["date"].min().strftime("%Y%m%d")
+        end = raw_df["date"].max().strftime("%Y%m%d")
+
+        if variant == NONE_VARIANT:
+            industry_panel = market_storage.get_industry_panel_range(
+                start=start, end=end, level="L1",
+            )
+            series = industry_median_fill(series, industry_panel)
+
+        elif variant in (BARRA_L3_VARIANT, BARRA_IND_SIZE_VARIANT):
             series = apply_l3_pipeline(raw_series, market_storage, start=start, end=end)
 
             if variant == BARRA_IND_SIZE_VARIANT:
@@ -303,11 +315,9 @@ def apply_variant_pipeline(
                     numeric_cols=("size_z",),
                 )
                 series = cs_zscore(series)
-        finally:
-            if own_market and market_storage is not None:
-                market_storage.close()
-    else:
-        raise ValueError(f"Unknown variant {variant!r} for {factor_id}")
+    finally:
+        if own_market and market_storage is not None:
+            market_storage.close()
 
     sub = series.reset_index()
     sub.columns = ["date", "symbol", "value"]
