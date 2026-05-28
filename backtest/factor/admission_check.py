@@ -1,21 +1,19 @@
-"""Ridge R² admission check — classify a candidate factor against Barra L1.
+"""Ridge R² admission check — classify a candidate factor against admitted factors.
 
 After backfill + offline evaluation pass, before ``admit()`` writes a
-factor into the library, we regress the candidate's panel values on the
-6 admitted Barra L1 style factors (Size and Industry excluded — both are
-already stripped during the ``barra_ind_size`` neutralization pipeline).
-The pooled R² tells us how much of the candidate is just a linear
-combination of existing style risks.
+factor into the library, we regress the candidate's panel values on
+ALL admitted factors (per-date Ridge). The mean per-date R² tells us
+how much of the candidate is already explained by existing factors.
 
 Tiers are defined in ``config.yaml`` (``thresholds.admission.ridge_r2``):
 
     R² < pure_alpha_max     -> pure_alpha  (orthogonal — keep)
     pure_alpha_max ≤ R²
       < smart_beta_max      -> smart_beta  (partial style — keep)
-    R² ≥ smart_beta_max     -> reject      (style clone — drop)
+    R² ≥ smart_beta_max     -> reject      (style clone — residual path)
 
-Ridge (small α) instead of OLS so the 6 Barra L1 — which are themselves
-moderately correlated by construction — don't blow up via collinearity.
+Ridge (small α) instead of OLS so that correlated regressors don't blow
+up via collinearity.
 
 This module is read-only against the factor stores. It returns a verdict;
 ``admission.admit()`` owns the side effects (registry write, library
@@ -89,6 +87,7 @@ class RidgeCheckResult:
     n_regressors: int
     r2_stats: dict[str, float]
     residuals_df: pd.DataFrame | None = None
+    regressor_ids: tuple[str, ...] = ()
 
     def as_meta(self) -> dict:
         """Subset suitable for stamping onto ``registry.json`` meta."""
@@ -96,6 +95,8 @@ class RidgeCheckResult:
             "r2": float(self.r2),
             "tier": self.tier,
             "n_obs": self.n_obs,
+            "n_regressors": self.n_regressors,
+            "regressor_ids": list(self.regressor_ids),
         }
 
 
@@ -154,7 +155,7 @@ def _pooled_r2(
     residual = y - y_hat
     ss_res = float((residual ** 2).sum())
     ss_tot = float(((y - y.mean()) ** 2).sum())
-    r2 = 0.0 if ss_tot == 0 else 1.0 - ss_res / ss_tot
+    r2 = 0.0 if ss_tot < 1e-12 else 1.0 - ss_res / ss_tot
     keys = merged[["date", "symbol"]].to_numpy()
     return r2, residual, keys
 
@@ -223,8 +224,8 @@ def ridge_r2_check(
             sub = library.get_factor(reg_id, start=start, end=end)
             if sub.empty:
                 raise LibraryNotBootstrappedError(
-                    f"Regressor {reg_id} missing from library. Admit the "
-                    f"Barra L1 composites first."
+                    f"Regressor {reg_id} is missing from the factor library. "
+                    f"Admit it first, or exclude it from the regressor set."
                 )
             wide_parts.append(sub.rename(columns={"value": reg_id}))
 
@@ -246,6 +247,7 @@ def ridge_r2_check(
             n_regressors=len(regressors),
             r2_stats=r2_stats,
             residuals_df=residuals_df,
+            regressor_ids=regressors,
         )
     finally:
         if own_fs and factor_storage is not None:
@@ -351,7 +353,10 @@ def _per_date_ridge_residuals(
             beta, intercept = _ridge_fit(X, y, alpha=alpha)
         except np.linalg.LinAlgError:
             fallback_alpha = max(alpha * 10, 1.0)
-            beta, intercept = _ridge_fit(X, y, alpha=fallback_alpha)
+            try:
+                beta, intercept = _ridge_fit(X, y, alpha=fallback_alpha)
+            except np.linalg.LinAlgError:
+                continue  # date too ill-conditioned even with higher alpha
         y_hat = X @ beta + intercept
         residual = y - y_hat
         residuals_parts.append(
@@ -362,7 +367,7 @@ def _per_date_ridge_residuals(
         # Per-date R²
         ss_res = float((residual ** 2).sum())
         ss_tot = float(((y - y.mean()) ** 2).sum())
-        r2s.append(1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0)
+        r2s.append(1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0)
 
     if not residuals_parts:
         raise InsufficientOverlapError(
@@ -523,6 +528,7 @@ def residual_icir_check(
     factor_storage: FactorStorage | None = None,
     library: FactorLibrary | None = None,
     precomputed_residuals: pd.DataFrame | None = None,
+    precomputed_n_regressors: int = -1,
 ) -> ResidualICIRResult:
     """Check if candidate adds incremental predictive power beyond ALL admitted factors.
 
@@ -569,7 +575,22 @@ def residual_icir_check(
 
         if precomputed_residuals is not None:
             residuals = precomputed_residuals
-            n_regressors = -1  # unknown when precomputed
+            n_regressors = precomputed_n_regressors
+            if n_regressors == 0:
+                return ResidualICIRResult(
+                    factor_id=factor_id,
+                    residual_rank_icirs={h: float("nan") for h in horizons},
+                    residual_rank_ic_means={h: float("nan") for h in horizons},
+                    residual_rank_ic_stds={h: float("nan") for h in horizons},
+                    residual_rank_ic_pos_ratios={h: float("nan") for h in horizons},
+                    annual_icirs={h: float("nan") for h in horizons},
+                    n_regressors=0,
+                    n_dates=0,
+                    n_obs_total=0,
+                    threshold=threshold,
+                    ic_mean_threshold=ic_mean_threshold,
+                    passed=True,
+                )
         else:
             reg_df = _load_all_admitted_regressors(
                 factor_id,
@@ -673,6 +694,20 @@ def residual_icir_check(
             library.close()
 
 
+def _residuals_to_insert_df(
+    residuals_df: pd.DataFrame,
+    factor_id: str,
+) -> pd.DataFrame:
+    """Convert per-date Ridge residuals to insert format.
+
+    ``_per_date_ridge_residuals`` returns ``[date, symbol, residual]``.
+    ``insert_factors`` expects ``[date, symbol, factor_id, value]``.
+    """
+    df = residuals_df.rename(columns={"residual": "value"}).copy()
+    df["factor_id"] = factor_id
+    return df[["date", "symbol", "factor_id", "value"]]
+
+
 __all__ = [
     "BARRA_L1_REGRESSORS",
     "CandidateNotBackfilledError",
@@ -686,6 +721,7 @@ __all__ = [
     "TIER_REJECT",
     "TIER_SMART_BETA",
     "Tier",
+    "_residuals_to_insert_df",
     "residual_icir_check",
     "ridge_r2_check",
 ]

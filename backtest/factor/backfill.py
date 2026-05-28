@@ -31,6 +31,8 @@ from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
 from backtest.factor.admission import get_pending_factor_ids
 from backtest.factor.compute import apply_variant_pipeline, compute_factor
+from backtest.factor.dag import topological_sort
+from backtest.factor.registry import get_registry
 from backtest.factor.storage import FactorStorage
 
 
@@ -123,6 +125,13 @@ def main():
             return
 
         print(f"Factors: {factor_ids}")
+
+        registry = get_registry()
+        try:
+            factor_ids = topological_sort(factor_ids, registry)
+        except ValueError as e:
+            print(f"WARNING: dependency cycle detected, "
+                  f"falling back to original order: {e}")
 
         with FactorStorage() as factor_storage:
             for factor_id in tqdm(factor_ids, desc="backfill"):

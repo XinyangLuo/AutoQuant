@@ -24,6 +24,8 @@ backtest/factor/
 ├── update.py                # 增量更新 library DB (已 admitted 因子)
 ├── evaluation.py            # 离线评测: IC/RankIC/ICIR/turnover/decay/corr
 ├── admission.py             # admit / reject / status —— 看完报告后人工触发
+├── admission_check.py       # Ridge R² + 残差 ICIR 门控逻辑
+├── dag.py                   # 依赖 DAG：拓扑排序（供 backfill/update 使用）
 ├── cleanup.py               # 清 work DB 临时数据
 └── builtin/                 # 引擎自带的结构性因子（Barra 风险模型）
     ├── __init__.py
@@ -370,7 +372,54 @@ residual_icir:
 - Library 中 0 个已入库因子 → 平凡通过（无回归目标，step3 已充分检查）
 - `force=True` 可绕过此门控；Barra L1 bootstrap 类别自动跳过
 
-此检查与 `ridge_r2_check()` 互补：ridge_r2 检测风格克隆（vs 6 个 Barra L1），残差 ICIR 检测增量信息（vs 全部已入库因子）。
+此检查与 `ridge_r2_check()` 互补：ridge_r2 检测风格克隆（vs 全部已入库因子），残差 ICIR 检测增量信息（vs 全部已入库因子）。
+
+## 入库模式
+
+`admit()` 根据 Ridge R² 和残差 ICIR 的结果确定 `admission_mode`：
+
+| R² vs `smart_beta_max` | 残差 ICIR | `admission_mode` | stored value |
+|---|---|---|---|
+| R² < 0.7 | 通过 | `raw` | variant pipeline 中性化后的原值 |
+| R² ≥ 0.7 | 通过 | `residual` | **per-date Ridge 残差**（剥离全部已入库因子后的纯净 alpha） |
+| 任意 | 不通过 | 拒绝 | — |
+
+残差模式因子在入库时：
+1. `ridge_r2_check()` 输出的 per-date 残差 DataFrame 被写入 work DB（利用 `insert_factors` 的 UPSERT 替换阈值以上日期的值）
+2. `promote_from_work()` 将残差值移入 library
+3. registry 记录 `depends_on: [factor_id, ...]`（全部已入库因子列表）和 `admission_mode: "residual"`
+
+## 依赖 DAG 与拓扑执行
+
+残差因子的存储值依赖于其 regressor 因子——regressor 更新后必须重新回归取残差。因此回补 / 日更必须按拓扑顺序执行（依赖在前）。
+
+### Registry 字段
+
+- `admission_mode`: `"raw"` | `"residual"`，标注因子值的来源
+- `depends_on: [factor_id, ...]`: 残差模式记录 ridge 回归时使用的全部已入库因子列表；原值模式为 `[]`
+
+### DAG 模块 (`backtest/factor/dag.py`)
+
+```python
+from backtest.factor.dag import topological_sort, get_admission_mode
+
+registry = get_registry()
+factor_ids = topological_sort(factor_ids, registry)
+# → [f_barra_beta, f_barra_value, ..., f_xxx, f_yyy]  # deps first
+```
+
+使用 Python 3.9+ 标准库 `graphlib.TopologicalSorter`（Kahn 算法）。无 `depends_on` 的因子排在前面；检测到环抛出 `ValueError`。
+
+### 日更数据流（残差模式）
+
+```
+compute_factor()           → raw values
+apply_variant_pipeline()   → neutralized (barra_ind_size)
+load deps from library     → wide regressor DF
+_per_date_ridge_residuals()→ residuals
+_residuals_to_insert_df()  → [date, symbol, factor_id, value=residual]
+lib.insert_factors()       → UPSERT into library
+```
 
 ## 与数据模块的交互
 

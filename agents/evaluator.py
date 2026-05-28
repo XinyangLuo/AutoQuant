@@ -139,6 +139,7 @@ class AutoQuantFactorEvaluator:
         decision = len(failed_steps) == 0 and len(gate_passed) == len(gate_step_names)
 
         # Extract metrics from step results
+        sr2 = step_results.get("step2", {}).get("metrics", {})
         sr3 = step_results.get("step3", {}).get("metrics", {})
         sr4 = step_results.get("step4", {}).get("metrics", {})
         sr6 = experiment.simple_bt_metrics or {}
@@ -148,8 +149,8 @@ class AutoQuantFactorEvaluator:
 
         annual_icir = sr3.get("annual_icir", float("-inf"))
         ic_pos = sr3.get("pos_ratio", 0.0)
-        turnover = float("inf")
-        max_corr = 0.0
+        turnover = sr7.get("annual_turnover", float("inf"))
+        max_corr = sr2.get("max_existing_corr", 0.0)
         monotonicity = sr4.get("spearman")
         simple_sharpe = sr6.get("sharpe")
         simple_mdd = sr6.get("max_drawdown")

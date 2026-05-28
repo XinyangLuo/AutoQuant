@@ -19,7 +19,13 @@ from tqdm import tqdm
 from backtest.data.storage import MarketStorage
 from backtest.data.trade_calendar import get_trade_dates
 from backtest.factor.admission import get_admitted_factor_ids
-from backtest.factor.compute import compute_factor
+from backtest.factor.admission_check import (
+    _per_date_ridge_residuals,
+    _residuals_to_insert_df,
+)
+from backtest.factor.compute import apply_variant_pipeline, compute_factor
+from backtest.factor.dag import get_admission_mode, get_depends_on, topological_sort
+from backtest.factor.registry import get_registry
 from backtest.factor.storage import FactorLibrary
 
 
@@ -36,7 +42,15 @@ def main():
                   "`python -m backtest.factor.admission admit <factor_id>`.")
             return
 
+        registry = get_registry()
+        try:
+            factor_ids = topological_sort(factor_ids, registry)
+        except ValueError as e:
+            print(f"WARNING: dependency cycle in admitted factors, "
+                  f"falling back to flat order: {e}")
+
         with FactorLibrary() as lib:
+            failed_ids: set[str] = set()
             for factor_id in tqdm(factor_ids, desc="update"):
                 max_date = lib.get_max_date(factor_id)
 
@@ -64,11 +78,53 @@ def main():
                         market_storage=market_storage,
                         factor_storage=lib,
                     )
+                    if df.empty:
+                        continue
+
+                    df = apply_variant_pipeline(
+                        df, factor_id,
+                        market_storage=market_storage,
+                        factor_storage=lib,
+                    )
+                    if df.empty:
+                        continue
+
+                    mode = get_admission_mode(factor_id, registry)
+                    if mode == "residual":
+                        deps = get_depends_on(factor_id, registry)
+                        stale = [d for d in deps if d in failed_ids]
+                        if stale:
+                            print(f"  WARNING {factor_id}: dependencies {stale} "
+                                  f"failed to update, storing raw values "
+                                  f"(residuals would use stale data)")
+                        elif not deps:
+                            print(f"  WARNING {factor_id}: admission_mode=residual "
+                                  f"but depends_on is empty, storing raw values")
+                        else:
+                            candidate = df[["date", "symbol", "value"]].copy()
+                            wide_parts = []
+                            for dep_id in deps:
+                                sub = lib.get_factor(dep_id, start=start, end=latest_date)
+                                if sub.empty:
+                                    raise ValueError(
+                                        f"Dependency {dep_id} missing from library "
+                                        f"for residual-mode factor {factor_id}"
+                                    )
+                                wide_parts.append(sub.rename(columns={"value": dep_id}))
+                            reg_df = wide_parts[0]
+                            for sub in wide_parts[1:]:
+                                reg_df = reg_df.merge(sub, on=["date", "symbol"], how="outer")
+                            residuals_df, _ = _per_date_ridge_residuals(
+                                candidate, reg_df, alpha=1.0,
+                            )
+                            df = _residuals_to_insert_df(residuals_df, factor_id)
+
                     if not df.empty:
                         lib.insert_factors(df)
                         print(f"  {factor_id}: {len(df):,} rows ({start} ~ {latest_date})")
                 except Exception as exc:
                     print(f"  ERROR {factor_id}: {exc}")
+                    failed_ids.add(factor_id)
                     continue
 
         print("\nUpdate complete.")

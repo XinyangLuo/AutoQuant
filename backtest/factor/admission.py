@@ -46,6 +46,8 @@ from backtest.factor.admission_check import (
     RidgeCheckResult,
     StyleCloneRejectedError,
     TIER_REJECT,
+    _get_ridge_thresholds,
+    _residuals_to_insert_df,
     residual_icir_check,
     ridge_r2_check,
 )
@@ -314,6 +316,8 @@ def _finalize_action(
     residual_icir_check: ResidualICIRResult | None = None,
     bundle_info: dict | None = None,
     func_module: str | None = None,
+    depends_on: list[str] | None = None,
+    admission_mode: str = "raw",
 ) -> AdmissionAction:
     """Stamp the action onto the registry."""
     entry = {
@@ -331,6 +335,9 @@ def _finalize_action(
         entry["residual_icir_check"] = residual_icir_check.as_meta()
     if bundle_info is not None:
         entry["bundle_info"] = bundle_info
+    if depends_on is not None:
+        entry["depends_on"] = depends_on
+    entry["admission_mode"] = admission_mode
 
     meta = registry[factor_id]
     meta["status"] = status
@@ -343,6 +350,9 @@ def _finalize_action(
     if residual_icir_check is not None:
         meta["residual_icir_passed"] = residual_icir_check.passed
         meta["residual_annual_icirs"] = residual_icir_check.annual_icirs
+    if depends_on is not None:
+        meta["depends_on"] = depends_on
+    meta["admission_mode"] = admission_mode
     history = meta.setdefault("admission_history", [])
     history.append(entry)
     del history[:-20]
@@ -423,8 +433,15 @@ def admit(
 
     ridge_result: RidgeCheckResult | None = None
     residual_icir_result: ResidualICIRResult | None = None
+    admission_mode: str = "raw"
+    depends_on: list[str] = []
+
     if should_check:
         ridge_result = ridge_r2_check(factor_id)
+        ridge_th = _get_ridge_thresholds()
+        if ridge_result.r2 >= ridge_th["smart_beta_max"]:
+            admission_mode = "residual"
+            depends_on = list(ridge_result.regressor_ids)
         if ridge_result.tier == TIER_REJECT and not force:
             raise StyleCloneRejectedError(
                 f"{factor_id} blocked by ridge_r2_check: R²={ridge_result.r2:.3f} "
@@ -433,7 +450,20 @@ def admit(
             )
 
     if should_check_residual:
-        residual_icir_result = residual_icir_check(factor_id)
+        precomputed = (
+            ridge_result.residuals_df
+            if (ridge_result is not None and ridge_result.residuals_df is not None)
+            else None
+        )
+        precomputed_n = (
+            len(depends_on) if depends_on
+            else (ridge_result.n_regressors if ridge_result is not None else -1)
+        )
+        residual_icir_result = residual_icir_check(
+            factor_id,
+            precomputed_residuals=precomputed,
+            precomputed_n_regressors=precomputed_n,
+        )
         if not residual_icir_result.passed and not force:
             annuals = residual_icir_result.annual_icirs
             raise ValueError(
@@ -446,6 +476,19 @@ def admit(
             )
 
     with FactorStorage() as work, FactorLibrary() as lib:
+        # Save residuals for library-side UPSERT after promotion.  Writing
+        # residuals to the *library* (not work DB) avoids corrupting the
+        # work DB if promote_from_work fails partway through.
+        residuals_for_lib: pd.DataFrame | None = None
+        if (
+            admission_mode == "residual"
+            and ridge_result is not None
+            and ridge_result.residuals_df is not None
+        ):
+            residuals_for_lib = _residuals_to_insert_df(
+                ridge_result.residuals_df, factor_id,
+            )
+
         rows_promoted = lib.promote_from_work(factor_id, work)
         if rows_promoted == 0:
             raise ValueError(
@@ -453,6 +496,15 @@ def admit(
                 f"Did you run `python -m backtest.factor.backfill {factor_id}` first?"
             )
         rows_cleared = work.delete_factor(factor_id)
+
+        if residuals_for_lib is not None:
+            # UPSERT residuals over the just-promoted neutralized values.
+            # Dates where Ridge skipped (too few observations) keep their
+            # original neutralized (barra_ind_size) values.
+            # allow_unadmitted=True: the status flip hasn't happened yet
+            # (it's done by _finalize_action below), same pattern as
+            # promote_from_work.
+            lib.insert_factors(residuals_for_lib, allow_unadmitted=True)
 
     # Move source code to admitted/ and bundle backtest report
     func_module = meta.get("func_module", "")
@@ -474,6 +526,8 @@ def admit(
         residual_icir_check=residual_icir_result,
         bundle_info=bundle_info,
         func_module=new_func_module,
+        depends_on=depends_on,
+        admission_mode=admission_mode,
     )
 
 
@@ -605,7 +659,8 @@ def unadmit(
 
     # Clear stale admission metadata left from the original admit
     meta = target[factor_id]
-    for key in ("tier", "r2", "residual_icir_passed", "residual_annual_icirs", "bundle_info"):
+    for key in ("tier", "r2", "residual_icir_passed", "residual_annual_icirs",
+                 "bundle_info", "depends_on", "admission_mode"):
         meta.pop(key, None)
 
     return _finalize_action(

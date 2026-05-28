@@ -57,6 +57,12 @@ from backtest.factor.admission_check import (
     ridge_r2_check,
 )
 from backtest.factor.compute import compute_factor, compute_all
+from backtest.factor.dag import (
+    build_dependency_graph,
+    get_admission_mode,
+    get_depends_on,
+    topological_sort,
+)
 from backtest.factor.evaluation import evaluate, print_evaluation
 from backtest.factor.registry import (
     get_factor_function,
@@ -148,6 +154,10 @@ __all__ = [
     "get_rejected_factor_ids",
     "print_action",
     "print_status",
+    "build_dependency_graph",
+    "get_admission_mode",
+    "get_depends_on",
+    "topological_sort",
     "compute_factor",
     "compute_all",
     "evaluate",

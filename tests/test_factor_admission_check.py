@@ -119,7 +119,7 @@ class TestPooledR2:
     def test_partial_signal_lands_in_smart_beta_band(self):
         candidate, regressors = self._make_panel(
             n_days=120, n_symbols=80,
-            true_betas=np.array([0.3, 0.3, 0.0, 0.0, 0.0, 0.0]),
+            true_betas=np.array([0.5, 0.5, 0.0, 0.0, 0.0, 0.0]),
             seed=11,
         )
         r2, _, _ = _pooled_r2(candidate, regressors, alpha=1.0)

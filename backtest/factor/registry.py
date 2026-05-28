@@ -91,7 +91,9 @@ def register(
         # in-memory cache.
         preserved = {
             k: existing[k]
-            for k in ("status", "admission", "admission_history")
+            for k in ("status", "admission", "admission_history",
+                      "depends_on", "admission_mode", "tier", "r2",
+                      "residual_icir_passed", "residual_annual_icirs")
             if k in existing
         }
 

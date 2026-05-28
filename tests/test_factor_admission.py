@@ -86,7 +86,8 @@ class TestAdmit:
     def test_admit_without_work_data_raises(self, patched_storage):
         registry = _seed_registry()
         with pytest.raises(ValueError, match="No data in work DB"):
-            admit("f_test", registry=registry, skip_ridge_check=True)
+            admit("f_test", registry=registry,
+                  skip_ridge_check=True, skip_residual_icir_check=True)
 
     def test_admit_unknown_factor_raises(self, patched_storage):
         with pytest.raises(KeyError):
@@ -267,7 +268,7 @@ class TestAdmitRidgeGate:
         import numpy as np
         rng = np.random.default_rng(0)
         dates = pd.date_range("2024-01-01", periods=40, freq="B")
-        symbols = [f"S{i:03d}" for i in range(25)]
+        symbols = [f"S{i:03d}" for i in range(100)]
         self._seed_library_with_barra_l1(rng, dates, symbols)
 
         # Candidate is pure noise → R² near 0 → pure_alpha tier.
