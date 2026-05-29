@@ -89,11 +89,11 @@ def get_rebalance_dates(start: str, end: str, freq: str) -> list[str]:
     list[str]
         Sorted list of YYYYMMDD rebalancing dates.
     """
+    dates: list[str] = []
     with MarketStorage(read_only=True) as storage:
         dates = storage.get_rebalance_dates_from_db(start, end, freq)
 
     if not dates:
-        # DB miss — fallback: fetch trade dates, write full calendar, retry
         _fetch_and_write(start, end)
         with MarketStorage(read_only=True) as storage:
             dates = storage.get_rebalance_dates_from_db(start, end, freq)

@@ -696,17 +696,14 @@ def _build_parser() -> argparse.ArgumentParser:
 def main():
     args = _build_parser().parse_args()
 
-    # Date range, evaluation config, and simulation params are read from
-    # config.yaml — single source of truth, no CLI overrides.
-    from backtest.config_loader import get_section_or
-
-    args.start = get_section_or("20160101", "pipeline", "start_date")
-    args.end = get_section_or("20251231", "pipeline", "end_date")
-    args.horizons = ",".join(str(h) for h in get_section_or([1, 5, 10, 20, 60], "pipeline", "eval_horizons"))
-    args.ret_type = get_section_or("open", "pipeline", "ret_type")
-    args.benchmark = get_section_or("000300.SH", "pipeline", "benchmark")
-    args.initial_cash = get_section_or(100_000_000, "simulation", "initial_cash")
-    args.commission_rate = get_section_or(0.0003, "simulation", "commission_rate")
+    # Defaults match _DEFAULT_PIPELINE / _DEFAULT_SIMULATION in backtest.pipeline.config.
+    args.start = "20160101"
+    args.end = "20251231"
+    args.horizons = "1,5,10,20,60"
+    args.ret_type = "open"
+    args.benchmark = "000300.SH"
+    args.initial_cash = 100_000_000
+    args.commission_rate = 0.0003
 
     if args.decay == 0:
         args.decay = None

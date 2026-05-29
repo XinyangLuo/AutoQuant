@@ -29,6 +29,8 @@ windows where the stock genuinely wasn't trading.
 from __future__ import annotations
 
 import math
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Literal
 
 import numpy as np
@@ -36,6 +38,10 @@ import pandas as pd
 
 
 MIN_VALID_RATIO: float = 0.7
+
+# Number of threads for parallel per-date cross-sectional ops.
+# 0 or 1 = serial (default). Set via env var AQ_CS_NUM_THREADS.
+_AQ_CS_NUM_THREADS = int(os.environ.get("AQ_CS_NUM_THREADS", "0"))
 
 
 def _default_min_periods(window: int, *, lower_bound: int = 1) -> int:
@@ -55,6 +61,44 @@ def _check_panel_series(values: pd.Series) -> None:
             "values must have a MultiIndex with (date, symbol) levels; "
             "call .set_index(['date', 'symbol']) on a long-form panel first"
         )
+
+
+def _parallel_cs_apply(
+    series: pd.Series,
+    per_date_fn,
+    *,
+    num_threads: int | None = None,
+) -> pd.Series:
+    """Apply *per_date_fn* to each date group, optionally in parallel.
+
+    *per_date_fn* receives a ``pd.Series`` (single-date slice with
+    plain ``symbol`` Index) and must return a ``pd.Series`` of the same
+    shape.  When ``num_threads`` is ``None`` the env var
+    ``AQ_CS_NUM_THREADS`` controls parallelism; set it to e.g. ``8``.
+    """
+    threads = num_threads if num_threads is not None else _AQ_CS_NUM_THREADS
+    if threads <= 1:
+        return series.groupby(level=0, group_keys=False).apply(per_date_fn)
+
+    dates = series.index.get_level_values(0).unique()
+    chunk_size = max(1, math.ceil(len(dates) / threads))
+    date_chunks = [
+        list(dates[i : i + chunk_size]) for i in range(0, len(dates), chunk_size)
+    ]
+
+    def _process_chunk(date_list):
+        mask = series.index.get_level_values(0).isin(date_list)
+        sub = series[mask]
+        return sub.groupby(level=0, group_keys=False).apply(per_date_fn)
+
+    results = []
+    with ThreadPoolExecutor(max_workers=threads) as ex:
+        futures = {ex.submit(_process_chunk, chunk): i for i, chunk in enumerate(date_chunks)}
+        for fut in as_completed(futures):
+            results.append((futures[fut], fut.result()))
+
+    results.sort(key=lambda x: x[0])
+    return pd.concat([r for _, r in results])
 
 
 def rank(values: pd.Series, ascending: bool = True) -> pd.Series:
@@ -101,7 +145,7 @@ def rank(values: pd.Series, ascending: bool = True) -> pd.Series:
         r = s.rank(method="average", ascending=ascending)
         return (r - 1.0) / (n - 1.0)
 
-    return values.groupby(level=0, group_keys=False).apply(_one)
+    return _parallel_cs_apply(values, _one)
 
 
 def _ts_roll(
@@ -1145,7 +1189,7 @@ def cs_zscore(values: pd.Series) -> pd.Series:
             return s.where(s.isna(), 0.0)
         return (s - mean) / std
 
-    return values.groupby(level=0, group_keys=False).apply(_one)
+    return _parallel_cs_apply(values, _one)
 
 
 def cs_demean(values: pd.Series) -> pd.Series:
@@ -1172,7 +1216,7 @@ def cs_demean(values: pd.Series) -> pd.Series:
             return s
         return s - mean
 
-    return values.groupby(level=0, group_keys=False).apply(_one)
+    return _parallel_cs_apply(values, _one)
 
 
 def cs_winsorize(
@@ -1213,7 +1257,7 @@ def cs_winsorize(
         clipped = s.clip(lower=lo, upper=hi)
         return clipped
 
-    return values.groupby(level=0, group_keys=False).apply(_one)
+    return _parallel_cs_apply(values, _one)
 
 
 def cs_mad_winsorize(values: pd.Series, *, k: float = 3.0) -> pd.Series:
@@ -1247,7 +1291,7 @@ def cs_mad_winsorize(values: pd.Series, *, k: float = 3.0) -> pd.Series:
         delta = k * 1.4826 * mad
         return s.clip(lower=med - delta, upper=med + delta)
 
-    return values.groupby(level=0, group_keys=False).apply(_one)
+    return _parallel_cs_apply(values, _one)
 
 
 def industry_median_fill(

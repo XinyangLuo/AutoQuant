@@ -62,18 +62,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _resolve_pipeline_cfg() -> dict[str, str]:
-    """Read pipeline config values from config.yaml."""
-    from backtest.config_loader import get_section_or
-
-    return {
-        "start_date": get_section_or("20160101", "pipeline", "start_date"),
-        "end_date": get_section_or("20251231", "pipeline", "end_date"),
-        "ret_type": get_section_or("open", "pipeline", "ret_type"),
-        "benchmark": get_section_or("000300.SH", "pipeline", "benchmark"),
-    }
-
-
 def _load_or_init_state(args) -> PipelineState:
     """Load existing state or create a new one."""
     state_path = Path(args.results_root) / args.factor_id / "pipeline_state.json"
@@ -82,15 +70,10 @@ def _load_or_init_state(args) -> PipelineState:
         return PipelineState.load(state_path)
 
     # Create new state (for run-all without prior init)
-    cfg = _resolve_pipeline_cfg()
-    config = PipelineConfig.for_frequency(
+    config = PipelineConfig.from_factor_config(
+        args.factor_id,
         frequency=getattr(args, "frequency", "D"),
-        factor_id=args.factor_id,
-        start_date=cfg["start_date"],
-        end_date=cfg["end_date"],
         results_root=args.results_root,
-        ret_type=cfg["ret_type"],
-        benchmark=cfg["benchmark"],
     )
     state = PipelineState(factor_id=args.factor_id, config=config)
     state.save(state_path)
@@ -123,15 +106,10 @@ def _output_json(step_name: str, passed: bool, reason: str | None, metrics: dict
 
 
 def cmd_init(args) -> int:
-    cfg = _resolve_pipeline_cfg()
-    config = PipelineConfig.for_frequency(
+    config = PipelineConfig.from_factor_config(
+        args.factor_id,
         frequency=args.frequency,
-        factor_id=args.factor_id,
-        start_date=cfg["start_date"],
-        end_date=cfg["end_date"],
         results_root=args.results_root,
-        ret_type=cfg["ret_type"],
-        benchmark=cfg["benchmark"],
     )
     state = PipelineState(factor_id=args.factor_id, config=config)
     state.save(config.state_path())
@@ -171,15 +149,10 @@ def cmd_step(args, step_name: str) -> int:
 def cmd_run_all(args) -> int:
     from backtest.pipeline.steps import run_pipeline
 
-    cfg = _resolve_pipeline_cfg()
     state = run_pipeline(
         factor_id=args.factor_id,
         frequency=args.frequency,
-        start_date=cfg["start_date"],
-        end_date=cfg["end_date"],
         results_root=args.results_root,
-        ret_type=cfg["ret_type"],
-        benchmark=cfg["benchmark"],
         from_step=args.from_step,
     )
 

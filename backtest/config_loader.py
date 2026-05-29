@@ -123,3 +123,15 @@ def get_pipeline_thresholds() -> dict[str, Any]:
 def get_agent_thresholds() -> dict[str, Any]:
     """Return ``thresholds.agent``."""
     return get_section("thresholds", "agent")
+
+
+def load_yaml_file(path: Path | str) -> dict[str, Any]:
+    """Load a standalone YAML file (no caching — distinct from ``load_config``).
+
+    Used for per-factor configs that must not pollute the global config cache.
+    """
+    with Path(path).open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"YAML did not parse to dict: {path}")
+    return data

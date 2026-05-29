@@ -76,22 +76,32 @@ def _pass(state: PipelineState, step: str, metrics: dict | None = None) -> Pipel
     return state
 
 
-def _build_universe(index_members: str | None = None) -> UniverseConfig:
-    """Build UniverseConfig from ``config.yaml`` → ``strategy.universe``.
-
-    Falls back to safe defaults when config.yaml is missing a key.
-    """
-    from backtest.config_loader import get_section_or
+def _build_universe(
+    index_members: str | None = None,
+    overrides: dict | None = None,
+) -> UniverseConfig:
+    """Build UniverseConfig with hardcoded defaults + optional per-factor overrides."""
+    cfg = {
+        "exclude_st": True,
+        "exclude_new_ipo_days": 252,
+        "include_cyb": True,
+        "include_kcb": False,
+        "include_bse": False,
+        "min_market_cap": 500_000_000,
+        "min_avg_amount": 10_000_000,
+    }
+    if overrides and "universe" in overrides:
+        cfg.update(overrides["universe"])
 
     return UniverseConfig(
-        exclude_st=get_section_or(True, "strategy", "universe", "exclude_st"),
-        exclude_new_ipo_days=get_section_or(252, "strategy", "universe", "exclude_new_ipo_days"),
-        include_cyb=get_section_or(True, "strategy", "universe", "include_cyb"),
-        include_kcb=get_section_or(False, "strategy", "universe", "include_kcb"),
-        include_bse=get_section_or(False, "strategy", "universe", "include_bse"),
+        exclude_st=cfg["exclude_st"],
+        exclude_new_ipo_days=cfg["exclude_new_ipo_days"],
+        include_cyb=cfg["include_cyb"],
+        include_kcb=cfg["include_kcb"],
+        include_bse=cfg["include_bse"],
         index_members=index_members,
-        min_market_cap=get_section_or(500000000, "strategy", "universe", "min_market_cap"),
-        min_avg_amount=get_section_or(10000000, "strategy", "universe", "min_avg_amount"),
+        min_market_cap=cfg["min_market_cap"],
+        min_avg_amount=cfg["min_avg_amount"],
     )
 
 
@@ -526,7 +536,7 @@ def step5_build_strategy(
         strategy_type="single_factor_topk",
         rebalance_freq=_rebalance,
         delay=1,
-        universe=_build_universe(_universe),
+        universe=_build_universe(_universe, overrides=config.strategy_overrides),
         factors=[FactorConfig(id=config.factor_id, direction="desc")],
         selection=selection,
         weighting=WeightingConfig(method="equal"),
@@ -575,28 +585,28 @@ def step5_build_strategy(
 # ---------------------------------------------------------------------------
 
 
-def _load_simulation_config(price_type: str = "o2o") -> SimulationConfig:
-    """Build SimulationConfig from ``config.yaml simulation`` section.
-
-    Falls back to ``SimulationConfig`` defaults when config.yaml is missing
-    or a key is absent.
-    """
-    from backtest.config_loader import get_section
-
+def _load_simulation_config(
+    price_type: str = "o2o",
+    overrides: dict | None = None,
+) -> SimulationConfig:
+    """Build SimulationConfig from hardcoded defaults + optional per-factor overrides."""
     defaults = SimulationConfig()
-
-    def _get(key: str):
-        try:
-            return get_section("simulation", key)
-        except (KeyError, FileNotFoundError):
-            return getattr(defaults, key)
+    cfg: dict[str, Any] = {
+        "initial_cash": defaults.initial_cash,
+        "commission_rate": defaults.commission_rate,
+        "stamp_duty_rate": defaults.stamp_duty_rate,
+        "transfer_fee_rate": defaults.transfer_fee_rate,
+        "allow_short": defaults.allow_short,
+    }
+    if overrides:
+        cfg.update(overrides)
 
     return SimulationConfig(
-        initial_cash=float(_get("initial_cash")),
-        commission_rate=float(_get("commission_rate")),
-        stamp_duty_rate=float(_get("stamp_duty_rate")),
-        transfer_fee_rate=float(_get("transfer_fee_rate")),
-        allow_short=_get("allow_short"),
+        initial_cash=float(cfg["initial_cash"]),
+        commission_rate=float(cfg["commission_rate"]),
+        stamp_duty_rate=float(cfg["stamp_duty_rate"]),
+        transfer_fee_rate=float(cfg["transfer_fee_rate"]),
+        allow_short=cfg["allow_short"],
         price_type=price_type,
     )
 
@@ -622,7 +632,7 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
         return _reject(state, "step6", "Strategy produced no signals.")
 
     market_data = _load_market_data(config, signals)
-    sim_cfg = _load_simulation_config()
+    sim_cfg = _load_simulation_config(overrides=config.simulation_overrides)
     sim = SimpleSimulator(sim_cfg)
     result = sim.run(signals, market_data)
 
@@ -648,7 +658,7 @@ def step7_detailed_backtest(state: PipelineState) -> PipelineState:
 
     market_data, dividends = _load_market_data(config, state.signals, with_dividends=True)
     price_type = "o2o" if config.ret_type == "open" else "c2c"
-    sim_cfg = _load_simulation_config(price_type=price_type)
+    sim_cfg = _load_simulation_config(price_type=price_type, overrides=config.simulation_overrides)
     sim = DetailedSimulator(sim_cfg)
     result = sim.run(state.signals, market_data, dividends)
 
@@ -702,7 +712,7 @@ def _backtest_gate(
     tag = _build_tag(state)
     out_dir = Path(config.results_root) / config.factor_id / tag / sub_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    sim_cfg = _load_simulation_config()
+    sim_cfg = _load_simulation_config(overrides=config.simulation_overrides)
     result.save(str(out_dir), metadata={
         "strategy": {"name": state.strategy_config.name, "factor": config.factor_id},
         "simulation": {"engine": sub_dir.capitalize(), "initial_cash": sim_cfg.initial_cash},
@@ -926,11 +936,11 @@ def run_pipeline(
     factor_id: str,
     *,
     frequency: str = "D",
-    start_date: str = "20160101",
-    end_date: str = "20251231",
+    start_date: str | None = None,
+    end_date: str | None = None,
     results_root: str = "results",
-    ret_type: str = "open",
-    benchmark: str = "000300.SH",
+    ret_type: str | None = None,
+    benchmark: str | None = None,
     from_step: int = 1,
     skip_mark_rejected: bool = False,
 ) -> PipelineState:
@@ -949,14 +959,20 @@ def run_pipeline(
         runner sets this to True because it manages rejection differently
         (cleanup_work_db + experiment error field).
     """
-    config = PipelineConfig.for_frequency(
-        frequency=frequency,
+    overrides: dict[str, Any] = {"results_root": results_root}
+    if start_date is not None:
+        overrides["start_date"] = start_date
+    if end_date is not None:
+        overrides["end_date"] = end_date
+    if ret_type is not None:
+        overrides["ret_type"] = ret_type
+    if benchmark is not None:
+        overrides["benchmark"] = benchmark
+
+    config = PipelineConfig.from_factor_config(
         factor_id=factor_id,
-        start_date=start_date,
-        end_date=end_date,
-        results_root=results_root,
-        ret_type=ret_type,
-        benchmark=benchmark,
+        frequency=frequency,
+        **overrides,
     )
     state = PipelineState(factor_id=factor_id, config=config)
     state.save(config.state_path())
