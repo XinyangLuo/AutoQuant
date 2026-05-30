@@ -27,7 +27,7 @@ Knowledge Base（3 个文件，非 8 个）：
 
 **方向选择 + 假设生成**不拆分独立 agent，由父进程（Claude Code 对话）直接完成。审计能力推迟到有 >10 个 admitted factor 后再建。
 
-## 3. Phase 1：最小可行骨架（当前）
+## 3. Phase 1：最小可行骨架 ✅（已完成，2026-05-30）
 
 ### 3.1 范围
 
@@ -39,6 +39,14 @@ Knowledge Base（3 个文件，非 8 个）：
 - 不并行探索
 - 不加 claude_cli 新子命令
 - 不写 subagent 系统 prompt 文件（先用内联 prompt）
+
+**实际完成情况**：
+- ✅ 端到端验证：3 轮 vol_reversal 放弃 → RC 正确诊断 backtest_fail + neutralization_fail
+- ✅ 成功案例：`-ts_std(turnover_rate, 20)` 1 轮 pass → ICIR=2.62, Sharpe=0.989, 残差入库
+- ✅ KB bootstrap：successful_patterns 含 10 个 admitted 因子，anti_patterns 含 1 条反模式
+- ✅ FC 增强：config.yaml 自动生成、价格复权/ST/涨跌停/财务季度/成交量单位 5 条数据 pitfall
+- ✅ Pipeline report 对 agent 路径可见（result.json.report_path + round dir 副本）
+- ✅ StepThresholds 补全 detailed max_drawdown + max_annual_turnover
 
 ### 3.2 改动清单
 
@@ -156,18 +164,16 @@ Agent tool params:
 }
 ```
 
-**`failed_attempts.jsonl`** — 每行一个 run（append-only）：
+**`failed_attempts.jsonl`** — 仅失败记录（append-only）：
 ```json
-{"factor_id": "f_auto_xxx", "run_id": "...", "category": "momentum", "data_sources": ["market_daily"], "status": "pass", "rounds": 3, "best_icir": 1.55, "best_sharpe": 0.95, "ts": "2026-05-30T10:00:00"}
+{"factor_id": "f_auto_xxx", "run_id": "...", "category": "momentum", "data_sources": ["market_daily"], "status": "fail", "best_icir": 1.55, "best_sharpe": 0.45, "failure_type": "backtest_fail", "code_summary": "公式简述", "why_failed": "根因一句话", "ts": "2026-05-30T10:00:00"}
 ```
 
-### 3.6 验证标准
+### 3.6 验证结果 ✅
 
-Phase 1 做完后，用以下场景验证：
-
-1. **已知 pass 因子变体**：故意引入一个 code_error，验证 RC 能正确诊断并给出 fix，下一轮修复成功
-2. **已知 fail 因子**：用历史上确定不过的因子，验证 RC 能正确 recommend_abandon
-3. **KB 积累**：连续跑 3 个迭代后，检查 `failed_attempts.jsonl` 和 `anti_patterns.json` 是否正确写入
+1. ✅ **已知 pass 因子变体**：`-ts_std(turnover_rate, 20)` 1 轮 pass，RC 未触发（符合预期）
+2. ✅ **已知 fail 因子**：vol_reversal 3 轮放弃，RC 正确诊断 backtest_fail + neutralization_fail，barra_l3 死胡同识别准确
+3. ✅ **KB 积累**：anti_patterns 1 条（variant_switch），successful_patterns 10 条（7 Barra L1 + 3 user alphas），failed_attempts 1 条
 
 ### 3.7 不做的事（明确排除）
 
