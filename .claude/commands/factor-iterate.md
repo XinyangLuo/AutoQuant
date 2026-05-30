@@ -119,7 +119,7 @@ For each round:
    - **decay 选择**：反转/换手类因子信号衰减快 → decay=3~5；趋势/质量类因子衰减慢 → decay=10~15
    - **rebalance 选择**：日频信号 → 1D；周频信号 → 5D 或 1W；月频信号 → 1M
    - **top_k 选择**：ICIR > 3 的强因子 → 50~100 集中持有；ICIR 1~3 → 100~200；ICIR < 1 → 200~300 分散
-   - **Repair 时**：如果 RC 输出了 `repair_params` 中的 `decay`/`rebalance`/`top_k`，更新 config.yaml 对应值
+   - **Repair 时**：如果 RC 的 `fix_level` 是 `strategy_only` 或 `both`，用 `strategy_params` 中的 `decay`/`rebalance`/`top_k` 更新 config.yaml；`fix_level=factor` 时用 `factor_params` 修改因子代码
 6. Run one deterministic evaluation:
 
    ```bash
@@ -234,7 +234,7 @@ For each round:
          - >0.85 且对手是 Barra L1 → 换构造方式
          - 无法判断对手类型 → 给一次 retry，换构造方式
        - residual_fail → recommend_abandon=true（无增量信息）。
-       - execution_error → fix_level="strategy_only"（基础设施问题）。DuckDB 锁/超时→重试；OOM→减数据量；其他→报告用户。
+       - execution_error → same_direction=true，fix_level="retry"（基础设施问题，不改任何东西）。DuckDB 锁/超时→原样重试；OOM→减数据量后重试。factor_params 和 strategy_params 都用 {}。
        - metrics_fail → 查看具体哪些指标不达标，参考最近反模式。
        - 连续 3 轮同 direction 无改善（annual_icir 或 simple_sharpe 未提升）→ recommend_abandon=true。
        - 只在确实发现新的通用性失败模式时才填充 new_anti_pattern，否则填 null。
@@ -244,7 +244,7 @@ For each round:
 
 10. **Parse RC output**：尝试 JSON.parse RC 返回文本。
     - 如果解析失败（如 RC 输出了 markdown 代码块包裹）→ 尝试提取第一个 `{...}` 块重新解析
-    - 如果仍失败 → 使用 fallback 诊断：`{"failure_type": "{from result.json}", "diagnosis": "RC output parse error", "fix_strategy": "Retry with same code", "same_direction": true, "repair_params": {}, "recommend_abandon": false, "new_anti_pattern": null}`
+    - 如果仍失败 → 使用 fallback 诊断：`{"failure_type": "{from result.json}", "diagnosis": "RC output parse error", "fix_level": "factor", "factor_params": {}, "strategy_params": {}, "same_direction": true, "recommend_abandon": false, "new_anti_pattern": null}`
     - 追加一行到 `trace.jsonl`（将 RC 输出的字段合并进去，见 Trace JSONL Schema）
 
 11. 根据 RC subagent 返回的诊断 JSON：
@@ -252,7 +252,10 @@ For each round:
       - **Update KB**（见 §Abandon 收尾）
       - End loop. 输出放弃报告（根因分析 + 为什么无法修复）。
     - 如果 `same_direction == true` 且 `recommend_abandon != true` 且 `round < max_rounds`：
-      - 以 RC 的 `repair_params` 为指导进入下一轮。
+      - **fix_level="factor"**：以 RC 的 `factor_params` 为指导修改因子代码，进入下一轮。
+      - **fix_level="strategy_only"**：只更新 `config.yaml`（用 `strategy_params` 中的 decay/rebalance/top_k），**因子代码不变**，进入下一轮。
+      - **fix_level="both"**：两个都改。
+      - **fix_level="retry"**：什么都不改，原样重试。
 
 ## Trace JSONL Schema
 
@@ -269,9 +272,11 @@ Append exactly one object per round:
   "error_signature": "NameError: abs_",
   "diagnosis": "根因分析（来自 RC subagent 输出）",
   "fix_strategy": "具体修复建议（来自 RC subagent 输出）",
+  "fix_level": "factor",
+  "factor_params": {"window": 5},
+  "strategy_params": {},
   "code_summary": "20-day return reversal gated by abnormal amount and small-cap rank.",
   "tried_params": {"window": 20, "horizon": 20, "top_pct": 0.1},
-  "repair_params": {"window": 5},
   "recommend_abandon": false,
   "metrics": {"annual_icir": 0.15, "simple_sharpe": 0.3, "r2": null, "max_existing_corr": null, "residual_icir": null},
   "same_direction": true

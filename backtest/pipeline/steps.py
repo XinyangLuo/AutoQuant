@@ -947,30 +947,48 @@ def _run_with_retry(
     Retry schedule (up to ``config.max_retries`` attempts):
       1. Original params from config.yaml
       2. Double decay (cap 30)
-      3. Double decay + widen top_k to 200
-      4. Change rebalance to 5D + max decay
+      3. Triple decay + widen top_k to 200
+      4. Triple decay + top_k=300 + rebalance=5D
     """
     max_retries = config.max_retries
 
     for retry_num in range(max_retries + 1):
         state.retry_count = retry_num
+        # Reset rejection so the retry loop can proceed past step5.
+        # _reject() sets status="rejected", which gates all subsequent
+        # step functions via is_rejected().
+        state.status = "running"
+
+        # Detect whether user uses top_k or top_pct to widen correctly
+        uses_pct = (
+            config.default_top_pct is not None
+            and config.default_top_k is None
+        )
 
         if retry_num == 0:
             state.retry_params = {}
         elif retry_num == 1:
             orig_decay = config.default_decay
-            new_decay = min(orig_decay * 2, 30)
-            state.retry_params = {"decay": new_decay}
+            state.retry_params = {"decay": min(orig_decay * 2, 30)}
         elif retry_num == 2:
             orig_decay = config.default_decay
-            new_decay = min(orig_decay * 3, 30)
-            state.retry_params = {"decay": new_decay, "top_k": 200}
+            if uses_pct:
+                state.retry_params = {"decay": min(orig_decay * 3, 30), "top_pct": 0.15}
+            else:
+                state.retry_params = {"decay": min(orig_decay * 3, 30), "top_k": 200}
         else:
-            state.retry_params = {
-                "decay": min(config.default_decay * 3, 30),
-                "top_k": 300,
-                "rebalance": "5D",
-            }
+            if uses_pct:
+                state.retry_params = {
+                    "decay": min(config.default_decay * 4, 30),
+                    "top_pct": 0.20,
+                    "rebalance": "5D",
+                }
+            else:
+                state.retry_params = {
+                    "decay": min(config.default_decay * 3, 30),
+                    "top_k": 300,
+                    "rebalance": "5D",
+                }
 
         # Run step5 (rebuild strategy with current retry_params)→step6→step7
         for step_name, step_fn in retry_steps:
@@ -1053,8 +1071,10 @@ def run_pipeline(
         state = _run_with_retry(state, config, retry_steps)
         state.save(config.state_path())
     elif not state.is_rejected() and from_step > 5:
-        # from_step >= 6: strategy already built, run step5→7 linearly
-        for step_name, step_fn in retry_steps:
+        # from_step >= 6: strategy already built, run step5→7 linearly.
+        # Filter by from_step to avoid re-running already-completed steps.
+        for step_name, step_fn in [(n, f) for n, f in _STEP_ORDER[from_step - 1:]
+                                   if n in ("step5", "step6", "step7")]:
             if state.is_rejected():
                 break
             state = step_fn(state)
