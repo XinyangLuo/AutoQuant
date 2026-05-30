@@ -204,26 +204,50 @@ def cmd_run(args: argparse.Namespace) -> int:
         "metrics": feedback.metrics if feedback else {},
         "feedback": feedback.to_dict() if feedback else None,
         "experiment": experiment.to_dict(),
+        "report_path": experiment.report_path or None,
     }
 
     _write_json(result_path, result)
 
+    # Copy pipeline report to round directory for visibility (pass or fail)
+    _copy_report_to_round(experiment.report_path, run_dir)
+
     if status == "pass":
-        # Find report + plots under run_dir/<factor_id>/<tag>/
-        report_path: Path | None = None
+        # Find report for candidates/
+        report_path = Path(experiment.report_path) if experiment.report_path else None
         plots_path: Path | None = None
-        report_dir = run_dir / factor_id
-        if report_dir.exists():
-            for p in report_dir.rglob("pipeline_report.md"):
-                report_path = p
-                plots_dir = p.parent / "plots"
-                if plots_dir.is_dir():
-                    plots_path = plots_dir
-                break
+        if report_path and report_path.exists():
+            plots_dir = report_path.parent / "plots"
+            if plots_dir.is_dir():
+                plots_path = plots_dir
         _write_candidate(experiment, factor_id, result_path, report_path, plots_path)
 
     print(json.dumps(_clean_json(result), ensure_ascii=False, indent=2, allow_nan=False))
     return 0 if status != "error" else 1
+
+
+def _copy_report_to_round(report_path: str, run_dir: Path) -> None:
+    """Copy pipeline report from results/<fid>/<tag>/ to the round directory.
+
+    The pipeline always generates a report at
+    ``results_root/<factor_id>/<tag>/pipeline_report.md`` (via step10).
+    This copies it into ``run_dir/pipeline_report.md`` so the user can
+    review it alongside the per-round result.json.
+    """
+    src = Path(report_path) if report_path else None
+    if not src or not src.exists():
+        return
+    dst = run_dir / "pipeline_report.md"
+    try:
+        dst.write_text(src.read_text(encoding="utf-8"))
+        # Also copy plots if they exist
+        plots_src = src.parent / "plots"
+        plots_dst = run_dir / "plots"
+        if plots_src.is_dir() and not plots_dst.exists():
+            import shutil
+            shutil.copytree(str(plots_src), str(plots_dst))
+    except Exception:
+        pass
 
 
 def _write_candidate(

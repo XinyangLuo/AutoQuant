@@ -98,7 +98,9 @@ For each round:
      --factor-file results/agent/runs/<run_id>/round_<NNN>/factor.py
    ```
 
-7. Read `round_<NNN>/result.json`.
+7. Read `round_<NNN>/result.json`。
+   - `result.json.report_path` 指向 pipeline 诊断报告（每轮都会生成，含全部 10 步详情 + 图表）。
+   - 报告同时复制到 `round_<NNN>/pipeline_report.md`，可直接 Read 查看 IC 衰减图、分层回测净值曲线等。
 
 8. **If `result.json.status == "pass"`**：
    - Append final trace record with `status="pass"`.
@@ -281,9 +283,9 @@ When loop ends with pass:
    {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "pass", "rounds": N, "best_icir": X.XX, "best_sharpe": X.XX, "ts": "{ISO timestamp}"}
    ```
 
-3. 因子已由 CLI 自动写入 `results/agent/candidates/<factor_id>/`（含 `factor.py`、`pipeline_state.json`、`result.json`）。
+3. 因子已由 CLI 自动写入 `results/agent/candidates/<factor_id>/`（含 `factor.py`、`pipeline_state.json`、`result.json`、`pipeline_report.md`）。
 
-4. 总结输出：factor id、路径、核心公式、关键指标、candidates 目录。
+4. 总结输出：factor id、路径、核心公式、关键指标、**pipeline 报告路径**、candidates 目录。提示用户 Read 报告做最终决策。
 
 ## Abandon 收尾
 
