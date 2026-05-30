@@ -10,7 +10,7 @@
 
 > 阻塞性，必须立刻修。
 
-- [ ] **P0.1** Agent 驱动 retry 落地：step6/7 失败后，Agent 分析 feedback 决定调参策略（放宽 top_pct、缩短 horizon），通过 step5 override 重新生成信号再跑，最多 3 次。`state.retry_count` / `retry_params` 已定义但从未写入
+- [x] **P0.1** Pipeline 自动 retry：step6/7 失败后自动以渐进宽松策略参数重试 step5→6→7，最多 3 次（double decay → widen top_k → 5D rebalance）。`state.retry_count` / `retry_params` 已写入，报告展示重试次数和最终参数。
 
 ---
 
