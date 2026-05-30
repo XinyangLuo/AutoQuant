@@ -87,9 +87,39 @@ For each round:
    - **⚠️ 涨跌停**：涨停跌停日成交量接近 0、收盘价为人工价。成交量/反转类因子必须屏蔽 `(close == limit_up) | (close == limit_down)` 的数据。详见 GUIDE §5.11。
    - **⚠️ 财务数据是季度频率**：`inc_*`/`bs_*`/`cf_*` 列在每个交易日重复同一季度值，直到下季度财报发布。对财务列做时序变换（`ts_mean`/`ts_delta`/`pct_change`）**无意义**——会产生阶梯状伪影。截面比值（`inc_eps / bs_equity`）没问题；增长/斜率因子必须用 `event_driven=True` 模式。详见 GUIDE §5.12。
    - **⚠️ 成交量单位**：`volume` 单位是**股**（非手），`amount` 单位是**元**。跨股票比较成交量用 `turnover_rate`（换手率）或 `amount`（成交额），不要用原始 `volume`。详见 GUIDE §5.13。
-5. Write the candidate code to both:
-   - `results/agent/runs/<run_id>/round_<NNN>/factor.py`
-   - `alphas/exp/agent/<factor_id>/factor.py`
+5. Write the candidate code + per-factor config to both:
+   - **因子代码**：`results/agent/runs/<run_id>/round_<NNN>/factor.py` 和 `alphas/exp/agent/<factor_id>/factor.py`
+   - **回测策略配置**：`alphas/exp/agent/<factor_id>/config.yaml`（**必须生成！**）——Pipeline 通过 `PipelineConfig.from_factor_config(factor_id)` 自动发现此文件，未指定的字段使用硬编码默认值。FC 根据因子特征选择参数：
+
+   ```yaml
+   # alphas/exp/agent/<factor_id>/config.yaml
+   pipeline:
+     default_decay: 5          # 信号半衰期：noisy 因子 → 10~15，sharp 因子 → 3~5
+     default_rebalance: "1D"   # 调仓频率：1D/5D/1W/2W/1M/EOM
+     default_top_k: 100        # 持仓数：分散型 → 200~300，集中型 → 50~100
+     ret_type: "open"          # 成交价：open=T+1开盘，close=T日收盘
+
+   strategy:
+     universe:
+       exclude_st: true
+       exclude_new_ipo_days: 252
+       include_cyb: true       # 创业板
+       include_kcb: false      # 科创板（默认关，波动大）
+       include_bse: false      # 北交所（默认关）
+       min_market_cap: 500000000     # 最小流通市值（5亿）
+       min_avg_amount: 10000000      # 最小日均成交额（1000万）
+
+   simulation:
+     initial_cash: 100000000
+     commission_rate: 0.0003
+     stamp_duty_rate: 0.001
+     allow_short: false
+   ```
+
+   - **decay 选择**：反转/换手类因子信号衰减快 → decay=3~5；趋势/质量类因子衰减慢 → decay=10~15
+   - **rebalance 选择**：日频信号 → 1D；周频信号 → 5D 或 1W；月频信号 → 1M
+   - **top_k 选择**：ICIR > 3 的强因子 → 50~100 集中持有；ICIR 1~3 → 100~200；ICIR < 1 → 200~300 分散
+   - **Repair 时**：如果 RC 输出了 `repair_params` 中的 `decay`/`rebalance`/`top_k`，更新 config.yaml 对应值
 6. Run one deterministic evaluation:
 
    ```bash
