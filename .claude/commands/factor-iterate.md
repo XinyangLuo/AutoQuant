@@ -310,8 +310,9 @@ When loop ends with pass:
 
 2. **Append `run_index.jsonl`**：
    ```json
-   {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "pass", "rounds": N, "best_icir": X.XX, "best_sharpe": X.XX, "ts": "{ISO timestamp}"}
+   {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "pass", "rounds": N, "best_icir": X.XX, "best_sharpe": X.XX, "code_summary": "公式+构造简述", "ts": "{ISO timestamp}"}
    ```
+   `code_summary` 来自 trace 最后一轮的 `code_summary` 字段，**必须记录**——即使因子 pass 入库了，保留公式便于后续发现近似重复时快速识别。
 
 3. 因子已由 CLI 自动写入 `results/agent/candidates/<factor_id>/`（含 `factor.py`、`pipeline_state.json`、`result.json`、`pipeline_report.md`）。
 
@@ -329,8 +330,9 @@ When loop ends with abandon（RC 建议放弃或 max_rounds 耗尽）：
 
 2. **Append `run_index.jsonl`**：
    ```json
-   {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "fail", "rounds": N, "best_icir": X.XX, "best_sharpe": X.XX, "failure_type": "...", "ts": "{ISO timestamp}"}
+   {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "fail", "rounds": N, "best_icir": X.XX, "best_sharpe": X.XX, "failure_type": "...", "code_summary": "公式+构造简述", "ts": "{ISO timestamp}"}
    ```
+   `code_summary` 来自 trace 最后一轮的 `code_summary` 字段，**必须记录**——失败后因子代码被清理，这是唯一保留的公式记录，用于后续去重和避免重复踩坑。
 
 3. 输出放弃报告：
    - 原始假设

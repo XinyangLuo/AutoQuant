@@ -1,1 +1,78 @@
-{}
+{
+  "barra_l1": [
+    {
+      "factor_id": "f_barra_beta",
+      "formula_pattern": "沪深300 Beta × 0.5 + 全A Beta × 0.5，时序 zscore(252d)",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "系统性风险暴露因子。不是 alpha-seeking，而是 risk attribution 的结构件。HS300 beta 覆盖大盘风格，全A beta 覆盖小盘暴露。",
+      "admission_date": "2026-05-01"
+    },
+    {
+      "factor_id": "f_barra_growth",
+      "formula_pattern": "单季营收 yoy + 单季净利 yoy + TTM ROE yoy 等权合成，cs_zscore",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "成长风格暴露。捕捉盈利/营收加速的股票。Barra L1 结构件，不作为独立 alpha 挖掘。",
+      "admission_date": "2026-05-01"
+    },
+    {
+      "factor_id": "f_barra_liquidity",
+      "formula_pattern": "月均换手率 + 月均成交额对数 + Amihud 非流动性，等权 zscore",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "流动性风险暴露。低流动性股票有风险溢价，但A股散户主导导致反向效应更强。",
+      "admission_date": "2026-05-01"
+    },
+    {
+      "factor_id": "f_barra_momentum",
+      "formula_pattern": "ts_mean(pct_chg/100, 252, min_periods=120) 等权合成长短期动量",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "动量风格暴露。A股中长期动量弱于美股但仍有区分度。Barra L1 结构件。",
+      "admission_date": "2026-05-01"
+    },
+    {
+      "factor_id": "f_barra_quality",
+      "formula_pattern": "ROE + 毛利率 + 资产周转率 + 负债率倒数，等权 cs_zscore",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "质量风格暴露。高ROE/高毛利/低杠杆公司长期跑赢。Barra L1 结构件。",
+      "admission_date": "2026-05-01"
+    },
+    {
+      "factor_id": "f_barra_size",
+      "formula_pattern": "log(circ_mv)，cs_zscore",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "规模风格暴露。A股小盘溢价显著但波动大。barra_ind_size 中性化的基准因子。",
+      "admission_date": "2026-05-01"
+    },
+    {
+      "factor_id": "f_barra_value",
+      "formula_pattern": "EP + BP + SP + DP，等权 cs_zscore",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "价值风格暴露。A股价值因子长期有效(EP>BP>SP)。Barra L1 结构件。",
+      "admission_date": "2026-05-01"
+    }
+  ],
+  "technical": [
+    {
+      "factor_id": "f_chip_cv",
+      "formula_pattern": "筹码分布变异系数：ts_std(close, 60) / ts_mean(close, 60)，barra_ind_size 中性化",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "筹码集中度与未来收益的关系：筹码越分散(高CV)分歧越大，barra_ind_size 后纯截面 alpha",
+      "admission_date": "2026-05-01"
+    },
+    {
+      "factor_id": "f_main_flow_vol",
+      "formula_pattern": "主力资金流波动：ts_std(mf_net_mf_amount, 20)，barra_ind_size 中性化",
+      "key_metrics": {"annual_icir": null, "simple_sharpe": null},
+      "why_it_works": "主力资金进出波动反映机构分歧：高波动→方向不明→风险溢价，低波动→一致预期→趋势延续",
+      "admission_date": "2026-05-01"
+    }
+  ],
+  "volume_reversal": [
+    {
+      "factor_id": "f_auto_20260530_003",
+      "formula_pattern": "-rank(ts_std(turnover_rate, 20)), barra_ind_size, ST+limit masked",
+      "key_metrics": {"annual_icir": 2.62, "simple_sharpe": 0.989},
+      "why_it_works": "换手率波动反映多空分歧烈度，分歧越大后续反转越强；barra_ind_size 中性化去除行业/市值噪音后纯 alpha 仍显著",
+      "admission_date": "2026-05-30"
+    }
+  ]
+}
