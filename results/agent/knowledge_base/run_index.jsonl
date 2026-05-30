@@ -1,1 +1,0 @@
-{"factor_id": "f_auto_20260530_001", "run_id": "20260530_215226_vol_reversal", "category": "volume_reversal", "data_sources": ["market_daily"], "status": "fail", "rounds": 3, "best_icir": 4.37, "best_sharpe": 0.457, "failure_type": "backtest_fail", "ts": "2026-05-30T21:57:00"}

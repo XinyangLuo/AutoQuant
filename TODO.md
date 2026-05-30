@@ -33,7 +33,6 @@
 ### 基础设施
 
 - [ ] `backtest/data/backfill_indices.py` standalone CLI：benchmark 报错信息仍引用旧路径
-- [ ] Strategy CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`
 - [ ] 分钟级数据：fetcher → backfill → update → 读取 API（pyarrow.dataset 按日期分区）
 
 ### 仿真引擎
