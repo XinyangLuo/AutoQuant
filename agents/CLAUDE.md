@@ -146,7 +146,7 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 
 **与旧版设计的关键区别**：
 - ~~5 个专用 subagent~~ → **2 个**（Factor Coder + Result Critic）
-- ~~8 个 KB 文件~~ → **3 个**（anti_patterns + successful_patterns + run_index）
+- ~~8 个 KB 文件~~ → **3 个**（anti_patterns + successful_patterns + failed_attempts）
 - ~~新增 knowledge.py / scheduler.py / orchestrator.py~~ → **Phase 1 不写任何新 Python**
 - ~~bandit 方向选择~~ → 方向选择由父进程（Claude Code 对话）直接完成
 - ~~claude_cli kb-query / run-index 子命令~~ → 用 Read + jq 代替

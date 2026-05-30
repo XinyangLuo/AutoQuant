@@ -30,7 +30,7 @@ KB 文件位于 `results/agent/knowledge_base/`，跨 run 积累知识：
 |------|------|
 | `anti_patterns.json` | 失败模式 → 修复建议，按 failure_type 分组 |
 | `successful_patterns.json` | 成功模式 → SOTA 基准，按 category 分组 |
-| `run_index.jsonl` | 全量实验索引（append-only） |
+| `failed_attempts.jsonl` | 失败实验索引，仅记录失败，用于学习错误建模方案（append-only） |
 
 **每次 `/factor-iterate` 开始时**，读取 KB 做 framing：
 - `anti_patterns.json` → 此 category 的已知坑，引导初始代码避免重蹈
@@ -308,7 +308,7 @@ When loop ends with pass:
    ```
    - 如果 category key 不存在则新建
 
-2. **Append `run_index.jsonl`**：
+2. **Append `failed_attempts.jsonl`**：
    ```json
    {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "pass", "best_icir": X.XX, "best_sharpe": X.XX, "code_summary": "公式+构造简述", "ts": "{ISO timestamp}"}
    ```
@@ -328,7 +328,7 @@ When loop ends with abandon（RC 建议放弃或 max_rounds 耗尽）：
    - **去重判断**：在 `anti_patterns.json[failure_type]` 数组中搜索，匹配条件为 **`signature` 完全相同**（exact string match）。如果匹配到已有条目 → 该条目的 `count += 1`，更新 `last_seen`；否则 append 新条目
    - 如果 `failure_type` key 在 anti_patterns.json 中不存在 → 新建该 key 并初始化为包含此条目的数组
 
-2. **Append `run_index.jsonl`**（**仅记录失败**，用于学习错误建模方案）：
+2. **Append `failed_attempts.jsonl`**（**仅记录失败**，用于学习错误建模方案）：
    ```json
    {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "fail", "best_icir": X.XX, "best_sharpe": X.XX, "failure_type": "...", "code_summary": "公式+构造简述", "why_failed": "根因一句话", "ts": "{ISO timestamp}"}
    ```

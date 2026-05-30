@@ -22,7 +22,7 @@ Knowledge Base（3 个文件，非 8 个）：
   results/agent/knowledge_base/
     ├── anti_patterns.json      反模式库
     ├── successful_patterns.json 成功模式库
-    └── run_index.jsonl          全量实验索引
+    └── failed_attempts.jsonl          失败实验记录（仅失败，用于学习错误建模）
 ```
 
 **方向选择 + 假设生成**不拆分独立 agent，由父进程（Claude Code 对话）直接完成。审计能力推迟到有 >10 个 admitted factor 后再建。
@@ -44,7 +44,7 @@ Knowledge Base（3 个文件，非 8 个）：
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `results/agent/knowledge_base/` | **新建目录** | 含 `anti_patterns.json`、`successful_patterns.json`、`run_index.jsonl` 的空 schema 文件 |
+| `results/agent/knowledge_base/` | **新建目录** | 含 `anti_patterns.json`、`successful_patterns.json`、`failed_attempts.jsonl` 的空 schema 文件 |
 | `.claude/commands/factor-iterate.md` | **改** | Round loop 中：FC 写完代码 → RC subagent 诊断 → 根据 RC 输出决定 repair/abandon/pass |
 | `agents/claude_cli.py` | 不改 | 继续用 `schema` + `run` |
 | `agents/runner.py` 等 | 不改 | 继续用现有执行层 |
@@ -156,7 +156,7 @@ Agent tool params:
 }
 ```
 
-**`run_index.jsonl`** — 每行一个 run（append-only）：
+**`failed_attempts.jsonl`** — 每行一个 run（append-only）：
 ```json
 {"factor_id": "f_auto_xxx", "run_id": "...", "category": "momentum", "data_sources": ["market_daily"], "status": "pass", "rounds": 3, "best_icir": 1.55, "best_sharpe": 0.95, "ts": "2026-05-30T10:00:00"}
 ```
@@ -167,7 +167,7 @@ Phase 1 做完后，用以下场景验证：
 
 1. **已知 pass 因子变体**：故意引入一个 code_error，验证 RC 能正确诊断并给出 fix，下一轮修复成功
 2. **已知 fail 因子**：用历史上确定不过的因子，验证 RC 能正确 recommend_abandon
-3. **KB 积累**：连续跑 3 个迭代后，检查 `run_index.jsonl` 和 `anti_patterns.json` 是否正确写入
+3. **KB 积累**：连续跑 3 个迭代后，检查 `failed_attempts.jsonl` 和 `anti_patterns.json` 是否正确写入
 
 ### 3.7 不做的事（明确排除）
 
