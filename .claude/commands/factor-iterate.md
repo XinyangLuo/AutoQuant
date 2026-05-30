@@ -1,6 +1,8 @@
 # /factor-iterate
 
-交互式因子研究入口：用户给出一个自然语言因子猜测后，由 Claude Code 直接生成因子代码、运行单轮回测、分析结果、写入 trace，并在同一方向上修复或调参，直到达标或停止。
+交互式因子研究入口：用户给出一个自然语言因子猜测后，由 Claude Code 直接生成因子代码、运行单轮回测、分析结果、写入 trace，并在同方向上修复或调参，直到达标或停止。
+
+**Phase 1 增强**：失败时启动 Result Critic subagent（Agent tool）诊断 + 查 KB，替代硬编码 if/else repair policy。
 
 ## Usage
 
@@ -18,7 +20,23 @@
 - 每轮必须 append 一行 JSON 到 `trace.jsonl`。
 - 每轮开始前必须读取 `trace.jsonl`（如果存在），避免重复错误和重复参数。
 - 代码错误和 schema 错误必须同方向修复，不得直接换新因子假设。
-- 只有连续 3 轮同方向没有进展时，才允许建议换方向或停止。
+- 失败诊断：**启动 Result Critic subagent（Agent tool）**，由其读取 result.json + trace.jsonl + KB，输出结构化诊断 JSON。父进程根据 RC 输出决定 repair / abandon / 换方向。
+
+## Knowledge Base
+
+KB 文件位于 `results/agent/knowledge_base/`，跨 run 积累知识：
+
+| 文件 | 用途 |
+|------|------|
+| `anti_patterns.json` | 失败模式 → 修复建议，按 failure_type 分组 |
+| `successful_patterns.json` | 成功模式 → SOTA 基准，按 category 分组 |
+| `run_index.jsonl` | 全量实验索引（append-only） |
+
+**每次 `/factor-iterate` 开始时**，读取 KB 做 framing：
+- `anti_patterns.json` → 此 category 的已知坑，引导初始代码避免重蹈
+- `successful_patterns.json` → 同 category 成功模式，参考公式模板
+
+**每次迭代结束时**，更新 KB（见 §Pass/Abandon 收尾）。
 
 ## Run Directory
 
@@ -42,24 +60,27 @@ results/agent/runs/<YYYYMMDD_HHMMSS_slug>/
 
 For each round:
 
-1. Read `trace.jsonl` if it exists.
-2. Query schema before writing code:
+1. **Check max_rounds**：如果当前 round > max_rounds，直接跳转到 Abandon 收尾（max_rounds 耗尽）。
+2. Read `trace.jsonl` if it exists.
+3. Query schema before writing code:
 
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli schema --sources <data_sources>
    ```
 
-3. Generate or repair one factor implementation.
+4. Generate or repair one factor implementation.
    - Use `from __future__ import annotations`.
    - Import `register` from `backtest.factor.registry`.
    - Import only existing transforms from `backtest.factor.transforms`.
    - Use only schema columns returned by `claude_cli schema`.
    - Register with `@register("<factor_id>", ...)`.
    - Keep identifiers in English.
-4. Write the candidate code to both:
+   - **Repair 时**：如果上一轮 RC subagent 输出了 `repair_params`，优先采用其建议的参数。
+   - **Round 1 时**：从生成的代码中提取关键参数（window、horizon 等）作为 `tried_params`，用于后续 trace 记录。如果无法提取，使用 `{}`。
+5. Write the candidate code to both:
    - `results/agent/runs/<run_id>/round_<NNN>/factor.py`
    - `alphas/exp/agent/<factor_id>/factor.py`
-5. Run one deterministic evaluation:
+6. Run one deterministic evaluation:
 
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
@@ -67,9 +88,118 @@ For each round:
      --factor-file results/agent/runs/<run_id>/round_<NNN>/factor.py
    ```
 
-6. Read `round_<NNN>/result.json`.
-7. Classify result and write one JSON object to `trace.jsonl`.
-8. Decide the next action.
+7. Read `round_<NNN>/result.json`.
+
+8. **If `result.json.status == "pass"`**：
+   - Append final trace record with `status="pass"`.
+   - **Update KB**（见 §Pass 收尾）。
+   - End loop. Summarize factor id, path, core formula, key metrics, and candidates directory.
+   - Do not automatically admit. To admit: `python -m backtest.factor.admission admit <factor_id>`
+
+9. **If `result.json.status != "pass"`**：启动 Result Critic subagent 诊断。
+
+   **RC Subagent 调用方式**：通过 `Agent` 工具，一次性 subagent：
+
+   ```
+   Agent tool:
+     description: "诊断因子失败原因并给出修复建议"
+     subagent_type: "general-purpose"
+     prompt: |
+       你是 Result Critic，负责诊断量化因子 pipeline 失败的原因并给出修复建议。
+
+       ## Context
+       - 原始假设: {用户输入的自然语言假设}
+       - 本轮 round: {N} / {max_rounds}
+       - 当前 factor_id: {factor_id}
+       - 本轮参数: {tried_params}
+
+       ## 输入文件（必须全部 Read）
+       1. Read {run_dir}/round_{NNN}/result.json  — 本轮完整结果
+       2. Read {run_dir}/trace.jsonl              — 本 run 完整历史
+       3. Read results/agent/knowledge_base/anti_patterns.json
+       4. Read results/agent/knowledge_base/successful_patterns.json
+
+       ## result.json 关键字段说明
+       result.json 结构（由 claude_cli.py 输出）：
+       - `status`: "pass" | "fail" | "error"
+       - `failure_type`: 失败类型字符串
+       - `error`: 错误消息（如有）
+       - `traceback`: 完整 traceback（如有）
+       - `metrics`: FLAT dict，key 为 {annual_icir, pos_ratio, turnover, max_corr, max_existing_factor, simple_sharpe, simple_mdd, simple_annual_return, detailed_sharpe, detailed_annual_return, cost_drag, monotonicity, ridge_tier, ridge_r2, residual_annual_icir}
+         - `max_corr` = step2 的 max_existing_corr（已存在的最高相关因子）
+         - `residual_annual_icir` = step9 残差 ICIR
+         - `ridge_tier` = step8 Ridge R² 分层（low/medium/high/extreme）
+       - `experiment.step_results.{stepN}.metrics.*`: 各 step 的详细指标
+         - `experiment.step_results.step2.metrics.max_existing_factor` = 相关性最高的已有因子 ID（用于判断 Barra L1 vs user alpha）
+         - `experiment.step_results.step8.metrics.r2` = Ridge R²
+         - `experiment.simple_bt_metrics.sharpe` = 简单回测 Sharpe
+       - `experiment.category`: 因子 category（来自 @register 装饰器）
+       - `experiment.data_sources`: 数据源列表（可能不存在，此时使用用户指定的 data_sources）
+
+       ## 任务
+       1. 从 result.json 提取：status, failure_type, 关键指标：
+          - `annual_icir` ← `result.json.metrics.annual_icir`
+          - `r2` ← `result.json.experiment.step_results.step8.metrics.r2`（注意：不在 flat metrics 中）
+          - `max_existing_corr` ← `result.json.metrics.max_corr`（来自 step2）
+          - `max_existing_factor` ← `result.json.experiment.step_results.step2.metrics.max_existing_factor`
+          - `residual_icir` ← `result.json.metrics.residual_annual_icir`
+          - 如果 step2/step8/step9 未执行（因子在更早 step 失败），对应指标为 null
+       2. 从 trace.jsonl 提取：之前几轮的 failure_type 序列, 已尝试的参数组合, **连续同方向轮数和指标趋势**（特别关注：是否已连续 ≥3 轮指标无改善？）
+       3. **查反模式库**：anti_patterns.json 中，匹配当前 failure_type + category 的模式？
+          - 在 anti_patterns.json[failure_type] 数组中搜索
+          - 匹配条件：pattern 描述是否相关、category 是否匹配
+          - 如果找到 → 输出其 fix 建议
+       4. **查成功模式库**：successful_patterns.json 中，同 category 的 SOTA 指标？
+          - 找到同 category 的最高 annual_icir、best_sharpe
+          - 用作"多好才算好"的基准
+       5. 综合判断，输出诊断 JSON
+
+       ## OutputFormat（必须严格按以下 JSON 输出，不要额外文字，不要 markdown 代码块）
+       {
+         "failure_type": "用 result.json 中的 failure_type",
+         "diagnosis": "根因分析，一段话，说清楚为什么失败",
+         "fix_strategy": "具体修复建议，包含要改的参数名和新值",
+         "same_direction": true,
+         "repair_params": {},
+         "recommend_abandon": false,
+         "new_anti_pattern": null
+       }
+
+       repair_params 示例：{"window": 10, "horizon": 5}。不需要改参数时用 {}。合法的 top_k 范围 50~500，decay 范围 1~30，rebalance 仅限 "1D"/"5D"/"1W"/"2W"/"1M"/"EOM"，variant 仅限 "none"/"barra_ind_size"/"barra_l3"。
+       new_anti_pattern 示例：{"failure_type": "icir_fail", "pattern": "窗口过长导致反转因子失效", "category": "volume_reversal", "signature": "volume_window > 20", "fix": "缩窗到 5-10 天"}。**必须严格使用这四个字段名**：`pattern`（非 pattern_name）、`fix`（非 description）、`category`、`signature`。不需要新增反模式时用 null。
+
+       ## Decision Rules
+       - code_error / schema_error → same_direction=true，只修代码/列名，不换假设。repair_params 定位到具体错误行给出修正。
+       - coverage_fail → same_direction=true。改数据源或放宽条件，repair_params 调整 data_sources 或参数。
+       - neutralization_fail → same_direction=true。尝试换 neutralization variant（none → barra_ind_size → barra_l3）或调整因子构造以减少与 size/industry 的相关性。
+       - icir_fail → 先查反模式：同 category + icir_fail 怎么修的？有匹配 → 采用其 fix。无匹配 → same_direction=true，repair_params 改变窗口/horizon（选一个，不要同时改两个）。如果同 category SOTA icir > 1.5 而我方 < 0.5 → 差距大，不急着 abandon。
+       - monotonicity_fail → same_direction=true。加二次过滤或改构造方式（如只在极端分位取信号、改用 rank 变换）。
+       - config_error → same_direction=true。检查 per-factor config.yaml 或 CLI 参数（top_k/top_pct/decay/rebalance），repair_params 修正配置值。
+       - backtest_fail → same_direction=true。加平滑/decay、延长窗口、降低 rebalance 频率以减少换手、或减少信号翻转（signal churn）。
+       - ridge_fail → 查 max_existing_corr + max_existing_factor：
+         - max_existing_corr > 0.85 且 max_existing_factor 是用户 alpha（f_xxx，非 f_barra_）→ recommend_abandon=true（近似重复）
+         - max_existing_corr > 0.85 且 max_existing_factor 是 Barra L1（f_barra_）→ same_direction=true，换构造方式（不同窗口/不同 transform）
+         - 如果无法判断对手类型（max_existing_factor 缺失）→ same_direction=true，给一次 retry，换构造方式
+       - residual_fail → recommend_abandon=true（无增量信息）。
+       - execution_error → same_direction=true（基础设施问题不应放弃方向）。检查错误消息：DuckDB 锁冲突/超时 → 重试同一代码；OOM/磁盘满 → 减数据量后重试；其他 → 报告用户。
+       - metrics_fail → 查看具体哪些指标不达标，参考最近的同 failure_type 反模式修复。
+       - 连续 3 轮同 direction 无改善（annual_icir 或 simple_sharpe 未提升）→ recommend_abandon=true。
+       - 只在确实发现新的通用性失败模式时才填充 new_anti_pattern（如"XX 类因子在 YY 条件下必然失败"），否则填 null。
+
+       返回纯 JSON，不要 markdown 代码块包裹。
+   ```
+
+10. **Parse RC output**：尝试 JSON.parse RC 返回文本。
+    - 如果解析失败（如 RC 输出了 markdown 代码块包裹）→ 尝试提取第一个 `{...}` 块重新解析
+    - 如果仍失败 → 使用 fallback 诊断：`{"failure_type": "{from result.json}", "diagnosis": "RC output parse error", "fix_strategy": "Retry with same code", "same_direction": true, "repair_params": {}, "recommend_abandon": false, "new_anti_pattern": null}`
+    - 追加一行到 `trace.jsonl`（将 RC 输出的字段合并进去，见 Trace JSONL Schema）
+
+11. 根据 RC subagent 返回的诊断 JSON：
+    - 如果 `recommend_abandon == true` 或 `same_direction == false` 或 `round >= max_rounds`：
+      - **Update KB**（见 §Abandon 收尾）
+      - End loop. 输出放弃报告（根因分析 + 为什么无法修复）。
+    - 如果 `same_direction == true` 且 `recommend_abandon != true` 且 `round < max_rounds`：
+      - 以 RC 的 `repair_params` 为指导进入下一轮。
 
 ## Trace JSONL Schema
 
@@ -79,80 +209,93 @@ Append exactly one object per round:
 {
   "round": 1,
   "factor_id": "f_auto_20260527_001",
+  "category": "volume_reversal",
+  "data_sources": ["market_daily"],
   "status": "pass|fail|error",
   "failure_type": "code_error|schema_error|coverage_fail|neutralization_fail|icir_fail|monotonicity_fail|config_error|backtest_fail|ridge_fail|residual_fail|execution_error|metrics_fail|null",
   "error_signature": "NameError: abs_",
-  "diagnosis": "The code used a missing transform; preserve the reversal-volume idea and fix the import.",
-  "fix_strategy": "Replace the invalid transform and rerun the same hypothesis.",
+  "diagnosis": "根因分析（来自 RC subagent 输出）",
+  "fix_strategy": "具体修复建议（来自 RC subagent 输出）",
   "code_summary": "20-day return reversal gated by abnormal amount and small-cap rank.",
   "tried_params": {"window": 20, "horizon": 20, "top_pct": 0.1},
-  "metrics": {"rankicir": 0.15, "turnover": 0.42, "simple_sharpe": 0.3},
+  "repair_params": {"window": 5},
+  "recommend_abandon": false,
+  "metrics": {"annual_icir": 0.15, "simple_sharpe": 0.3, "r2": null, "max_existing_corr": null, "residual_icir": null},
   "same_direction": true
 }
 ```
 
-## Failure Classification
+### 字段来源说明
 
-Use `result.json.failure_type` as the first signal, then refine from traceback and metrics:
+| 字段 | 来源 |
+|------|------|
+| `category` | 从 `result.json.experiment.category` 提取（来自 `@register` 的 category 参数）。如果不存在，从用户假设推断 |
+| `data_sources` | 从 `result.json.experiment.data_sources` 提取。如果不存在，使用用户指定的 `--data_sources` 参数 |
+| `error_signature` | 从 `result.json.error` 提取第一行（错误类型 + 消息），截断至 120 字符 |
+| `tried_params` | Round 1：从生成的因子代码提取关键参数（window, horizon 等）；后续 round：从上一轮的 `repair_params` + 代码参数合并 |
 
-- `code_error`: SyntaxError, NameError, TypeError, ImportError, invalid transform.
-- `schema_error`: KeyError, missing column, wrong data source prefix.
-- `coverage_fail`: step1 — too many missing values in factor coverage check.
-- `neutralization_fail`: step2 — factor too correlated with size/industry after neutralization.
-- `icir_fail`: step3 — RankICIR or IC+ below pipeline threshold.
-- `monotonicity_fail`: step4 — decile returns not monotonic.
-- `config_error`: step5 — strategy config error (top_k/top_pct/decay).
-- `backtest_fail`: step6 or step7 — simple or detailed backtest metrics below threshold.
-- `ridge_fail`: step8 — Ridge R² too high, factor is redundant with already-admitted factors (Barra L1 + user alphas).
-- `residual_fail`: step9 — residual ICIR too low, no incremental predictive power.
-- `execution_error`: infrastructure or unexpected runtime error.
+### metrics 提取路径
 
-## Repair Policy
+`metrics` 应从 result.json 中提取关键指标：
 
-- `code_error` / `schema_error`:
-  - Set `same_direction=true`.
-  - Keep the original economic hypothesis.
-  - Fix only code, import, transform, or column names.
-- `coverage_fail`:
-  - Set `same_direction=true`.
-  - Check data source availability, widen universe, or adjust missing-value handling.
-- `neutralization_fail`:
-  - Set `same_direction=true`.
-  - Try different neutralization variant (`barra_ind_size` → `barra_l3`) or adjust factor construction.
-- `icir_fail`:
-  - Set `same_direction=true` while there is still a plausible adjustment.
-  - Try one change at a time: window, horizon, smoothing, normalization, or sign.
-  - Do not repeat parameter combinations found in trace.
-- `monotonicity_fail`:
-  - Set `same_direction=true`.
-  - Factor may only work at extremes; add secondary filter or change construction.
-- `backtest_fail`:
-  - Add smoothing/decay, lengthen window, or reduce signal churn to improve Sharpe/drawdown.
-- `ridge_fail`:
-  - Check `experiment.step_results.step2.metrics.max_existing_corr` to identify which admitted factor is driving the overlap.
-  - If `max_existing_corr > 0.85` with an admitted user alpha → this is a near-duplicate. Do NOT retry the same hypothesis; start a new direction.
-  - If the overlap is primarily with Barra L1 factors → change construction approach or target a different risk dimension.
-  - If unsure, set `same_direction=true` for one retry with a materially different construction (different window, different transform, or additional conditioning).
-- `residual_fail`:
-  - Factor has no incremental value beyond already-admitted factors; try a different hypothesis.
-- Three consecutive same-direction failures with no metric improvement:
-  - Stop and report why the hypothesis appears weak, or ask the user whether to continue with a new direction.
+| 指标 | 实际路径 | 说明 |
+|------|---------|------|
+| `annual_icir` | `result.json.metrics.annual_icir` | flat dict，直接取 |
+| `simple_sharpe` | `result.json.metrics.simple_sharpe` | flat dict，优先用这个 |
+| `r2` | `result.json.experiment.step_results.step8.metrics.r2` | **不在 flat metrics 中**，需通过 experiment 取 |
+| `max_existing_corr` | `result.json.metrics.max_corr` | flat dict，来自 step2（非 step8） |
+| `residual_icir` | `result.json.metrics.residual_annual_icir` | flat dict，key 名带 annual 前缀 |
 
-## Pass Criteria
+如果某 step 未执行（因子在更早 step 失败），对应指标填 `null`。
 
-Treat the factor as candidate if `result.json.status == "pass"`.
+## Pass 收尾
 
-On pass, the CLI automatically writes the factor to `results/agent/candidates/<factor_id>/` containing:
+When loop ends with pass:
 
-- `factor.py` — factor source code
-- `pipeline_state.json` — full step1~step10 pass/fail status and metrics
-- `result.json` — complete CLI output
+1. **Update `successful_patterns.json`**：
+   - 读取当前文件
+   - 在 `category` key 下追加一条记录：
+   ```json
+   {
+     "factor_id": "{factor_id}",
+     "formula_pattern": "一句话描述公式结构",
+     "key_metrics": {"annual_icir": X.XX, "simple_sharpe": X.XX},
+     "why_it_works": "一句话解释经济学逻辑",
+     "admission_date": "{today}"
+   }
+   ```
+   - 如果 category key 不存在则新建
 
-On pass:
+2. **Append `run_index.jsonl`**：
+   ```json
+   {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "pass", "rounds": N, "best_icir": X.XX, "best_sharpe": X.XX, "ts": "{ISO timestamp}"}
+   ```
 
-1. Append final trace record with `status="pass"`.
-2. Summarize factor id, path, core formula, key metrics, and candidates directory.
-3. Do not automatically admit the factor. To admit, manually run: `python -m backtest.factor.admission admit <factor_id>`
+3. 因子已由 CLI 自动写入 `results/agent/candidates/<factor_id>/`（含 `factor.py`、`pipeline_state.json`、`result.json`）。
+
+4. 总结输出：factor id、路径、核心公式、关键指标、candidates 目录。
+
+## Abandon 收尾
+
+When loop ends with abandon（RC 建议放弃或 max_rounds 耗尽）：
+
+1. **Update `anti_patterns.json`**（如果最后一轮 RC 输出了 `new_anti_pattern` 非 null）：
+   - 读取当前文件
+   - **字段转换**：RC 输出的 new_anti_pattern 有 5 字段（`failure_type, pattern, category, signature, fix`）。追加到 KB 时需要补充 `count: 1` 和 `last_seen: "{today}"`，并**去掉 `failure_type` 字段**（它已经是顶层 key）
+   - **去重判断**：在 `anti_patterns.json[failure_type]` 数组中搜索，匹配条件为 **`signature` 完全相同**（exact string match）。如果匹配到已有条目 → 该条目的 `count += 1`，更新 `last_seen`；否则 append 新条目
+   - 如果 `failure_type` key 在 anti_patterns.json 中不存在 → 新建该 key 并初始化为包含此条目的数组
+
+2. **Append `run_index.jsonl`**：
+   ```json
+   {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "fail", "rounds": N, "best_icir": X.XX, "best_sharpe": X.XX, "failure_type": "...", "ts": "{ISO timestamp}"}
+   ```
+
+3. 输出放弃报告：
+   - 原始假设
+   - 尝试的总轮数
+   - 各轮 failure_type 序列
+   - 最终放弃原因（来自 RC 诊断）
+   - 如果 KB 中有相关成功模式，提示「同类因子 SOTA: ICIR=X.XX，建议换构造方式」
 
 ## Common Column / Transform Corrections
 
@@ -170,7 +313,7 @@ Use aliases returned by `claude_cli schema`:
 During iteration, keep user updates short:
 
 - Round number and action.
-- Failure type and next fix.
+- RC 诊断摘要（failure_type + diagnosis 一句话 + 决策）。
 - Final pass/fail summary.
 
 Do not paste full code unless the user asks.

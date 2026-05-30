@@ -135,3 +135,43 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 - 与根目录 `CLAUDE.md` §9 一致
 - Agent 特有：因子 ID 前缀 `f_auto_`（Claude 生成）vs `f_`（人工）
 - 因子代码遵循 `FACTOR_CODE_GUIDE.md` 规范
+
+## 7. Multi-Agent 自动因子挖掘（Claude Code Subagent 模式）
+
+> **实施计划**：[`agents/PLAN.md`](PLAN.md)。本章为摘要，完整演进路线以 PLAN.md 为准。
+
+### 7.1 核心思路
+
+用 Claude Code 的 **Agent tool（subagent）** 做决策，Python 层只管执行。不建独立的 agent 循环，不新增 Python 模块（Phase 1 零新代码）。
+
+**与旧版设计的关键区别**：
+- ~~5 个专用 subagent~~ → **2 个**（Factor Coder + Result Critic）
+- ~~8 个 KB 文件~~ → **3 个**（anti_patterns + successful_patterns + run_index）
+- ~~新增 knowledge.py / scheduler.py / orchestrator.py~~ → **Phase 1 不写任何新 Python**
+- ~~bandit 方向选择~~ → 方向选择由父进程（Claude Code 对话）直接完成
+- ~~claude_cli kb-query / run-index 子命令~~ → 用 Read + jq 代替
+
+### 7.2 Phase 1（当前）：增强 `/factor-iterate` + KB 驱动修复
+
+```
+/ factor-iterate "成交额放量后短期反转，小盘股更强"
+  │
+  ├─ Round 1..N:
+  │   ├─ [Factor Coder]  生成/修复代码 → claude_cli run
+  │   ├─ [Result Critic] 诊断 fail → 查 KB 反模式 → 输出 repair/abandon 指令
+  │   └─ [父进程] 追加 trace.jsonl，更新 KB
+  │
+  └─ Pass → 因子写入 candidates/，KB 写入 successful_patterns
+     Abandon → KB 写入 anti_patterns
+```
+
+**改动清单（Phase 1）**：
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `results/agent/knowledge_base/` | 新建 | 3 个 JSON 文件（空 schema + 手动 bootstrap） |
+| `.claude/commands/factor-iterate.md` | 改 | 集成 RC subagent + KB 查询 |
+| `agents/claude_cli.py` | 不改 | |
+| `agents/` 其他模块 | 不改 | |
+
+后续 Phase（并行探索、自动审计、bandit 调度）的触发条件、范围、设计细节见 [`PLAN.md`](PLAN.md)。

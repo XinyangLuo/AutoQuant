@@ -55,6 +55,9 @@ data/positions/*
 # 回测产出
 results/*
 !results/.gitkeep
+!results/agent/
+!results/agent/knowledge_base/
+!results/agent/knowledge_base/*
 
 # 日志
 *.log

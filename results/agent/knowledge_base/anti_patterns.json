@@ -1,0 +1,23 @@
+{
+  "icir_fail": [],
+  "ridge_fail": [],
+  "residual_fail": [],
+  "monotonicity_fail": [],
+  "coverage_fail": [],
+  "neutralization_fail": [
+    {
+      "pattern": "variant_switch_exposes_structural_bias",
+      "category": "volume_reversal",
+      "signature": "barra_ind_size->barra_l3 switch causes step2 ind_corr>0.4, size_corr>0.1",
+      "fix": "Switching from barra_ind_size (with OLS neutralization) to barra_l3 (without) can turn a backtest_fail into a neutralization_fail when the factor concept has inherent industry/size clustering. Volume-based and momentum-based signals often exhibit strong sector biases. The neutralization was correctly masking these biases; removing it does not improve the signal — it just exposes the bias to step2 checks. Always verify whether a factor's cross-sectional IC survives neutralization before assuming the neutralization is the problem.",
+      "count": 1,
+      "last_seen": "2026-05-30"
+    }
+  ],
+  "backtest_fail": [],
+  "code_error": [],
+  "schema_error": [],
+  "config_error": [],
+  "execution_error": [],
+  "metrics_fail": []
+}

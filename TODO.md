@@ -2,7 +2,7 @@
 
 > 临时工单池。每项完成后从本文件删除；全部完成后删除整份 TODO.md。
 > 分级：P0=立刻/阻塞，P1=依赖 P0，P2=有价值但不紧急，P3=维护/锦上添花，P4=远期/想法池
-> 上次整理: 2026-05-25
+> 上次整理: 2026-05-30
 
 ---
 
@@ -19,6 +19,17 @@
 ---
 
 ## P1
+
+### Multi-Agent 自动因子挖掘系统
+
+> 实施计划：[`agents/PLAN.md`](agents/PLAN.md)（渐进式，每个 Phase 有明确触发条件）
+> 旧版设计（已废弃）：[`.claude/plans/desktop-rd-agent-main-rd-agent-claude-s-typed-crab.md`](../.claude/plans/desktop-rd-agent-main-rd-agent-claude-s-typed-crab.md)
+
+- [x] **P1.A.1 KB 地基（Phase 1）**：创建 `results/agent/knowledge_base/` + 3 个空 schema 文件（`anti_patterns.json`、`successful_patterns.json`、`run_index.jsonl`）；无历史 trace 可 bootstrap，从空开始积累
+- [x] **P1.A.2 增强单 agent（Phase 1）**：修改 `.claude/commands/factor-iterate.md`，在 fail 后启动 RC subagent（Agent tool）诊断 + 查 KB；端到端验证待下次实际运行时完成
+- [ ] **P1.A.3 KB 积累 + 自动引导（Phase 2）**：触发条件：≥20 次迭代，≥10 条反模式，≥3 条成功模式；父进程在 framing 阶段自动查 KB 引导初始代码；RC prompt 抽到 `.claude/prompts/result_critic.md`
+- [ ] **P1.A.4 并行探索（Phase 3）**：触发条件：Phase 2 稳定 + 单方向成功率 >20%；2 方向手动并行（不同 run dir + background）；验证 DuckDB 并发安全 + token 消耗可控
+- [ ] **P1.A.5 库审计（Phase 4）**：触发条件：admitted factor > 10；冗余/缺口/衰减检测；在 `claude_cli.py` 新增 `admit-correlations` 子命令
 
 ### 测试覆盖
 
