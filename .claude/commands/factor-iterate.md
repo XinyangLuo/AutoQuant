@@ -200,33 +200,44 @@ For each round:
        {
          "failure_type": "用 result.json 中的 failure_type",
          "diagnosis": "根因分析，一段话，说清楚为什么失败",
-         "fix_strategy": "具体修复建议，包含要改的参数名和新值",
+         "fix_strategy": "具体修复建议",
+         "fix_level": "factor",
+         "factor_params": {},
+         "strategy_params": {},
          "same_direction": true,
-         "repair_params": {},
          "recommend_abandon": false,
          "new_anti_pattern": null
        }
 
-       repair_params 示例：{"window": 10, "horizon": 5}。不需要改参数时用 {}。合法的 top_k 范围 50~500，decay 范围 1~30，rebalance 仅限 "1D"/"5D"/"1W"/"2W"/"1M"/"EOM"，variant 仅限 "none"/"barra_ind_size"/"barra_l3"。
-       new_anti_pattern 示例：{"failure_type": "icir_fail", "pattern": "窗口过长导致反转因子失效", "category": "volume_reversal", "signature": "volume_window > 20", "fix": "缩窗到 5-10 天"}。**必须严格使用这四个字段名**：`pattern`（非 pattern_name）、`fix`（非 description）、`category`、`signature`。不需要新增反模式时用 null。
+       `fix_level` 决定下一轮 FC 做什么：
+       - `"factor"` → 需要改因子代码（窗口/horizon/variant/公式）。`factor_params` 包含要改的参数。
+       - `"strategy_only"` → **因子代码不变**，只改 `alphas/exp/agent/<factor_id>/config.yaml`。`strategy_params` 包含新的 decay/rebalance/top_k。
+       - `"both"` → 两个都要改。
+
+       `factor_params` 示例：{"window": 10, "horizon": 5, "variant": "barra_ind_size"}。不需要时用 {}。
+       `strategy_params` 示例：{"decay": 15, "rebalance": "5D", "top_k": 200}。不需要时用 {}。合法值：decay 1~30，rebalance "1D"/"5D"/"1W"/"2W"/"1M"/"EOM"，top_k 50~500，variant "none"/"barra_ind_size"/"barra_l3"。
+       `new_anti_pattern` 示例：{"failure_type": "icir_fail", "pattern": "窗口过长导致反转因子失效", "category": "volume_reversal", "signature": "volume_window > 20", "fix": "缩窗到 5-10 天"}。**必须严格使用这四个字段名**：`pattern`（非 pattern_name）、`fix`（非 description）、`category`、`signature`。不需要新增反模式时用 null。
 
        ## Decision Rules
-       - code_error / schema_error → same_direction=true，只修代码/列名，不换假设。repair_params 定位到具体错误行给出修正。
-       - coverage_fail → same_direction=true。改数据源或放宽条件，repair_params 调整 data_sources 或参数。
-       - neutralization_fail → same_direction=true。尝试换 neutralization variant（none → barra_ind_size → barra_l3）或调整因子构造以减少与 size/industry 的相关性。
-       - icir_fail → 先查反模式：同 category + icir_fail 怎么修的？有匹配 → 采用其 fix。无匹配 → same_direction=true，repair_params 改变窗口/horizon（选一个，不要同时改两个）。如果同 category SOTA icir > 1.5 而我方 < 0.5 → 差距大，不急着 abandon。
-       - monotonicity_fail → same_direction=true。加二次过滤或改构造方式（如只在极端分位取信号、改用 rank 变换）。
-       - config_error → same_direction=true。检查 per-factor config.yaml 或 CLI 参数（top_k/top_pct/decay/rebalance），repair_params 修正配置值。
-       - backtest_fail → same_direction=true。加平滑/decay、延长窗口、降低 rebalance 频率以减少换手、或减少信号翻转（signal churn）。
-       - ridge_fail → 查 max_existing_corr + max_existing_factor：
-         - max_existing_corr > 0.85 且 max_existing_factor 是用户 alpha（f_xxx，非 f_barra_）→ recommend_abandon=true（近似重复）
-         - max_existing_corr > 0.85 且 max_existing_factor 是 Barra L1（f_barra_）→ same_direction=true，换构造方式（不同窗口/不同 transform）
-         - 如果无法判断对手类型（max_existing_factor 缺失）→ same_direction=true，给一次 retry，换构造方式
+       - code_error / schema_error → fix_level="factor"，只修代码/列名，不换假设。factor_params 定位到具体错误行。
+       - coverage_fail → fix_level="factor"。改数据源或放宽条件。
+       - neutralization_fail → fix_level="factor"。换 variant 或调整构造以减少 size/industry 相关性。
+       - icir_fail → fix_level="factor"。先查反模式：有匹配→采用其 fix；无匹配→改窗口/horizon（选一个，不要同时改两个）。如果同 category SOTA icir > 1.5 而我方 < 0.5 → 差距大，不急着 abandon。
+       - monotonicity_fail → fix_level="factor"。加二次过滤或改构造方式（如只在极端分位取信号）。
+       - config_error → fix_level="strategy_only"。修正 config.yaml 中的 top_k/top_pct/decay/rebalance。
+       - **backtest_fail → 按差距分级**：
+         - Sharpe ≥ 阈值的 70%（如阈值 0.8 → Sharpe ≥ 0.56）且 ICIR 达标 → fix_level="strategy_only"。因子 alpha 没问题，只是组合构建粗糙。strategy_params 调整 decay/rebalance/top_k，**不动因子代码**。
+         - Sharpe < 阈值的 70% 或 ICIR 也不达标 → fix_level="factor"。策略调参救不了，需要重构因子（换窗口/horizon/variant/公式）。factor_params 给出新参数。
+         - 参考：round 1 的 vol_reversal（ICIR 4.37 但 Sharpe 0.457 vs 0.8=57%）→ strategy_only 边界，可先试策略调参。
+       - ridge_fail → fix_level="factor"。查 max_existing_corr + max_existing_factor：
+         - >0.85 且对手是用户 alpha → recommend_abandon=true（近似重复）
+         - >0.85 且对手是 Barra L1 → 换构造方式
+         - 无法判断对手类型 → 给一次 retry，换构造方式
        - residual_fail → recommend_abandon=true（无增量信息）。
-       - execution_error → same_direction=true（基础设施问题不应放弃方向）。检查错误消息：DuckDB 锁冲突/超时 → 重试同一代码；OOM/磁盘满 → 减数据量后重试；其他 → 报告用户。
-       - metrics_fail → 查看具体哪些指标不达标，参考最近的同 failure_type 反模式修复。
+       - execution_error → fix_level="strategy_only"（基础设施问题）。DuckDB 锁/超时→重试；OOM→减数据量；其他→报告用户。
+       - metrics_fail → 查看具体哪些指标不达标，参考最近反模式。
        - 连续 3 轮同 direction 无改善（annual_icir 或 simple_sharpe 未提升）→ recommend_abandon=true。
-       - 只在确实发现新的通用性失败模式时才填充 new_anti_pattern（如"XX 类因子在 YY 条件下必然失败"），否则填 null。
+       - 只在确实发现新的通用性失败模式时才填充 new_anti_pattern，否则填 null。
 
        返回纯 JSON，不要 markdown 代码块包裹。
    ```
