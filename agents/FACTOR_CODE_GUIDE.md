@@ -466,6 +466,39 @@ def good_factor(panel: pd.DataFrame) -> pd.Series:
     return panel["inc_n_income"]  # Let NaN propagate naturally
 ```
 
+### 5.8 Using Raw Prices for Time-Series Calculations (Price Jumps from Splits/Dividends)
+
+A-share stocks undergo stock splits, rights issues, and cash dividends that cause raw prices (`open`, `high`, `low`, `close`) to jump on ex-dividend dates. **Any time-series calculation involving prices (returns, rolling means, price-based ratios) MUST use adjusted prices.**
+
+**WRONG**:
+```python
+def bad_factor(panel: pd.DataFrame) -> pd.Series:
+    panel = panel.set_index(["date", "symbol"])
+    close = panel["close"]  # RAW: will jump on ex-dividend dates
+    ret = close.pct_change()  # WRONG: price jumps create fake returns
+    return ts_mean(ret, window=20)  # Garbage signal
+```
+
+**CORRECT**:
+```python
+def good_factor(panel: pd.DataFrame) -> pd.Series:
+    panel = panel.set_index(["date", "symbol"])
+    adj_close = panel["close"] * panel["adj_factor"]  # Adjusted for splits/dividends
+    ret = adj_close.pct_change()  # CORRECT: no price jumps
+    return ts_mean(ret, window=20)
+```
+
+**Rule of thumb**: If your factor uses `open`, `high`, `low`, or `close` from `market_daily` for any time-series operation (pct_change, rolling mean/std, difference between dates, or comparing prices at different times), multiply by `adj_factor` first:
+
+```python
+adj_open = panel["open"] * panel["adj_factor"]
+adj_high = panel["high"] * panel["adj_factor"]
+adj_low = panel["low"] * panel["adj_factor"]
+adj_close = panel["close"] * panel["adj_factor"]
+```
+
+Exception: `change` and `pct_chg` are already adjusted — they represent the day's price change as reported by the exchange. Similarly, market cap columns (`total_mv`, `circ_mv`) and turnover columns are already adjusted.
+
 ---
 
 ## 6. Quick Reference: Factor Function Signature Patterns

@@ -77,6 +77,12 @@ For each round:
    - Keep identifiers in English.
    - **Repair 时**：如果上一轮 RC subagent 输出了 `repair_params`，优先采用其建议的参数。
    - **Round 1 时**：从生成的代码中提取关键参数（window、horizon 等）作为 `tried_params`，用于后续 trace 记录。如果无法提取，使用 `{}`。
+   - **⚠️ 价格必须后复权**：`open`/`high`/`low`/`close` 在除权除息日会产生跳变。任何时序计算（pct_change、rolling mean/std、跨日期价格比较）**必须**乘以 `adj_factor`：
+     ```python
+     adj_close = panel["close"] * panel["adj_factor"]
+     adj_open = panel["open"] * panel["adj_factor"]
+     ```
+     例外：`pct_chg` 和 `change` 已是调整后涨跌幅，无需复权；`total_mv`/`circ_mv` 和 turnover 类列也已调整。详见 `FACTOR_CODE_GUIDE.md` §5.8。
 5. Write the candidate code to both:
    - `results/agent/runs/<run_id>/round_<NNN>/factor.py`
    - `alphas/exp/agent/<factor_id>/factor.py`
