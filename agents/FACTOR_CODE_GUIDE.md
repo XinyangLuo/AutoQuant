@@ -499,6 +499,114 @@ adj_close = panel["close"] * panel["adj_factor"]
 
 Exception: `change` and `pct_chg` are already adjusted — they represent the day's price change as reported by the exchange. Similarly, market cap columns (`total_mv`, `circ_mv`) and turnover columns are already adjusted.
 
+### 5.9 ST Stocks (Special Treatment)
+
+ST (Special Treatment) and *ST stocks trade under different rules: ±5% price limit instead of ±10%, higher delisting risk, and generally distorted trading behavior. Factor signals on ST stocks are unreliable.
+
+The `is_st` column is a boolean: `True` = ST or *ST.
+
+**RECOMMENDED**:
+```python
+def good_factor(panel: pd.DataFrame) -> pd.Series:
+    panel = panel.set_index(["date", "symbol"])
+    raw_signal = ...  # your factor calculation
+    # Mask ST stocks — their signal is unreliable
+    return raw_signal.where(~panel["is_st"], np.nan)
+```
+
+Note: the strategy module's universe config also excludes ST stocks (`exclude_st: true`), so they won't enter the portfolio regardless. However, masking ST stocks at the factor level prevents them from distorting cross-sectional ranks (a non-ST stock ranked 10th should not be pushed to 11th because 10 ST stocks scored higher by noise).
+
+### 5.10 New IPO Stocks (Listing Date)
+
+Newly listed stocks have unstable trading patterns in their first year: extreme volatility, lock-up period effects, and incomplete financial data history. The `list_date` column (format: `"20240101"`) gives the IPO date.
+
+```python
+def good_factor(panel: pd.DataFrame) -> pd.Series:
+    panel = panel.set_index(["date", "symbol"])
+    raw_signal = ...
+    # Exclude stocks listed within the last 252 trading days (~1 year)
+    ipo_cutoff = pd.Timestamp("2016-01-01") + pd.DateOffset(days=-252)  # or pass from config
+    # Simpler: use the pipeline's built-in exclusion (strategy config exclude_new_ipo_days: 252)
+    return raw_signal
+```
+
+Note: the strategy module's universe config already handles IPO exclusion (`exclude_new_ipo_days: 252`). Masking at the factor level is optional but helps avoid IPO-distorted ranks in early periods.
+
+### 5.11 Limit-Up / Limit-Down Stocks
+
+When a stock hits its daily price limit, volume collapses to near-zero and the closing price is artificial. Using factors computed on limit-hit days can introduce bias, especially for volume-based and reversal factors.
+
+Columns: `limit_up` (float, the upper limit price) and `limit_down` (float, the lower limit price).
+
+```python
+def good_factor(panel: pd.DataFrame) -> pd.Series:
+    panel = panel.set_index(["date", "symbol"])
+    close = panel["close"]
+    # Mask limit-hit stocks where close == limit price
+    at_limit = (close == panel["limit_up"]) | (close == panel["limit_down"])
+    raw_signal = ...
+    return raw_signal.where(~at_limit, np.nan)
+```
+
+This is especially important for volume-based factors: a stock hitting limit-up with zero sell volume should not be treated as "low volume / weak interest."
+
+### 5.12 Financial Data is Quarterly, Not Daily
+
+When your `data_sources` include `income_q`, `balancesheet_q`, or `cashflow_q`, the financial columns (`inc_*`, `bs_*`, `cf_*`) are **quarterly values that repeat every trading day** until the next quarter's financial report is announced. This has critical implications:
+
+1. **Time-series transforms on financial columns are meaningless**: `ts_mean(panel["inc_n_income"], window=20)` gives a 20-day rolling mean of the same quarterly value — not a smooth trend.
+2. **`pct_change()` on financial columns produces zeros for ~60 days, then a single jump** when the new quarter is filed.
+3. **For growth/slope factors, use event-driven mode** (`event_driven=True` in `@register`). See Pattern C in Quick Reference.
+
+**WRONG**:
+```python
+def bad_factor(panel: pd.DataFrame) -> pd.Series:
+    panel = panel.set_index(["date", "symbol"])
+    # WRONG: ts_delta on quarterly data makes no sense
+    revenue_growth = ts_delta(panel["inc_total_revenue"], d=60)
+    return revenue_growth
+```
+
+**CORRECT (simple ratio factor — non-event-driven is fine)**:
+```python
+def good_factor(panel: pd.DataFrame) -> pd.Series:
+    panel = panel.set_index(["date", "symbol"])
+    # OK: cross-sectional ratio, same quarter's data for all stocks on a given day
+    return panel["inc_n_income"] / panel["bs_total_assets"].where(panel["bs_total_assets"] > 0, np.nan)
+```
+
+**CORRECT (growth/slope — use event_driven=True)**:
+```python
+@register("f_growth", data_sources=["income_q"],
+          parameters={"event_driven": True, "fina_columns": ["inc_total_revenue"]})
+def f_growth(panel, market_storage, start_date, end_date):
+    events = market_storage.get_fina_event_panel(start=start_date, end=end_date,
+                                                   columns=["inc_total_revenue"], last_n_quarters=8)
+    # Compute YoY growth per event, then expand to daily
+    ...
+```
+
+### 5.13 Volume and Amount Units
+
+- `volume` is in **shares** (股), not lots (手). 1手 = 100股. For liquidity calculations, divide by 100 if you want lots.
+- `amount` is in **CNY yuan** (元). This is `volume × price` and is the preferred measure for dollar-volume / liquidity.
+- `turnover_rate` is the percentage of float shares traded (`volume / float_share`). `turnover_rate_f` is the free-float version (preferred).
+- `volume_ratio` is `volume / 5-day average volume` — already normalized, useful for volume anomaly detection without worrying about units.
+
+**WRONG**:
+```python
+# Comparing raw volume across stocks — large-cap stocks always dominate
+vol_signal = rank(panel["volume"])
+```
+
+**CORRECT**:
+```python
+# Use turnover_rate for cross-sectional volume comparison
+vol_signal = rank(panel["turnover_rate"])
+# Or use amount for dollar-volume
+amt_signal = rank(panel["amount"])
+```
+
 ---
 
 ## 6. Quick Reference: Factor Function Signature Patterns

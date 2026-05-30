@@ -83,6 +83,10 @@ For each round:
      adj_open = panel["open"] * panel["adj_factor"]
      ```
      例外：`pct_chg` 和 `change` 已是调整后涨跌幅，无需复权；`total_mv`/`circ_mv` 和 turnover 类列也已调整。详见 `FACTOR_CODE_GUIDE.md` §5.8。
+   - **⚠️ ST 股票**：ST/*ST 股票涨跌幅限制 ±5%（正常 ±10%），交易行为扭曲。必须用 `raw_signal.where(~panel["is_st"], np.nan)` 屏蔽，避免污染截面排名。详见 GUIDE §5.9。
+   - **⚠️ 涨跌停**：涨停跌停日成交量接近 0、收盘价为人工价。成交量/反转类因子必须屏蔽 `(close == limit_up) | (close == limit_down)` 的数据。详见 GUIDE §5.11。
+   - **⚠️ 财务数据是季度频率**：`inc_*`/`bs_*`/`cf_*` 列在每个交易日重复同一季度值，直到下季度财报发布。对财务列做时序变换（`ts_mean`/`ts_delta`/`pct_change`）**无意义**——会产生阶梯状伪影。截面比值（`inc_eps / bs_equity`）没问题；增长/斜率因子必须用 `event_driven=True` 模式。详见 GUIDE §5.12。
+   - **⚠️ 成交量单位**：`volume` 单位是**股**（非手），`amount` 单位是**元**。跨股票比较成交量用 `turnover_rate`（换手率）或 `amount`（成交额），不要用原始 `volume`。详见 GUIDE §5.13。
 5. Write the candidate code to both:
    - `results/agent/runs/<run_id>/round_<NNN>/factor.py`
    - `alphas/exp/agent/<factor_id>/factor.py`
