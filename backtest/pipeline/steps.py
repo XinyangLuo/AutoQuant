@@ -665,9 +665,9 @@ def step7_detailed_backtest(state: PipelineState) -> PipelineState:
     return _backtest_gate(state, result, "step7", "detailed", {
         "sharpe": "min_sharpe_detailed",
         "annual_return": "min_annual_return_detailed",
-        "max_drawdown": "max_max_drawdown",
+        "max_drawdown": "max_max_drawdown_detailed",
         "calmar": "min_calmar_detailed",
-        "annual_turnover": "max_annual_turnover",
+        "annual_turnover": "max_annual_turnover_detailed",
     })
 
 

@@ -109,6 +109,8 @@ class StepThresholds:
     min_sharpe_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "min_sharpe"))
     min_annual_return_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "min_annual_return"))
     min_calmar_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "min_calmar"))
+    max_max_drawdown_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "max_max_drawdown"))
+    max_annual_turnover_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "max_annual_turnover"))
 
 
 @dataclass
