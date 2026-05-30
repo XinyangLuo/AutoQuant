@@ -193,6 +193,30 @@ def _restore_factor_from_admitted(
     return dst_file
 
 
+_AGENT_CANDIDATES_ROOT = "results/agent/candidates"
+
+
+def _resolve_results_dir(
+    factor_id: str,
+    *,
+    results_root: str | Path = "results",
+) -> Path | None:
+    """Resolve the results directory for a factor, with agent-candidate fallback.
+
+    Agent-generated factors have their pipeline artifacts under
+    ``results/agent/candidates/<factor_id>/`` instead of the usual
+    ``results/<factor_id>/``.  This helper returns the first existing path.
+    """
+    primary = Path(results_root) / factor_id
+    if primary.exists():
+        return primary
+    # Fallback for agent-generated candidates
+    fallback = Path(results_root) / "agent" / "candidates" / factor_id
+    if fallback.exists():
+        return fallback
+    return None
+
+
 def _bundle_backtest_report(
     factor_id: str,
     *,
@@ -212,11 +236,13 @@ def _bundle_backtest_report(
     Returns a dict with ``report_dir`` and list of bundled files, or ``None``
     if no results directory exists.
     """
-    factor_results = Path(results_root) / factor_id
-    if not factor_results.exists():
+    factor_results = _resolve_results_dir(factor_id, results_root=results_root)
+    if factor_results is None:
         return None
 
-    # Resolve tag directory
+    # Resolve tag directory (standard layout: <fid>/<tag>/pipeline_report.md).
+    # When the results directory itself contains pipeline_report.md (flat
+    # layout, used by agent candidates), treat the directory as the tag_dir.
     tag_dir: Path | None = None
     if tag is not None:
         candidate = factor_results / tag
@@ -230,6 +256,9 @@ def _bundle_backtest_report(
         )
         if candidates:
             tag_dir = candidates[0]
+        elif (factor_results / "pipeline_report.md").exists():
+            # Flat directory (e.g. agent candidates) — no tag subdirectory
+            tag_dir = factor_results
 
     report_dir = _admitted_dir(factor_id) / "report"
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -286,10 +315,12 @@ def _bundle_backtest_report(
         shutil.copy2(str(detailed_summary), str(dst))
         bundled.append("detailed_summary.json")
 
+    # Tag name: use actual tag subdir name, or "<flat>" for flat layouts
+    tag_name = "<flat>" if tag_dir == factor_results else tag_dir.name
     return {
         "report_dir": str(report_dir.relative_to(_ALPHAS_ROOT)),
         "bundled": bundled,
-        "tag": tag_dir.name,
+        "tag": tag_name,
     }
 
 
@@ -684,8 +715,8 @@ def _discover_strategy_config(
     ``ValueError`` if multiple tag subdirectories exist and ``tag`` is
     unspecified.
     """
-    factor_dir = Path(results_root) / factor_id
-    if not factor_dir.exists():
+    factor_dir = _resolve_results_dir(factor_id, results_root=results_root)
+    if factor_dir is None:
         return None
 
     if tag is not None:
