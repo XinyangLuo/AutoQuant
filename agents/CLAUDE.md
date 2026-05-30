@@ -11,7 +11,12 @@
     |
     v
 Claude Code（决策层）
-    |-- 生成/修复因子代码
+    |-- [HG] 生成/修正假设 → hypothesis JSON
+    |-- [父进程] 审核假设（alignment/impact/novelty/feasibility/risk-reward）
+    |
+    v
+Claude Code（编码层）
+    |-- [FC] 根据假设生成/修复因子代码
     |-- Write 到 alphas/exp/agent/<factor_id>/factor.py
     |
     v
@@ -23,6 +28,7 @@ python -m agents.claude_cli run <factor_id>   （执行层）
 Claude Code（分析层）
     |-- Read result.json
     |-- 写 trace.jsonl
+    |-- [RC] 诊断失败 → 查 KB → 输出 repair/abandon 指令
     |-- 决策：修复 / 调参 / 换方向 / 停止
 ```
 
@@ -70,10 +76,22 @@ agents/
 ├── runner.py                 # AutoQuantFactorRunner：对接 backtest 流水线
 ├── schema.py                 # 数据 schema 查询（列名、别名映射）
 ├── helpers.py                # 工具函数（代码校验、@register 注入）
-└── FACTOR_CODE_GUIDE.md      # LLM 因子代码参考手册
+├── FACTOR_CODE_GUIDE.md      # LLM 因子代码参考手册
+└── DESIGN.md                 # Multi-Agent 自动因子挖掘实施计划
+
+.claude/prompts/              # Prompt 模板系统（P1.A.0）
+├── shared/
+│   ├── role.md               # FC/RC/HG 角色定义
+│   ├── output_formats.md     # JSON schema 模板
+│   └── context_sections.md   # 标准上下文块（SOTA / Trace / Diff / Challenges）
+├── factor_coder.md           # FC system prompt
+├── result_critic.md          # RC system prompt
+└── hypothesis_gen.md         # HG prompt（新增）
 ```
 
-**不再包含**：Python agent 循环、LLM API 调用、hypothesis 生成、knowledge base、prompt 模板。这些现在由 Claude Code 本身处理。
+**不再包含**：Python agent 循环、LLM API 调用、knowledge base Python 模块。这些现在由 Claude Code 本身处理。
+
+**Prompt 模板**：已迁移到 `.claude/prompts/`（Markdown 文件级复用），参考 RD-Agent 的 Jinja2 YAML 共享块思路，但保持轻量。
 
 ## 4. 执行层模块
 

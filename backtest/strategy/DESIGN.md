@@ -250,7 +250,7 @@ signals_df = strategy.run(start, end)
 
 ## 待实现 / 预留
 
-- [ ] CLI 入口：`python -m backtest.strategy.run --config strategy_config.yaml`
+> **注：策略模块只提供 Python API，不暴露独立 CLI。** 所有策略回测（单因子/多因子）统一通过 `backtest.pipeline` 执行。详见 [`pipeline/DESIGN.md`](../pipeline/DESIGN.md)。
 
 ---
 

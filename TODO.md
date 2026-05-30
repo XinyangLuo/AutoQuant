@@ -18,9 +18,11 @@
 
 ### Agent 系统
 
-- [ ] **P1.A.1 KB 积累 + 自动引导（Phase 2）**：触发条件：≥20 次迭代，≥10 条反模式，≥3 条成功模式；父进程在 framing 阶段自动查 KB 引导初始代码；RC prompt 抽到 `.claude/prompts/result_critic.md`
-- [ ] **P1.A.2 并行探索（Phase 3）**：触发条件：Phase 2 稳定 + 单方向成功率 >20%；2 方向手动并行（不同 run dir + background）；验证 DuckDB 并发安全 + token 消耗可控
-- [ ] **P1.A.3 库审计（Phase 4）**：触发条件：admitted factor > 10；冗余/缺口/衰减检测；在 `claude_cli.py` 新增 `admit-correlations` 子命令
+- [ ] **P1.A.0 Prompt 模板系统**：将 `factor-iterate.md` 内联 prompt 拆到 `.claude/prompts/`（`shared/` 公共块 + `factor_coder.md` + `result_critic.md` + `hypothesis_gen.md`）。引入 Role Anchoring + Section Labeling + SOTA 锚定 + 结构化 JSON schema 模式。参考 RD-Agent 的 Jinja2 YAML 共享块思路，AutoQuant 用 Markdown 文件级复用（够轻量）。
+- [ ] **P1.A.0b Hypothesis Generation 步骤**：在 `/factor-iterate` Round loop 前增加显式假设生成。FC 先输出 hypothesis JSON（`hypothesis_text` / `expected_icir` / `category` / `data_sources` / `construction_logic`），父进程审核后再进入编码。避免"直接写代码"的盲目性。
+- [ ] **P1.A.1 KB 积累 + 自动引导（Phase 2）**：**依赖 P1.A.0**（prompt 模板到位后才能稳定地查 KB 写进 prompt）。触发条件：≥20 次迭代，≥10 条反模式，≥3 条成功模式；父进程在 framing 阶段自动查 KB 引导初始代码。
+- [ ] **P1.A.2 并行探索（Phase 3）**：**依赖 P2.A.1**（DAG Trace 支持分支后才能真正并行）。触发条件：Phase 2 稳定 + 单方向成功率 >20%；2 方向手动并行（不同 run dir + background）；验证 DuckDB 并发安全 + token 消耗可控。
+- [ ] **P1.A.3 库审计（Phase 4）**：触发条件：admitted factor > 10；冗余/缺口/衰减检测；在 `claude_cli.py` 新增 `admit-correlations` 子命令。
 
 ### 测试覆盖
 
@@ -45,6 +47,12 @@
 
 ## P2
 
+### Agent 系统
+
+- [ ] **P2.A.1 Trace DAG 结构**：`trace.jsonl` 增加 `parent_round_id` + `branch_id` 字段，支持从任意历史节点 fork 新分支。为 Phase 3 并行探索预留数据结构，Phase 1 即可写入（branch_id 固定为 `"main"`）。
+- [ ] **P2.A.2 QuantFeedback 多层拆分**：将当前单层 `QuantFeedback` 拆为 `execution` / `evaluation` / `hypothesis` 三层，对应 RD-Agent 的 Execution → Evaluation → Hypothesis Feedback 层级。`AutoQuantFactorEvaluator` 负责汇总，RC subagent 消费结构化诊断。
+- [ ] **P2.A.3 Diff 注入**：RC/FC prompt 中对比上一轮代码变化（`diff` 而非完整文件），省 token 并聚焦修复。需维护 `sota_files` 对比当前 `files` 的 diff 生成逻辑。
+
 ### 性能优化
 
 - [ ] `FactorStorage.get_factors_wide(factor_ids, start, end)`：单次 SQL 出多列宽表
@@ -67,6 +75,11 @@
 ---
 
 ## P3
+
+### Agent 系统
+
+- [ ] **P3.A.1 DuckDB vss 向量检索**：在 `factors_pending.duckdb` 或独立表中引入 embedding + HNSW 索引（DuckDB `vss` 扩展），替代 JSON 全文匹配反模式查询。参考 RD-Agent 的 `PDVectorBase` + `UndirectedGraph` 混合检索思路，但先用轻量向量相似度（cosine）+ constraint label 过滤。
+- [ ] **P3.A.2 Workspace checkpoint/rollback**：引入 `FactorWorkspace` dataclass（`dict[str, str]` 文件字典 + zip checkpoint），支持 round 间回滚。参考 RD-Agent `FBWorkspace` 的 `create_ws_ckp` / `recover_ws_ckp` 模式，但不做 Docker 隔离（本地 conda 执行是 feature）。
 
 ### 交易模块
 

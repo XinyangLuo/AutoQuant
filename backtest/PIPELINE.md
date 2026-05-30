@@ -340,7 +340,14 @@ $h$ 为预测周期（日频 = 1 或 5，月频 = 21）。
 
 ### 5.1 默认配置
 
-从 `config.yaml` → `pipeline` 读取：
+**两层配置文件**（详见 [`pipeline/DESIGN.md`](pipeline/DESIGN.md) 配置系统章节）：
+
+| 文件 | 位置 | 内容 |
+|------|------|------|
+| 全局 `config.yaml` | 项目根 | 各 step **门控阈值**（所有因子共享） |
+| Per-factor `config.yaml` | `alphas/.../<factor_id>/config.yaml` | **回测参数**（本因子独立），覆盖全局 pipeline 参数 |
+
+从 per-factor `config.yaml` → `pipeline` 读取（未指定则用默认值）：
 
 ```yaml
 selection:
@@ -354,6 +361,8 @@ delay: 1
 ```
 
 月频因子例外：`rebalance_freq=1M`，`decay=None`。
+
+per-factor `config.yaml` 非必须——不创建则全部用默认值。创建后可按因子独立调整区间、股票池、top_k、decay 等，无需改全局配置。
 
 ### 5.2 完整 YAML 范例
 

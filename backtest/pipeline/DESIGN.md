@@ -18,6 +18,88 @@
 5. **阈值单一来源**：所有门控阈值统一从 `config.yaml` 读取（`backtest/config_loader.py`）
 6. **拒绝不清理**：因子被拒绝后保留 work DB 数据和完整诊断报告，由人工决定清理时机
 
+## 配置系统
+
+Pipeline 有两层配置，职责明确分离：
+
+| 配置文件 | 位置 | 职责 |
+|----------|------|------|
+| **全局** `config.yaml` | 项目根 | **门控阈值** (`thresholds.pipeline.*`) + Agent 参数 (`agent.*`) |
+| **Per-factor** `config.yaml` | `alphas/{admitted,exp/user,exp/agent}/<factor_id>/config.yaml` | **回测参数** (`pipeline.*` / `strategy.*` / `simulation.*`) |
+
+### 全局 config.yaml（阈值）
+
+```yaml
+# config.yaml（项目根）
+thresholds:
+  pipeline:
+    coverage:
+      max_missing_rate_pv: 0.2
+      max_missing_rate_fin: 0.30
+    icir:
+      min_abs_ic: 0.01
+      min_annual_icir: 1.0
+      min_ic_tstat: 2.0
+      min_ic_positive_ratio: 0.55
+    monotonicity:
+      min_monotonicity: 0.7
+    simple_backtest:
+      min_sharpe: 0.8
+      min_annual_return: 0.10
+      max_max_drawdown: 0.5
+      min_calmar: 0.5
+      max_annual_turnover: 50.0
+    detailed_backtest:
+      min_sharpe: 0.4
+      min_annual_return: 0.08
+      min_calmar: 0.5
+```
+
+修改阈值直接编辑此文件，所有因子共用。
+
+### Per-factor config.yaml（回测参数）
+
+```yaml
+# alphas/exp/user/f_xxx/config.yaml
+pipeline:
+  start_date: "20160101"
+  end_date: "20251231"
+  eval_horizons: [1, 5, 10, 20, 60]
+  icir_check_horizons: [1, 5]
+  default_top_k: 100
+  default_decay: 5
+  default_rebalance: 1D
+  ret_type: open
+  benchmark: "000300.SH"
+
+strategy:
+  universe:
+    exclude_st: true
+    exclude_new_ipo_days: 252
+    include_cyb: true
+    include_kcb: false
+    include_bse: false
+    min_market_cap: 500000000
+    min_avg_amount: 10000000
+
+simulation:
+  initial_cash: 100000000
+  commission_rate: 0.0003
+  stamp_duty_rate: 0.001
+  transfer_fee_rate: 0.00002
+  allow_short: false
+```
+
+三个 section 均可选，未指定的字段使用 `config.py` 的硬编码默认值。Pipeline 通过 `PipelineConfig.from_factor_config(factor_id)` 自动发现并合并。
+
+### 合并优先级
+
+```
+CLI --overrides > per-factor config.yaml > 硬编码默认值 (_DEFAULT_*)
+```
+
+阈值（`StepThresholds`）不受 per-factor 覆盖，始终从全局 `config.yaml` 读取。
+
 ## 目录结构
 
 ```
