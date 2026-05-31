@@ -13,3 +13,4 @@ dependencies:
   - pip:
       - tushare>=1.3
       - openai>=1.30
+      - mcp-pdf

@@ -4,7 +4,7 @@
 
 ## 定位
 
-串行 step1~step10 因子挖掘流水线，每步有明确的淘汰标准（pass/fail gate）。与旧版 `scripts/run_factor_pipeline.py` 的区别：
+串行 step1~step10 因子挖掘流水线，每步有明确的淘汰标准（pass/fail gate）。与旧版一次性脚本的区别：
 
 - 旧版：一次性跑完 eval + simple BT + detailed BT，无淘汰门控
 - 新版：每步独立 CLI，可单独调用；失败即停；state 落盘便于 Agent 介入；**拒绝时生成完整诊断报告而非直接清理**

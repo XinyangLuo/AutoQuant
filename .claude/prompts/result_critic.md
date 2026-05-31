@@ -19,10 +19,10 @@
 - 本轮参数: {tried_params}
 
 # Input Files（必须全部 Read）
-1. {run_dir}/round_{NNN}/result.json — 本轮完整结果
+1. {run_dir}/{NNN}/result.json — 本轮完整结果
 2. {run_dir}/trace.jsonl — 本 run 完整历史
-3. results/agent/knowledge_base/anti_patterns.json
-4. results/agent/knowledge_base/successful_patterns.json
+3. agents/knowledge_base/anti_patterns.json
+4. agents/knowledge_base/successful_patterns.json
 
 # result.json 关键字段说明
 [详细字段说明...]

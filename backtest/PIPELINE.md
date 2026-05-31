@@ -84,7 +84,7 @@ python -m backtest.factor.backfill f_xxx
 python -m backtest.factor.evaluation f_xxx --plot --plot-horizon 20
 
 # 策略 + 回测
-python scripts/run_factor_pipeline.py f_xxx --direction desc
+python -m backtest.pipeline run-all f_xxx
 
 # === 人工决策 ===
 
@@ -662,9 +662,8 @@ print_evaluation(res)
 ### A.3 策略 + 回测（一键）
 
 ```bash
-python scripts/run_factor_pipeline.py f_xxx --direction desc
-python scripts/run_factor_pipeline.py f_xxx --top-k 50 --rebalance 1W --decay 5
-python scripts/run_factor_pipeline.py f_xxx --no-decile
+# 策略默认通过 alphas/exp/agent/<factor_id>/config.yaml 配置
+# python -m backtest.pipeline run-all f_xxx
 ```
 
 ### A.4 回测评测
@@ -723,7 +722,7 @@ python -m backtest.factor.cleanup f_xxx                  # 清 work
 python -m backtest.factor.update                          # 更新 library
 
 # === 策略 + 回测（手动） ===
-python scripts/run_factor_pipeline.py f_xxx --direction desc
+python -m backtest.pipeline run-all f_xxx
 python -m backtest.evaluation <result_dir> --benchmark 000300.SH
 
 # === Agent ===

@@ -1,8 +1,7 @@
 """Pure-function performance metrics for backtest NAV / trade / portfolio data.
 
 This module is the single source of truth for all numeric backtest metrics in
-the project.  ``BacktestResult.summary()`` and the scripts under ``scripts/``
-all delegate here.
+the project.  ``BacktestResult.summary()`` delegates here.
 
 All formulas are documented in ``backtest/evaluation/CLAUDE.md``.
 """

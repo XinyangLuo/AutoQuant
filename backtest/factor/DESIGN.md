@@ -220,11 +220,10 @@ python -m backtest.pipeline run-all f_001
 
 逐 step 执行，任一 step 失败即停并清理产物。详见 `pipeline/DESIGN.md`。
 
-### 4. 旧版 pipeline driver（无淘汰门控）
+### 4. 旧版 pipeline driver（已废弃）
 
 ```bash
-python scripts/run_factor_pipeline.py f_001 \
-    --direction desc
+# 已废弃，当前使用 python -m backtest.pipeline run-all f_xxx
 ```
 
 输出到 `results/<factor_id>/<tag>/{factor_eval, simple, detailed}/`。新版 pipeline 已覆盖此场景，旧脚本保留兼容。

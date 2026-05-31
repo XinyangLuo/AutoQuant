@@ -19,7 +19,7 @@ Subagent 类型（2 个，非 5 个）：
   └── Result Critic (RC)  诊断失败 + 查 KB + 决定 repair/abandon
 
 Knowledge Base（3 个文件，非 8 个）：
-  results/agent/knowledge_base/
+  agents/knowledge_base/
     ├── anti_patterns.json      反模式库
     ├── successful_patterns.json 成功模式库
     └── failed_attempts.jsonl          失败实验记录（仅失败，用于学习错误建模）
@@ -52,7 +52,7 @@ Knowledge Base（3 个文件，非 8 个）：
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `results/agent/knowledge_base/` | **新建目录** | 含 `anti_patterns.json`、`successful_patterns.json`、`failed_attempts.jsonl` 的空 schema 文件 |
+| `agents/knowledge_base/` | **新建目录** | 含 `anti_patterns.json`、`successful_patterns.json`、`failed_attempts.jsonl` 的空 schema 文件 |
 | `.claude/commands/factor-iterate.md` | **改** | Round loop 中：FC 写完代码 → RC subagent 诊断 → 根据 RC 输出决定 repair/abandon/pass |
 | `agents/claude_cli.py` | 不改 | 继续用 `schema` + `run` |
 | `agents/runner.py` 等 | 不改 | 继续用现有执行层 |
@@ -90,10 +90,10 @@ Agent tool params:
     - 之前尝试: {trace_summary}
 
     ## 输入文件
-    - result.json: Read {run_dir}/round_{NNN}/result.json
+    - result.json: Read {run_dir}/{NNN}/result.json
     - trace.jsonl: Read {run_dir}/trace.jsonl
-    - 反模式库: Read results/agent/knowledge_base/anti_patterns.json
-    - 成功模式库: Read results/agent/knowledge_base/successful_patterns.json
+    - 反模式库: Read agents/knowledge_base/anti_patterns.json
+    - 成功模式库: Read agents/knowledge_base/successful_patterns.json
 
     ## 任务
     1. 读取 result.json，确认 failure_type 和关键指标

@@ -62,6 +62,8 @@ python -m agents.claude_cli run f_auto_xxx --run-dir <dir>      # 单轮执行
 
 # 交互式因子研究（Claude Code slash command）
 # /factor-iterate "..."                                          # 见 .claude/commands/factor-iterate.md
+# /pdf-hypothesis research_papers/xxx.pdf                        # 研报 PDF → hypothesis.md
+# /factor-iterate --hypothesis agents/pdf_hypotheses/...        # hypothesis → 迭代
 
 # 测试
 pytest tests/
@@ -94,6 +96,7 @@ AutoQuant/
 │   ├── PIPELINE.md          # 端到端使用手册（最重要的文档）
 │   └── CLAUDE.md            # 回测系统总览
 ├── alphas/                  # 私有 alpha 代码（gitignored）
+├── research_papers/         # 研报 PDF（gitignored，/pdf-hypothesis 输入源）
 ├── agents/                  # Agent 投研系统（Claude Code subagent 模式）
 │   ├── claude_cli.py        # 单轮执行 CLI（schema + run）
 │   ├── runner.py            # AutoQuantFactorRunner（对接 backtest 流水线）
@@ -103,16 +106,17 @@ AutoQuant/
 │   ├── schema.py            # 数据 schema 查询 + 列名映射
 │   ├── helpers.py           # 代码校验 / @register 注入
 │   ├── FACTOR_CODE_GUIDE.md # LLM 因子代码参考手册
-│   └── CLAUDE.md            # Agent 系统总览
+│   ├── CLAUDE.md            # Agent 系统总览
+│   ├── knowledge_base/      # 跨 run 知识库（git 追踪）
+│   └── pdf_hypotheses/      # PDF→hypothesis 中间产物（gitignore）
 ├── tests/                   # pytest 套件
-├── scripts/                 # 一次性脚本（数据修复/bulk 重跑）
 ├── trading/                 # 交易模块骨架（待 fill）
 ├── data/                    # 数据根
 │   ├── duckdb/              # market.duckdb / factors_pending.duckdb / factor_library.duckdb
 │   ├── factor_library/      # registry.json（因子元数据）
 │   └── minute/              # 分钟级 parquet（预留）
 ├── results/                 # 回测产出、研究档案
-├── notebooks/               # 探索
+├── .mcp.json                # MCP server 配置（mcp-pdf）
 ├── environment.yml
 ├── CLAUDE.md                # 本文
 └── TODO.md                  # P0~P4 工单池

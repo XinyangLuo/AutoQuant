@@ -501,20 +501,11 @@ Exception: `change` and `pct_chg` are already adjusted — they represent the da
 
 ### 5.9 ST Stocks (Special Treatment)
 
-ST (Special Treatment) and *ST stocks trade under different rules: ±5% price limit instead of ±10%, higher delisting risk, and generally distorted trading behavior. Factor signals on ST stocks are unreliable.
+ST (Special Treatment) and *ST stocks trade under different rules: ±5% price limit instead of ±10%, higher delisting risk, and generally distorted trading behavior.
 
 The `is_st` column is a boolean: `True` = ST or *ST.
 
-**RECOMMENDED**:
-```python
-def good_factor(panel: pd.DataFrame) -> pd.Series:
-    panel = panel.set_index(["date", "symbol"])
-    raw_signal = ...  # your factor calculation
-    # Mask ST stocks — their signal is unreliable
-    return raw_signal.where(~panel["is_st"], np.nan)
-```
-
-Note: the strategy module's universe config also excludes ST stocks (`exclude_st: true`), so they won't enter the portfolio regardless. However, masking ST stocks at the factor level prevents them from distorting cross-sectional ranks (a non-ST stock ranked 10th should not be pushed to 11th because 10 ST stocks scored higher by noise).
+ST 剔除由 `strategy.universe.exclude_st: true`（config.yaml）在策略层处理。**因子代码不需要手动屏蔽**，pipeline 的去极值/中性化/截面排名步骤已考虑缺失值传播。
 
 ### 5.10 New IPO Stocks (Listing Date)
 
@@ -534,19 +525,9 @@ Note: the strategy module's universe config already handles IPO exclusion (`excl
 
 ### 5.11 Limit-Up / Limit-Down Stocks
 
-When a stock hits its daily price limit, volume collapses to near-zero and the closing price is artificial. Using factors computed on limit-hit days can introduce bias, especially for volume-based and reversal factors.
+When a stock hits its daily price limit, volume collapses to near-zero and the closing price is artificial.
 
-Columns: `limit_up` (float, the upper limit price) and `limit_down` (float, the lower limit price).
-
-```python
-def good_factor(panel: pd.DataFrame) -> pd.Series:
-    panel = panel.set_index(["date", "symbol"])
-    close = panel["close"]
-    # Mask limit-hit stocks where close == limit price
-    at_limit = (close == panel["limit_up"]) | (close == panel["limit_down"])
-    raw_signal = ...
-    return raw_signal.where(~at_limit, np.nan)
-```
+涨跌停过滤由 simulation 层在交易执行时处理。**因子代码不需要手动屏蔽**。
 
 This is especially important for volume-based factors: a stock hitting limit-up with zero sell volume should not be treated as "low volume / weak interest."
 

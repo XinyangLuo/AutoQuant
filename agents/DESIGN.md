@@ -21,7 +21,7 @@ Subagent 类型（3 个，演进中）：
 
 Knowledge Base（3 文件 → 混合检索）：
   Phase 1~2: JSON 文件（轻量）
-    results/agent/knowledge_base/
+    agents/knowledge_base/
       ├── anti_patterns.json
       ├── successful_patterns.json
       └── failed_attempts.jsonl
@@ -52,7 +52,7 @@ Trace（线性 → DAG）：
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `results/agent/knowledge_base/` | **新建目录** | 含 `anti_patterns.json`、`successful_patterns.json`、`failed_attempts.jsonl` 的空 schema 文件 |
+| `agents/knowledge_base/` | **新建目录** | 含 `anti_patterns.json`、`successful_patterns.json`、`failed_attempts.jsonl` 的空 schema 文件 |
 | `.claude/prompts/` | **新建目录** | Prompt 模板骨架：`shared/`（role/output_format/context）+ `factor_coder.md` + `result_critic.md` + `hypothesis_gen.md` |
 | `.claude/commands/factor-iterate.md` | **改** | Round loop 中：FC 写完代码 → RC subagent 诊断 → 根据 RC 输出决定 repair/abandon/pass；后续 P1.A.0 将内联 prompt 迁移到 `.claude/prompts/` |
 | `agents/claude_cli.py` | 不改 | 继续用 `schema` + `run` |
@@ -163,10 +163,10 @@ Agent tool params:
     - 之前尝试: {trace_summary}
 
     ## 输入文件
-    - result.json: Read {run_dir}/round_{NNN}/result.json
+    - result.json: Read {run_dir}/{NNN}/result.json
     - trace.jsonl: Read {run_dir}/trace.jsonl
-    - 反模式库: Read results/agent/knowledge_base/anti_patterns.json
-    - 成功模式库: Read results/agent/knowledge_base/successful_patterns.json
+    - 反模式库: Read agents/knowledge_base/anti_patterns.json
+    - 成功模式库: Read agents/knowledge_base/successful_patterns.json
 
     ## 任务
     1. 读取 result.json，确认 failure_type 和关键指标
@@ -316,10 +316,88 @@ class FactorWorkspace:
     def rollback(self, run_dir: Path, round: int): ...
 ```
 
-- `checkpoint`：zip 打包当前文件到 `run_dir/checkpoints/round_{NNN}.zip`
+- `checkpoint`：zip 打包当前文件到 `run_dir/checkpoints/{NNN}.zip`
 - `rollback`：从 checkpoint 恢复，用于"改坏了需要回退到上一轮"
 
 参考 RD-Agent `FBWorkspace` 的 `create_ws_ckp` / `recover_ws_ckp`，但不做 Docker 隔离（本地 conda 执行是 feature 而非 bug）。
+
+### 4.5 研报 PDF → Hypothesis（P2.A.4）
+
+通过 PDF-MCP server 让 Agent 读取券商/学术研报 PDF，从研报论点中自动提取量化因子灵感并生成 hypothesis。
+
+**架构约束**：不依赖模型原生多模态能力。MCP server 负责 PDF 文本提取（`pdfplumber` / `pymupdf` / `pdfminer`），LLM 消费的是**提取后的纯文本**（含表格 markdown），不传 PDF 二进制或页面截图给模型。
+
+**工作流（hypothesis.md 中介模式）**：
+
+```
+/pdf-hypothesis
+    │
+    ├── 读 PDF → 穷举因子 → 按 Sharpe/IR 排序 → 排名表
+    ├── 用户选因子
+    └── 输出: agents/pdf_hypotheses/<slug>/<factor_name>_hypothesis.md
+
+用户审阅 hypothesis.md（可手动修改公式/参数/config）
+
+/factor-iterate --hypothesis <path>
+    │
+    ├── 解析 hypothesis.md → FC 编码 → run → RC 诊断 → repair/abandon
+    └── 因子代码 → alphas/exp/agent/<factor_id>/factor.py
+```
+
+**关键设计决策**：
+
+- `/pdf-hypothesis` 和 `/factor-iterate` 不直接相互调用。`hypothesis.md` 是两者之间的**唯一契约**。
+- hypothesis.md 让用户有机会在跑 pipeline 之前审阅和修改公式/参数/config，避免盲目执行。
+- 因子源码始终写入 `alphas/exp/agent/<factor_id>/`，不在 `results/` 下写源码。
+
+**选定方案：`mcp-pdf`（rsp2k）**
+
+| 维度 | 详情 |
+|------|------|
+| **安装** | `pip install mcp-pdf`（已加入 `environment.yml`） |
+| **底层库** | PyMuPDF → pdfplumber → pypdf **自动 fallback** |
+| **关键工具** | `pdf_to_markdown`（正文+表格→markdown）、`extract_text`、`extract_tables`、`get_metadata` |
+| **中文支持** | ✅ PyMuPDF + pdfplumber 原生支持 |
+| **表格** | ⭐⭐⭐⭐⭐ 三引擎（Camelot/pdfplumber/Tabula），研报数据表格无压力 |
+| **许可证** | 开源免费 |
+
+**Claude Code 配置**（项目根 `.mcp.json`，已创建）：
+
+```json
+{
+  "mcpServers": {
+    "pdf": {
+      "command": "conda",
+      "args": ["run", "-n", "AutoQuant", "mcp-pdf"]
+    }
+  }
+}
+```
+
+配置后，Agent 可通过 `pdf_to_markdown` 工具读取研报，获取纯文本 markdown（含表格），LLM 只消费文本、不传 PDF 二进制。
+
+**与标准 HG（§3.4）的关系**：
+
+| 维度 | 标准 HG | PDF → HG（本功能） |
+|------|---------|---------------------|
+| 输入来源 | 用户自然语言描述 / trace 上下文 | 研报 PDF 文本（via mcp-pdf） |
+| 触发方式 | 每个 `/factor-iterate` round 1 必须执行 | 通过 `/pdf-hypothesis <path>` 独立触发 |
+| 输出格式 | 同 §3.4 hypothesis JSON schema | 同左，但可批量生成多条（一篇研报可能包含多个独立论点） |
+| 审核门槛 | `feasibility < 0.5` → 重写 | 额外检查：论点是否有足够数据支撑？是否与 KB 成功/失败模式冲突？ |
+| Prompt 模板 | `.claude/prompts/hypothesis_gen.md` | `.claude/prompts/pdf_hypothesis.md` |
+
+**典型使用场景**：
+
+```text
+# 第一步：从研报提取因子
+/pdf-hypothesis research_papers/华泰多因子系列之四.pdf
+# → 排名表 → 选因子 → 生成 hypothesis.md
+
+# 第二步：审阅 hypothesis.md（可手动修改公式/参数）
+
+# 第三步：执行迭代
+/factor-iterate --hypothesis agents/pdf_hypotheses/<slug>/xxx_hypothesis.md
+```
 
 ## 5. Phase 3：多方向并行探索（待定）
 

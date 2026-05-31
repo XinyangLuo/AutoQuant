@@ -10,7 +10,6 @@
 
 > 阻塞性，必须立刻修。
 
-- [x] **P0.1** Pipeline 自动 retry：step6/7 失败后自动以渐进宽松策略参数重试 step5→6→7，最多 3 次（double decay → widen top_k → 5D rebalance）。`state.retry_count` / `retry_params` 已写入，报告展示重试次数和最终参数。
 
 ---
 
@@ -52,6 +51,7 @@
 - [ ] **P2.A.1 Trace DAG 结构**：`trace.jsonl` 增加 `parent_round_id` + `branch_id` 字段，支持从任意历史节点 fork 新分支。为 Phase 3 并行探索预留数据结构，Phase 1 即可写入（branch_id 固定为 `"main"`）。
 - [ ] **P2.A.2 QuantFeedback 多层拆分**：将当前单层 `QuantFeedback` 拆为 `execution` / `evaluation` / `hypothesis` 三层，对应 RD-Agent 的 Execution → Evaluation → Hypothesis Feedback 层级。`AutoQuantFactorEvaluator` 负责汇总，RC subagent 消费结构化诊断。
 - [ ] **P2.A.3 Diff 注入**：RC/FC prompt 中对比上一轮代码变化（`diff` 而非完整文件），省 token 并聚焦修复。需维护 `sota_files` 对比当前 `files` 的 diff 生成逻辑。
+- [x] **P2.A.4 研报 PDF → Hypothesis**：通过 `mcp-pdf` server（pdfplumber/pymupdf 文本提取）让 Agent 读取研报 PDF，穷举所有单因子并按 Sharpe/IR 排序，生成 `hypothesis.md` 中间体，经用户审阅后通过 `/factor-iterate --hypothesis` 执行。`/pdf-hypothesis` 命令 + `.mcp.json` 配置已落地。**架构约束**：文本提取，不依赖模型原生多模态。
 
 ### 性能优化
 

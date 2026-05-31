@@ -2,7 +2,7 @@
 
 ## 定位
 
-读 `BacktestResult.save()` 落盘的 parquet 四件套，输出指标表 + 图表 + JSON/CSV。是「从回测产出反推策略质量」的单一入口，**全项目指标计算只在此一处实现**——`BacktestResult.summary()` 与 `scripts/` 中的 `compute_metrics()` 都退化为薄封装。
+读 `BacktestResult.save()` 落盘的 parquet 四件套，输出指标表 + 图表 + JSON/CSV。是「从回测产出反推策略质量」的单一入口，**全项目指标计算只在此一处实现**——`BacktestResult.summary()` 退化为薄封装。
 
 本模块只做：净值/收益/风险/胜率/交易/持仓六组指标 + 可选的基准对比。**本期不做归因**（个股、板块、行业贡献分解留作 roadmap）。
 
@@ -273,9 +273,9 @@ result.save("results/<factor_id>/<variant>/<tag>/detailed/")
 MarketStorage.get_index_bars([code], start, end)   # 新增方法
 ```
 
-### 下游（scripts / agent）
+### 下游（agent）
 
-- `scripts/backtest_f_rev_05.py`：删 `compute_metrics()`，改 `evaluate(...) + print(render_table(...))`
+- Agent 通过 `claude_cli run` 调用 evaluation，产出 `result.json.metrics`
 - Agent 投研系统：`get_backtest_result(result_id)` 工具底层调 `evaluate()` 拿扁平 dict
 
 ## `BacktestResult.summary()` 退化为薄封装

@@ -7,16 +7,20 @@
 闭环流程：
 
 ```
-用户 (Claude Code 对话 / /factor-iterate)
+研报 PDF (research_papers/)
+    |
+    v
+/pdf-hypothesis                 ← P2.A.4：MCP 文本提取 → 因子穷举 → hypothesis.md
+    |
+    v
+用户审阅 hypothesis.md
+    |
+    v
+/factor-iterate --hypothesis   ← 原有入口，也可直接自然语言
     |
     v
 Claude Code（决策层）
-    |-- [HG] 生成/修正假设 → hypothesis JSON
-    |-- [父进程] 审核假设（alignment/impact/novelty/feasibility/risk-reward）
-    |
-    v
-Claude Code（编码层）
-    |-- [FC] 根据假设生成/修复因子代码
+    |-- [FC] 根据 hypothesis.md / 自然语言 生成/修复因子代码
     |-- Write 到 alphas/exp/agent/<factor_id>/factor.py
     |
     v
@@ -32,7 +36,7 @@ Claude Code（分析层）
     |-- 决策：修复 / 调参 / 换方向 / 停止
 ```
 
-**阅读网页/PDF 等能力**通过 Claude Code 的 MCP tools / skills 扩展，不在 Python 层实现。
+**阅读网页/PDF 等能力**通过 Claude Code 的 MCP tools / skills 扩展，不在 Python 层实现。PDF 阅读走 `mcp-pdf`（pdfplumber / pymupdf 文本提取），不依赖模型原生多模态。详见 `DESIGN.md` §4.5。
 
 ## 2. 使用方式
 
@@ -69,6 +73,8 @@ python -m agents.claude_cli --help
 agents/
 ├── __init__.py               # 空（保持）
 ├── CLAUDE.md                 # 本文
+├── DESIGN.md                 # Multi-Agent 自动因子挖掘实施计划
+├── PLAN.md                   # 演进路线（Phase 1→4）
 ├── claude_cli.py             # 单轮执行 CLI 入口（schema + run）
 ├── config.py                 # AgentConfig：阈值从 config.yaml 读取
 ├── experiment.py             # AutoQuantFactorExperiment dataclass
@@ -77,16 +83,28 @@ agents/
 ├── schema.py                 # 数据 schema 查询（列名、别名映射）
 ├── helpers.py                # 工具函数（代码校验、@register 注入）
 ├── FACTOR_CODE_GUIDE.md      # LLM 因子代码参考手册
-└── DESIGN.md                 # Multi-Agent 自动因子挖掘实施计划
+├── knowledge_base/           # Agent 知识库（跨 run 持久化，git 追踪）
+│   ├── anti_patterns.json    #   失败模式 → 修复建议
+│   ├── successful_patterns.json  #   成功模式 → SOTA 基准
+│   └── failed_attempts.jsonl #   失败实验索引（append-only）
+└── pdf_hypotheses/           # PDF→hypothesis 中间产物（gitignore）
+    └── <slug>/               #   每次提取一个子目录
+        └── *_hypothesis.md
 
-.claude/prompts/              # Prompt 模板系统（P1.A.0）
-├── shared/
-│   ├── role.md               # FC/RC/HG 角色定义
-│   ├── output_formats.md     # JSON schema 模板
-│   └── context_sections.md   # 标准上下文块（SOTA / Trace / Diff / Challenges）
-├── factor_coder.md           # FC system prompt
-├── result_critic.md          # RC system prompt
-└── hypothesis_gen.md         # HG prompt（新增）
+.claude/
+├── commands/
+│   ├── factor-iterate.md     # /factor-iterate 命令
+│   └── pdf-hypothesis.md     # /pdf-hypothesis 命令（P2.A.4）
+├── prompts/
+│   ├── shared/
+│   │   ├── role.md           # FC/RC/HG 角色定义
+│   │   ├── output_formats.md # JSON schema 模板
+│   │   └── context_sections.md
+│   ├── factor_coder.md       # FC system prompt
+│   ├── result_critic.md      # RC system prompt
+│   ├── hypothesis_gen.md     # HG prompt
+│   └── pdf_hypothesis.md     # PDF→hypothesis 分析 prompt（P2.A.4）
+└── settings.json
 ```
 
 **不再包含**：Python agent 循环、LLM API 调用、knowledge base Python 模块。这些现在由 Claude Code 本身处理。
@@ -187,7 +205,7 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `results/agent/knowledge_base/` | 新建 | 3 个 JSON 文件（空 schema + 手动 bootstrap） |
+| `agents/knowledge_base/` | 新建 | 3 个 JSON 文件（空 schema + 手动 bootstrap） |
 | `.claude/commands/factor-iterate.md` | 改 | 集成 RC subagent + KB 查询 |
 | `agents/claude_cli.py` | 不改 | |
 | `agents/` 其他模块 | 不改 | |

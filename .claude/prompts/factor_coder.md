@@ -31,8 +31,7 @@ A-share quantitative factor generation using AutoQuant framework.
 - Import only existing transforms from `backtest.factor.transforms`
 - Register with `@register("<factor_id>", category="...", data_sources=[...])`
 - Price must be post-adjusted: `adj_close = panel["close"] * panel["adj_factor"]`
-- ST stocks masked: `raw_signal.where(~panel["is_st"], np.nan)`
-- Limit-up/down masked for volume/reversal factors
+- ST / limit-up filtering handled by strategy + simulation layers; factor returns raw signal only
 - Financial columns are quarterly — no ts_mean/ts_delta on them
 - Volume unit is shares (not lots); compare cross-sectionally with turnover_rate or amount
 

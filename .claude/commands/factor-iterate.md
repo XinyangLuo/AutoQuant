@@ -9,11 +9,24 @@
 ```text
 /factor-iterate 成交额放量后短期反转，尤其在小盘股里更强
 /factor-iterate max_rounds=5 data_sources=market_daily,income_q 低估值盈利改善动量
+/factor-iterate --hypothesis agents/pdf_hypotheses/xxx/xxx_hypothesis.md
+/factor-iterate --hypothesis                       # 无路径 → 弹出 hypothesis 文件列表
 ```
+
+### --hypothesis 无参数交互模式
+
+当用户输入 `/factor-iterate --hypothesis` **不带路径**时，列出 `agents/pdf_hypotheses/` 下所有 `.md` 文件供选择：
+
+```bash
+find agents/pdf_hypotheses -name "*.md" -type f | sort
+```
+
+展示为带编号菜单，**等待用户选择**后再继续。
 
 ## Operating Rules
 
 - 默认最多迭代 `max_rounds=10`。
+- **`--hypothesis <path>` 模式**：当用户提供 hypothesis.md 路径时，先 Read 该文件提取 `## Formula`、`## Construction Logic`、`## Parameters`、`## Suggested Config`。Formula 作为 FC 编码起点，Suggested Config 作为 `config.yaml` 初始值。FC 仍需校验列名和 transforms 是否存在。此模式下不需要用户再输入自然语言假设，`hypothesis.md` 中的 `## Hypothesis` 即为假设。
 - 所有 Python 命令前必须使用 `conda activate AutoQuant`。
 - 因子代码写入 `alphas/exp/agent/<factor_id>/factor.py`。
 - 运行产物写入 `results/agent/runs/<run_id>/`。
@@ -25,7 +38,7 @@
 
 ## Knowledge Base
 
-KB 文件位于 `results/agent/knowledge_base/`，跨 run 积累知识：
+KB 文件位于 `agents/knowledge_base/`，跨 run 积累知识：
 
 | 文件 | 用途 |
 |------|------|
@@ -47,11 +60,11 @@ KB 文件位于 `results/agent/knowledge_base/`，跨 run 积累知识：
 results/agent/runs/<YYYYMMDD_HHMMSS_slug>/
   hypothesis.md
   trace.jsonl
-  round_001/
+  001/
     factor.py
     factor_sanitized.py
     result.json
-  round_002/
+  002/
     ...
 ```
 
@@ -83,13 +96,14 @@ For each round:
      adj_close = panel["close"] * panel["adj_factor"]
      adj_open = panel["open"] * panel["adj_factor"]
      ```
-     例外：`pct_chg` 和 `change` 已是调整后涨跌幅，无需复权；`total_mv`/`circ_mv` 和 turnover 类列也已调整。详见 `FACTOR_CODE_GUIDE.md` §5.8。
-   - **⚠️ ST 股票**：ST/*ST 股票涨跌幅限制 ±5%（正常 ±10%），交易行为扭曲。必须用 `raw_signal.where(~panel["is_st"], np.nan)` 屏蔽，避免污染截面排名。详见 GUIDE §5.9。
-   - **⚠️ 涨跌停**：涨停跌停日成交量接近 0、收盘价为人工价。成交量/反转类因子必须屏蔽 `(close == limit_up) | (close == limit_down)` 的数据。详见 GUIDE §5.11。
-   - **⚠️ 财务数据是季度频率**：`inc_*`/`bs_*`/`cf_*` 列在每个交易日重复同一季度值，直到下季度财报发布。对财务列做时序变换（`ts_mean`/`ts_delta`/`pct_change`）**无意义**——会产生阶梯状伪影。截面比值（`inc_eps / bs_equity`）没问题；增长/斜率因子必须用 `event_driven=True` 模式。详见 GUIDE §5.12。
-   - **⚠️ 成交量单位**：`volume` 单位是**股**（非手），`amount` 单位是**元**。跨股票比较成交量用 `turnover_rate`（换手率）或 `amount`（成交额），不要用原始 `volume`。详见 GUIDE §5.13。
+     例外：`pct_chg` 和 `change` 已是调整后涨跌幅，无需复权；`total_mv`/`circ_mv` 和 turnover 类列也已调整。详见 `agents/FACTOR_CODE_GUIDE.md` §5.8。
+   - **⚠️ ST 股票**：ST/*ST 股票的剔除由 `strategy.universe.exclude_st: true`（config.yaml）处理，**因子代码中不需要手动屏蔽**。
+   - **⚠️ 涨跌停**：涨跌停过滤由 simulation 层在交易执行时处理，**因子代码中不需要手动屏蔽**。
+   - **⚠️ 因子只输出原始信号值**：去极值、中性化、截面排名均由 pipeline 统一处理。因子函数**只返回 raw signal**（可包含 `*(-1)` 方向），不要加 `cs_rank`、`cs_mad_winsorize`、`~is_st`、`limit_up/down` 过滤。
+   - **⚠️ 财务数据是季度频率**：`inc_*`/`bs_*`/`cf_*` 列在每个交易日重复同一季度值，直到下季度财报发布。对财务列做时序变换（`ts_mean`/`ts_delta`/`pct_change`）**无意义**——会产生阶梯状伪影。截面比值（`inc_eps / bs_equity`）没问题；增长/斜率因子必须用 `event_driven=True` 模式。详见 `agents/FACTOR_CODE_GUIDE.md` §5.12。
+   - **⚠️ 成交量单位**：`volume` 单位是**股**（非手），`amount` 单位是**元**。跨股票比较成交量用 `turnover_rate`（换手率）或 `amount`（成交额），不要用原始 `volume`。详见 `agents/FACTOR_CODE_GUIDE.md` §5.13。
 5. Write the candidate code + per-factor config to both:
-   - **因子代码**：`results/agent/runs/<run_id>/round_<NNN>/factor.py` 和 `alphas/exp/agent/<factor_id>/factor.py`
+   - **因子代码**：`results/agent/runs/<run_id>/<NNN>/factor.py` 和 `alphas/exp/agent/<factor_id>/factor.py`
    - **回测策略配置**：`alphas/exp/agent/<factor_id>/config.yaml`（**必须生成！**）——Pipeline 通过 `PipelineConfig.from_factor_config(factor_id)` 自动发现此文件，未指定的字段使用硬编码默认值。FC 根据因子特征选择参数：
 
    ```yaml
@@ -125,14 +139,13 @@ For each round:
 
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --run-dir results/agent/runs/<run_id>/round_<NNN> \
-     --factor-file results/agent/runs/<run_id>/round_<NNN>/factor.py
+     --run-dir results/agent/runs/<run_id>/<NNN> \
+     --factor-file results/agent/runs/<run_id>/<NNN>/factor.py
    ```
 
-7. Read `round_<NNN>/result.json`。
+7. Read `<NNN>/result.json`。
    - `result.json.report_path` 指向 pipeline 诊断报告（每轮都会生成，含全部 10 步详情 + 图表）。
-   - 报告同时复制到 `round_<NNN>/pipeline_report.md`，可直接 Read 查看 IC 衰减图、分层回测净值曲线等。
-
+   
 8. **If `result.json.status == "pass"`**：
    - Append final trace record with `status="pass"`.
    - **Update KB**（见 §Pass 收尾）。
@@ -157,10 +170,10 @@ For each round:
        - 本轮参数: {tried_params}
 
        ## 输入文件（必须全部 Read）
-       1. Read {run_dir}/round_{NNN}/result.json  — 本轮完整结果
+       1. Read {run_dir}/{NNN}/result.json  — 本轮完整结果
        2. Read {run_dir}/trace.jsonl              — 本 run 完整历史
-       3. Read results/agent/knowledge_base/anti_patterns.json
-       4. Read results/agent/knowledge_base/successful_patterns.json
+       3. Read agents/knowledge_base/anti_patterns.json
+       4. Read agents/knowledge_base/successful_patterns.json
 
        ## result.json 关键字段说明
        result.json 结构（由 claude_cli.py 输出）：

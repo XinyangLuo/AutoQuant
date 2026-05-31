@@ -55,10 +55,12 @@ data/positions/*
 # 回测产出
 results/*
 
+# 研报 PDF（大文件，不入 git）
+research_papers/*
+
 
 # 日志
 *.log
-logs/
 
 # 私有因子代码（候选 alpha / rd-agent 产出，不公开到 GitHub）
 alphas/
@@ -69,6 +71,9 @@ agents/rdagent/kb.json
 agents/rdagent/__pycache__/
 agents/rdagent/core/__pycache__/
 agents/rdagent/prompts/__pycache__/
+
+# Agent PDF hypothesis 中间产物（可重新生成，不入 git）
+agents/pdf_hypotheses/
 
 # 因子注册元数据（含私有 alpha 名称/描述，不公开）
 data/factor_library/registry.json
