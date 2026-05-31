@@ -90,8 +90,8 @@ Agent tool params:
     - 之前尝试: {trace_summary}
 
     ## 输入文件
-    - result.json: Read {run_dir}/{NNN}/result.json
-    - trace.jsonl: Read {run_dir}/trace.jsonl
+    - result.json: Read results/{factor_id}/{strategy}/result.json
+    - trace.jsonl: Read results/agents/{run_id}/trace.jsonl
     - 反模式库: Read agents/knowledge_base/anti_patterns.json
     - 成功模式库: Read agents/knowledge_base/successful_patterns.json
 

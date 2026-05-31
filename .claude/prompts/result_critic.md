@@ -19,8 +19,8 @@
 - 本轮参数: {tried_params}
 
 # Input Files（必须全部 Read）
-1. {run_dir}/{NNN}/result.json — 本轮完整结果
-2. {run_dir}/trace.jsonl — 本 run 完整历史
+1. results/{factor_id}/{strategy}/result.json — 本轮完整结果
+2. results/agents/{run_id}/trace.jsonl — 本 run 完整历史
 3. agents/knowledge_base/anti_patterns.json
 4. agents/knowledge_base/successful_patterns.json
 

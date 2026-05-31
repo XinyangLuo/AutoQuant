@@ -163,8 +163,8 @@ Agent tool params:
     - 之前尝试: {trace_summary}
 
     ## 输入文件
-    - result.json: Read {run_dir}/{NNN}/result.json
-    - trace.jsonl: Read {run_dir}/trace.jsonl
+    - result.json: Read results/<factor_id>/<strategy>/result.json
+    - trace.jsonl: Read results/agents/<run_id>/trace.jsonl
     - 反模式库: Read agents/knowledge_base/anti_patterns.json
     - 成功模式库: Read agents/knowledge_base/successful_patterns.json
 
@@ -316,7 +316,7 @@ class FactorWorkspace:
     def rollback(self, run_dir: Path, round: int): ...
 ```
 
-- `checkpoint`：zip 打包当前文件到 `run_dir/checkpoints/{NNN}.zip`
+- `checkpoint`：zip 打包当前文件到 `results/agents/{run_id}/checkpoints/{round:03d}.zip`
 - `rollback`：从 checkpoint 恢复，用于"改坏了需要回退到上一轮"
 
 参考 RD-Agent `FBWorkspace` 的 `create_ws_ckp` / `recover_ws_ckp`，但不做 Docker 隔离（本地 conda 执行是 feature 而非 bug）。
