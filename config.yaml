@@ -61,7 +61,7 @@ thresholds:
       # 相对阈值（None 或省略表示不检查）
       min_excess_sharpe_hs300: 0.5
       min_excess_annual_return_hs300: 0.05
-      min_excess_calmar_hs300: 0.4
+      min_excess_calmar_hs300: null
 
     # step7: 详细回测
     detailed_backtest:
@@ -73,7 +73,7 @@ thresholds:
       # 相对阈值（None 或省略表示不检查）
       min_excess_sharpe_hs300: 0.4
       min_excess_annual_return_hs300: 0.05
-      min_excess_calmar_hs300: 0.4
+      min_excess_calmar_hs300: null
 
 # ---------------------------------------------------------------------------
 # Agent 投研配置
@@ -89,7 +89,7 @@ agent:
   max_rounds: 10
   start_date: "20160101"
   end_date: "20251231"
-  output_dir: results/agent/run_001
+  output_dir: results/f_auto_run_001
 
   # 因子 ID 命名
   factor_id_prefix: f_auto

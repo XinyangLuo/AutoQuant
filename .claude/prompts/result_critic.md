@@ -20,7 +20,7 @@
 
 # Input Files（必须全部 Read）
 1. results/{factor_id}/{strategy}/result.json — 本轮完整结果
-2. results/agents/{run_id}/trace.jsonl — 本 run 完整历史
+2. results/{run_id}/trace.jsonl — 本 run 完整历史
 3. agents/knowledge_base/anti_patterns.json
 4. agents/knowledge_base/successful_patterns.json
 

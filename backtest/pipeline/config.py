@@ -152,6 +152,116 @@ class StepThresholds:
     min_excess_calmar_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_calmar_csi1000"))
 
 
+def map_yaml_threshold_key(section: str, key: str) -> str | None:
+    """Map a ``config.yaml`` threshold key to a ``StepThresholds`` field name.
+
+    The YAML nesting uses sections such as ``simple_backtest`` /
+    ``detailed_backtest``, but the dataclass fields carry a ``_simple`` /
+    ``_detailed`` suffix (or, for shared keys, no suffix in simple and a
+    ``_detailed`` suffix in detailed).
+
+    Examples
+    --------
+    >>> map_yaml_threshold_key("simple_backtest", "min_sharpe")
+    "min_sharpe_simple"
+    >>> map_yaml_threshold_key("detailed_backtest", "min_excess_calmar_hs300")
+    "min_excess_calmar_detailed_hs300"
+    >>> map_yaml_threshold_key("coverage", "max_missing_rate_pv")
+    "max_missing_rate_pv"
+    """
+    import dataclasses
+    import warnings
+
+    from backtest.evaluation.benchmark import _BENCHMARK_ALIASES
+
+    _FIELD_NAMES = frozenset(
+        f.name for f in dataclasses.fields(StepThresholds)
+    )
+
+    def _has(field_name: str) -> bool:
+        return field_name in _FIELD_NAMES
+
+    # Sections that do not need a backtest-type suffix.
+    if section in ("coverage", "icir", "monotonicity"):
+        return key if _has(key) else None
+
+    suffix_map = {
+        "simple_backtest": "_simple",
+        "detailed_backtest": "_detailed",
+    }
+    suffix = suffix_map.get(section)
+    if suffix is None:
+        return key if _has(key) else None
+
+    # Shared absolute keys: no suffix in simple, _detailed in detailed.
+    if key in ("max_max_drawdown", "max_annual_turnover"):
+        if section == "simple_backtest":
+            return key if _has(key) else None
+        field_name = f"{key}_detailed"
+        return field_name if _has(field_name) else None
+
+    # Relative excess metrics: insert suffix before the benchmark token.
+    # e.g. min_excess_calmar_hs300 -> min_excess_calmar_simple_hs300.
+    # Use the known benchmark aliases to find the token boundary rather
+    # than splitting on ``_`` — alias tokens may contain underscores.
+    if key.startswith("min_excess_") or key.startswith("max_excess_"):
+        for alias in _BENCHMARK_ALIASES:
+            target_suffix = f"_{alias}"
+            if key.endswith(target_suffix):
+                base = key[: -len(target_suffix)]
+                field_name = base + suffix + target_suffix
+                return field_name if _has(field_name) else None
+        # Excess key found but no known benchmark alias matched.
+        warnings.warn(
+            f"Excess threshold key '{key}' under section '{section}' "
+            f"does not match any known benchmark alias "
+            f"({list(_BENCHMARK_ALIASES)}); skipping.",
+            stacklevel=2,
+        )
+        return None
+
+    # Simple absolute metrics with min_ prefix.
+    if key.startswith("min_"):
+        field_name = key + suffix
+        return field_name if _has(field_name) else None
+
+    if not _has(key):
+        warnings.warn(
+            f"Threshold key '{key}' under section '{section}' "
+            f"does not match any StepThresholds field; skipping.",
+            stacklevel=2,
+        )
+        return None
+    return key
+
+
+# Backward-compatible alias kept for state.py migration.
+_map_yaml_threshold_key = map_yaml_threshold_key
+
+
+def _collect_threshold_overrides(
+    section_dict: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a flat ``{field_name: value}`` dict from a nested YAML-thresholds dict.
+
+    Iterates over ``{section: {key: val}}`` (as found in ``config.yaml``
+    ``thresholds.pipeline`` or a per-factor YAML ``thresholds.pipeline``),
+    mapping each ``(section, key)`` pair to the corresponding
+    ``StepThresholds`` dataclass field name via :func:`map_yaml_threshold_key`.
+    """
+    flat: dict[str, Any] = {}
+    for section, vals in section_dict.items():
+        if isinstance(vals, dict):
+            for k, v in vals.items():
+                field_name = map_yaml_threshold_key(section, k)
+                if field_name is not None:
+                    flat[field_name] = v
+        # Non-dict values under thresholds.pipeline are silently ignored;
+        # section names (e.g. "simple_backtest") never match StepThresholds
+        # field names like "min_sharpe_simple".
+    return flat
+
+
 @dataclass
 class PipelineConfig:
     """Top-level pipeline configuration.
@@ -244,21 +354,7 @@ class PipelineConfig:
 
         # Merge nested thresholds dict into StepThresholds
         th_dict = data.pop("thresholds", {})
-        # Flatten nested pipeline thresholds
-        flat_th = {}
-        for section, vals in th_dict.get("pipeline", {}).items():
-            if isinstance(vals, dict):
-                for k, v in vals.items():
-                    # Map YAML keys to dataclass field names
-                    field_name = f"min_{k}" if k.startswith("sharpe") or k.startswith("annual_return") or k.startswith("calmar") else k
-                    if hasattr(StepThresholds, field_name):
-                        flat_th[field_name] = v
-                    else:
-                        # Try direct mapping
-                        flat_th[k] = v
-            else:
-                flat_th[section] = vals
-
+        flat_th = _collect_threshold_overrides(th_dict.get("pipeline", {}))
         thresholds = StepThresholds(**flat_th)
 
         return cls(

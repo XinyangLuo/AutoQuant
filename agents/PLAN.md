@@ -91,7 +91,7 @@ Agent tool params:
 
     ## 输入文件
     - result.json: Read results/{factor_id}/{strategy}/result.json
-    - trace.jsonl: Read results/agents/{run_id}/trace.jsonl
+    - trace.jsonl: Read results/{run_id}/trace.jsonl
     - 反模式库: Read agents/knowledge_base/anti_patterns.json
     - 成功模式库: Read agents/knowledge_base/successful_patterns.json
 

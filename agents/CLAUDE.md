@@ -60,7 +60,7 @@ python -m agents.claude_cli schema --sources market_daily,income_q
 
 # 单轮执行（传入因子 ID 和因子文件；--run-dir 可选，默认输出到 results/<factor_id>/）
 python -m agents.claude_cli run f_auto_001 \
-    --factor-file results/agents/my_run/factor.py
+    --factor-file results/<factor_id>/factor.py
 
 # 帮助
 python -m agents.claude_cli --help

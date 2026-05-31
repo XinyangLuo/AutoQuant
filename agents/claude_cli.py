@@ -144,7 +144,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         factor_results_dir = Path("results") / factor_id
         factor_results_dir.mkdir(parents=True, exist_ok=True)
         result_path = Path(args.result_path) if args.result_path else factor_results_dir / "result.json"
-        sanitized_code_path = Path("results/agents") / factor_id / "factor_sanitized.py"
+        sanitized_code_path = Path("results") / factor_id / "factor_sanitized.py"
         results_root = Path("results")
 
     experiment = AutoQuantFactorExperiment(factor_id=factor_id)

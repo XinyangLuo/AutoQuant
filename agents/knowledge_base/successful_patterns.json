@@ -74,5 +74,14 @@
       "why_it_works": "换手率波动反映多空分歧烈度，分歧越大后续反转越强；barra_ind_size 中性化去除行业/市值噪音后纯 alpha 仍显著",
       "admission_date": "2026-05-30"
     }
+  ],
+  "volatility": [
+    {
+      "factor_id": "f_auto_20260531_001",
+      "formula_pattern": "ts_std(high_r, 105) - ts_std(low_r, 105), *(-1), barra_ind_size",
+      "key_metrics": {"annual_icir": 3.12, "simple_sharpe": 0.735, "detailed_sharpe": 0.705, "residual_icir": 6.28},
+      "why_it_works": "日内最大涨幅波动率与最大跌幅波动率的不对称性：高波动差值股票风险溢价更高，低波动差值股票更安全。",
+      "admission_date": "2026-05-31"
+    }
   ]
 }

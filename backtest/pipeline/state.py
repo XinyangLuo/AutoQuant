@@ -65,18 +65,21 @@ class PipelineState:
 
     @classmethod
     def from_dict(cls, data: dict) -> PipelineState:
-        config = _config_from_dict(data.pop("config", {}))
-        step_results_raw = data.pop("step_results", {})
+        # Use .get() rather than .pop() to avoid mutating the caller's dict.
+        config = _config_from_dict(data.get("config", {}))
+        step_results_raw = data.get("step_results", {})
         step_results = {
             k: StepResult(**v) for k, v in step_results_raw.items()
         }
         # Discard legacy retry fields for backward compatibility
-        data.pop("retry_count", None)
-        data.pop("retry_params", None)
+        # (not present in current serialized state; harmless if absent).
         return cls(
             config=config,
             step_results=step_results,
-            **data,
+            factor_id=data.get("factor_id", ""),
+            status=data.get("status", "running"),
+            current_step=data.get("current_step"),
+            artifacts=data.get("artifacts", {}),
         )
 
     # ------------------------------------------------------------------
@@ -122,7 +125,16 @@ class PipelineState:
 
 
 def _config_from_dict(data: dict) -> PipelineConfig:
-    """Rebuild PipelineConfig from JSON, refreshing strategy defaults from config.yaml."""
+    """Rebuild PipelineConfig from JSON, refreshing strategy defaults from config.yaml.
+
+    .. note::
+
+       Strategy defaults (top_k, decay, rebalance, etc.) and thresholds are
+       **intentionally refreshed from the current config.yaml** when
+       deserializing.  This means a reloaded state may show different
+       threshold values than when the run originally executed — the trade-off
+       is that resumed runs always use the latest settings.
+    """
     from backtest.config_loader import get_section
 
     # Refresh fields that users edit in config.yaml between runs.
@@ -141,30 +153,16 @@ def _config_from_dict(data: dict) -> PipelineConfig:
             pass  # keep serialized value
 
     # Refresh thresholds from config.yaml as well.
-    # Reuse the same mapping logic as PipelineConfig.from_yaml().
+    # Work on a copy to avoid mutating the caller's dict.
+    data = dict(data)
     th_dict = data.pop("thresholds", {})
     try:
-        from backtest.config_loader import get_section as _gs
-        from backtest.pipeline.config import StepThresholds as _ST
+        from backtest.pipeline.config import _collect_threshold_overrides
 
-        pipeline_th = _gs("thresholds", "pipeline")
-        for section, vals in pipeline_th.items():
-            if isinstance(vals, dict):
-                for k, v in vals.items():
-                    field_name = (
-                        f"min_{k}"
-                        if k.startswith("sharpe")
-                           or k.startswith("annual_return")
-                           or k.startswith("calmar")
-                        else k
-                    )
-                    if hasattr(_ST, field_name):
-                        th_dict[field_name] = v
-            elif hasattr(_ST, section):
-                th_dict[section] = vals
+        pipeline_th = get_section("thresholds", "pipeline")
+        config_overrides = _collect_threshold_overrides(pipeline_th)
+        th_dict.update(config_overrides)
     except (KeyError, FileNotFoundError, ValueError):
         pass  # keep serialized thresholds
     thresholds = StepThresholds(**th_dict)
-    # Discard legacy retry field for backward compatibility
-    data.pop("max_retries", None)
     return PipelineConfig(**data, thresholds=thresholds)

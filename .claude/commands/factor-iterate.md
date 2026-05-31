@@ -29,7 +29,7 @@ find agents/pdf_hypotheses -name "*.md" -type f | sort
 - **`--hypothesis <path>` 模式**：当用户提供 hypothesis.md 路径时，先 Read 该文件提取 `## Formula`、`## Construction Logic`、`## Parameters`、`## Suggested Config`。Formula 作为 FC 编码起点，Suggested Config 作为 `config.yaml` 初始值。FC 仍需校验列名和 transforms 是否存在。此模式下不需要用户再输入自然语言假设，`hypothesis.md` 中的 `## Hypothesis` 即为假设。
 - 所有 Python 命令前必须使用 `conda activate AutoQuant`。
 - 因子代码写入 `alphas/exp/agent/<factor_id>/factor.py`。
-- 运行产物写入 `results/<factor_id>/`（因子评估与回测）和 `results/agents/<run_id>/`（追踪文件）。
+- 运行产物写入 `results/<factor_id>/`（因子评估与回测）和 `results/<run_id>/`（追踪文件）。
 - 每轮必须 append 一行 JSON 到 `trace.jsonl`。
 - 每轮开始前必须读取 `trace.jsonl`（如果存在），避免重复错误和重复参数。
 - 代码错误和 schema 错误必须同方向修复，不得直接换新因子假设。
@@ -58,12 +58,11 @@ KB 文件位于 `agents/knowledge_base/`，跨 run 积累知识：
 
 ```text
 results/
-  agents/                                   ← agent 追踪文件与代码
-    <run_id>/
-      hypothesis.md
-      trace.jsonl
-      factor.py                             ← 当前因子代码（仅在 factor_change="formula" 时更新）
-      config.yaml                           ← 当前策略配置
+  <run_id>/                                 ← 追踪文件与代码
+    hypothesis.md
+    trace.jsonl
+    factor.py                               ← 当前因子代码（仅在 factor_change="formula" 时更新）
+    config.yaml                             ← 当前策略配置
   <factor_id>/                              ← 同一因子代码共享一个目录
     factor_eval/                            ← step1-4 因子评估（同一因子共享，strategy_only 轮不重建）
     decile_backtest/                        ← 十段分层/多空测试
@@ -123,8 +122,8 @@ For each round:
 5. Write the factor code + config:
 
    **Round 1 或 factor_change="formula"**（因子代码变化）：
-   - 因子代码写入 `results/agents/<run_id>/factor.py` **和** `alphas/exp/agent/<factor_id>/factor.py`
-   - 策略配置写入 `alphas/exp/agent/<factor_id>/config.yaml`，同时 copy 到 `results/agents/<run_id>/config.yaml`
+   - 因子代码写入 `results/<run_id>/factor.py` **和** `alphas/exp/agent/<factor_id>/factor.py`
+   - 策略配置写入 `alphas/exp/agent/<factor_id>/config.yaml`，同时 copy 到 `results/<run_id>/config.yaml`
 
    **factor_change="params" 或 strategy_only**（因子代码不变）：
    - **只更新** `alphas/exp/agent/<factor_id>/config.yaml`（改 decay/rebalance/top_k）
@@ -164,14 +163,14 @@ For each round:
    **Round 1 或 factor_change="formula"**（全量 pipeline）：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --factor-file results/agents/<run_id>/factor.py
+     --factor-file results/<run_id>/factor.py
    ```
    Pipeline 自动将产物写入 `results/<factor_id>/factor_eval/`、`results/<factor_id>/decile_backtest/` 以及默认策略变体目录下。
 
    **strategy_only 或 factor_change="params"**（仅策略变化）：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --factor-file results/agents/<run_id>/factor.py
+     --factor-file results/<run_id>/factor.py
    ```
    > factor_eval/ / decile_backtest/ 结果不变，不重复生成。新的策略参数会产生一个新的策略变体目录（如 `top200_1d_d10`）。
 
@@ -203,7 +202,7 @@ For each round:
 
        ## 输入文件（必须全部 Read）
        1. Read results/<factor_id>/<strategy>/result.json — 本轮完整结果
-       2. Read results/agents/<run_id>/trace.jsonl        — 本 run 完整历史
+       2. Read results/<run_id>/trace.jsonl        — 本 run 完整历史
        3. Read agents/knowledge_base/anti_patterns.json
        4. Read agents/knowledge_base/successful_patterns.json
 

@@ -1,19 +1,24 @@
 """Global configuration loader.
 
-Reads ``config.yaml`` (project root) once and exposes a singleton dict.
+Reads ``config.yaml`` (project root) and caches the result with mtime
+invalidation — re-reads only when the file has been modified.  Config
+files are small; the mtime check avoids the confusing stale-cache
+behaviour while preventing redundant I/O (e.g. ~50 reads triggered by
+a single ``StepThresholds()`` construction).
 Any module that needs thresholds or knobs imports ``get_config()`` or
 ``get_section()`` rather than hard-coding values.
 """
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-
 _CONFIG_PATH: Path | None = None
+_CONFIG_MTIME: float = 0.0
 _CONFIG_CACHE: dict[str, Any] | None = None
 
 
@@ -42,14 +47,22 @@ def load_config(path: Path | str | None = None) -> dict[str, Any]:
     -------
     dict
     """
-    global _CONFIG_PATH, _CONFIG_CACHE
+    global _CONFIG_PATH, _CONFIG_MTIME, _CONFIG_CACHE
 
     if path is None:
         path = _find_project_root() / "config.yaml"
     path = Path(path)
 
-    # Cache only when the same path is requested repeatedly
-    if _CONFIG_CACHE is not None and _CONFIG_PATH == path:
+    # Cache with mtime invalidation: re-read only when the file has
+    # changed on disk.  This prevents the ~50 redundant reads
+    # triggered by StepThresholds() default_factory lambdas while
+    # ensuring edits to config.yaml take effect immediately.
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        mtime = 0.0
+
+    if _CONFIG_CACHE is not None and _CONFIG_PATH == path and _CONFIG_MTIME == mtime:
         return _CONFIG_CACHE.copy()
 
     with path.open("r", encoding="utf-8") as f:
@@ -59,15 +72,14 @@ def load_config(path: Path | str | None = None) -> dict[str, Any]:
         raise ValueError(f"YAML did not parse to dict: {path}")
 
     _CONFIG_PATH = path
+    _CONFIG_MTIME = mtime
     _CONFIG_CACHE = data
     return data.copy()
 
 
 def get_config() -> dict[str, Any]:
-    """Return the full global config (cached)."""
-    if _CONFIG_CACHE is None:
-        load_config()
-    return _CONFIG_CACHE.copy()
+    """Return the full global config (cached with mtime invalidation)."""
+    return load_config()
 
 
 def get_section(*keys: str) -> Any:

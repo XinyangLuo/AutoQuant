@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import traceback
+import warnings
 from pathlib import Path
 
 import matplotlib
@@ -21,6 +23,7 @@ for _font in ("PingFang HK", "Heiti TC", "STHeiti", "Arial Unicode MS",
     except Exception:
         continue
 
+from backtest.evaluation.benchmark import align_benchmark, load_benchmark
 from backtest.evaluation.report import _fmt
 
 from .state import PipelineState
@@ -608,9 +611,10 @@ def _plot_ic_decay(all_ic: dict, plots_dir: Path) -> Path | None:
 
 def _plot_ic_time_series_multi(state: PipelineState, plots_dir: Path) -> None:
     """Generate IC time series plots for h=1,5,20 in one evaluate() call."""
+    config = state.config
     try:
         from backtest.factor.evaluation import evaluate, plot_evaluation
-        config = state.config
+
         result = evaluate(
             config.factor_id, config.start_date, config.end_date,
             horizons=[1, 5, 20], ret_type=config.ret_type,
@@ -621,7 +625,11 @@ def _plot_ic_time_series_multi(state: PipelineState, plots_dir: Path) -> None:
                 out = plots_dir / f"eval_ic_ts_h{h}.png"
                 plot_evaluation(result, horizon=h, output_path=str(out))
     except Exception:
-        pass
+        warnings.warn(
+            f"Failed to generate IC time series plots for {config.factor_id}: "
+            f"{traceback.format_exc()}",
+            stacklevel=2,
+        )
 
 
 def _plot_group_returns(group_rets: dict, plots_dir: Path) -> Path | None:
@@ -717,7 +725,31 @@ def _plot_backtest_nav(state: PipelineState, *, tag: str, plots_dir: Path) -> No
     title_map = {"simple": "简单回测", "detailed": "详细回测"}
     title = title_map.get(tag, tag)
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 7))
-    ax1.plot(nav_norm.index, nav_norm.values, color="steelblue", linewidth=1.4)
+    ax1.plot(nav_norm.index, nav_norm.values, color="steelblue", linewidth=1.4, label="策略")
+    # Overlay benchmark if available
+    bench_code = getattr(state.config, "benchmark", None)
+    if bench_code:
+        try:
+            bench_nav = load_benchmark(
+                bench_code,
+                start=nav_df["date"].min().strftime("%Y%m%d"),
+                end=nav_df["date"].max().strftime("%Y%m%d"),
+            )
+            bench_aligned = align_benchmark(nav_df, bench_nav)
+            ax1.plot(
+                bench_aligned.index,
+                bench_aligned.values,
+                color="darkorange",
+                linewidth=1.2,
+                label=f"基准 ({bench_code})",
+            )
+        except Exception:
+            warnings.warn(
+                f"Failed to overlay benchmark ({bench_code}) on {tag} NAV chart: "
+                f"{traceback.format_exc()}",
+                stacklevel=2,
+            )
+    ax1.legend(loc="upper left")
     ax1.axhline(1.0, color="black", linewidth=0.5, alpha=0.5)
     ret_type = state.config.ret_type
     ret_label = "o2o" if ret_type == "open" else "c2c"

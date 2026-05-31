@@ -130,13 +130,22 @@ def compute_benchmark_metrics(
         out["alpha_annual"] = float(alpha_daily * _TRADING_DAYS)
         out["corr"] = float(np.corrcoef(rs, rb)[0, 1])
 
-    cum_excess = (1.0 + pd.Series(excess, index=valid.index)).cumprod() - 1.0
-    excess_nav = 1.0 + cum_excess
-    excess_dd = excess_nav / excess_nav.cummax() - 1.0
-    out["excess_max_drawdown"] = float(excess_dd.min())
+    # 相对净值法：策略净值 / 基准净值 的最大回撤
+    # 避免旧方法 cumprod(1 + r_strat - r_bench) 的时间放大效应
+    relative_nav = strat_s / aligned
+    relative_dd = relative_nav / relative_nav.cummax() - 1.0
+    out["excess_max_drawdown"] = float(relative_dd.min())
 
+    # excess_calmar 的分母是相对净值的最大回撤，分子也必须用相对净值的年化收益，
+    # 避免 daily-excess-mean 与 relative-NAV-drawdown 口径不一致。
+    if n > 0 and relative_nav.iloc[0] > 0:
+        relative_annual_return = float(
+            (relative_nav.iloc[-1] / relative_nav.iloc[0]) ** (_TRADING_DAYS / n) - 1
+        )
+    else:
+        relative_annual_return = float("nan")
     out["excess_calmar"] = (
-        out["annual_excess_return"] / abs(out["excess_max_drawdown"])
+        relative_annual_return / abs(out["excess_max_drawdown"])
         if out["excess_max_drawdown"] < 0 else float("nan")
     )
 
