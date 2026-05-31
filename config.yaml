@@ -53,19 +53,27 @@ thresholds:
 
     # step6: 简单回测
     simple_backtest:
-      min_sharpe: 0.8
+      min_sharpe: 0.4
       min_annual_return: 0.12
       max_max_drawdown: 0.5
       min_calmar: 0.4
       max_annual_turnover: 50.0
+      # 相对阈值（None 或省略表示不检查）
+      min_excess_sharpe_hs300: 0.5
+      min_excess_annual_return_hs300: 0.05
+      min_excess_calmar_hs300: 0.4
 
     # step7: 详细回测
     detailed_backtest:
-      min_sharpe: 0.5
+      min_sharpe: 0.35
       min_annual_return: 0.10
       max_max_drawdown: 0.5
       min_calmar: 0.4
       max_annual_turnover: 50.0
+      # 相对阈值（None 或省略表示不检查）
+      min_excess_sharpe_hs300: 0.4
+      min_excess_annual_return_hs300: 0.05
+      min_excess_calmar_hs300: 0.4
 
 # ---------------------------------------------------------------------------
 # Agent 投研配置

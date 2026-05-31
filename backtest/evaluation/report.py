@@ -102,6 +102,7 @@ def evaluate(
     result_dir: str | Path,
     benchmark: str | None = None,
     *,
+    benchmarks: list[str] | None = None,
     plot: bool = True,
     output_dir: str | Path | None = None,
     rf: float = 0.0,
@@ -112,26 +113,55 @@ def evaluate(
     When ``plot=True`` the 8-panel figure is saved as ``report.png``;
     in any case ``summary.json`` and ``summary.csv`` are written.
     All outputs land in ``output_dir`` (default: the input ``result_dir``).
+
+    Excess metrics vs HS300/CSI500/CSI1000 are computed by default.
+    Pass ``benchmarks=[]`` to disable multi-benchmark excess metrics.
     """
     artifacts = load_result(result_dir)
 
     bench_nav: pd.Series | None = None
     bench_metrics: dict = {}
     excess_curve: pd.Series | None = None
-    if benchmark:
+
+    # Build bench_navs for multi-benchmark excess metrics
+    # Default: always compute excess metrics for HS300/CSI500/CSI1000.
+    # Pass benchmarks=[] to disable.
+    bench_navs: dict[str, pd.Series] = {}
+    all_codes: list[str] = []
+    if benchmarks is not None:
+        all_codes.extend(benchmarks)
+    else:
+        from backtest.evaluation.benchmark import _BENCHMARK_ALIASES
+        all_codes.extend(_BENCHMARK_ALIASES.values())
+    if benchmark and benchmark not in all_codes:
+        all_codes.append(benchmark)
+
+    if all_codes:
         # Local import — load_benchmark touches MarketStorage which opens DuckDB.
         from backtest.evaluation.benchmark import (
-            compute_benchmark_metrics, compute_excess_curve, load_benchmark,
+            _BENCHMARK_ALIASES,
+            compute_benchmark_metrics,
+            compute_excess_curve,
+            load_benchmark,
         )
-        bench_nav = load_benchmark(
-            benchmark,
-            start=artifacts.start.strftime("%Y%m%d"),
-            end=artifacts.end.strftime("%Y%m%d"),
-        )
-        bench_metrics = compute_benchmark_metrics(artifacts.nav, bench_nav)
-        excess_curve = compute_excess_curve(artifacts.nav, bench_nav)
+        _rev_aliases = {v: k for k, v in _BENCHMARK_ALIASES.items()}
+        start_str = artifacts.start.strftime("%Y%m%d")
+        end_str = artifacts.end.strftime("%Y%m%d")
+        for code in all_codes:
+            try:
+                nav = load_benchmark(code, start=start_str, end=end_str)
+                alias = _rev_aliases.get(code, code)
+                bench_navs[alias] = nav
+                if code == benchmark:
+                    bench_nav = nav
+                    bench_metrics = compute_benchmark_metrics(artifacts.nav, nav)
+                    excess_curve = compute_excess_curve(artifacts.nav, nav)
+            except Exception:
+                pass
 
-    metrics = compute_all_metrics(artifacts, bench_nav=bench_nav, rf=rf)
+    metrics = compute_all_metrics(
+        artifacts, bench_nav=bench_nav, rf=rf, bench_navs=bench_navs
+    )
 
     monthly = compute_monthly_return_matrix(artifacts.nav)
     yearly = compute_yearly_returns(artifacts.nav)

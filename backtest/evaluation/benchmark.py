@@ -7,6 +7,8 @@ populates from Tushare's ``pro.index_daily`` endpoint.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pandas as pd
 
@@ -88,7 +90,7 @@ def compute_benchmark_metrics(
         "bench_total_return", "bench_annual_return",
         "annual_excess_return", "tracking_error", "information_ratio",
         "beta", "alpha_annual", "corr",
-        "excess_max_drawdown",
+        "excess_max_drawdown", "excess_calmar",
     ]
     out = {k: float("nan") for k in keys}
 
@@ -133,6 +135,11 @@ def compute_benchmark_metrics(
     excess_dd = excess_nav / excess_nav.cummax() - 1.0
     out["excess_max_drawdown"] = float(excess_dd.min())
 
+    out["excess_calmar"] = (
+        out["annual_excess_return"] / abs(out["excess_max_drawdown"])
+        if out["excess_max_drawdown"] < 0 else float("nan")
+    )
+
     return out
 
 
@@ -150,3 +157,52 @@ def compute_excess_curve(strat_nav_df: pd.DataFrame, bench_nav: pd.Series) -> pd
     cum = (1.0 + excess_daily).cumprod() - 1.0
     cum.name = "cum_excess"
     return cum
+
+
+# ---------------------------------------------------------------------------
+# Multi-benchmark excess metrics
+# ---------------------------------------------------------------------------
+
+_BENCHMARK_ALIASES = {
+    "hs300": "000300.SH",
+    "csi500": "000905.SH",
+    "csi1000": "000852.SH",
+}
+
+
+_BENCH_METRIC_MAP = {
+    "excess_sharpe": "information_ratio",
+    "excess_annual_return": "annual_excess_return",
+    "excess_max_drawdown": "excess_max_drawdown",
+    "excess_calmar": "excess_calmar",
+}
+
+
+def compute_excess_metrics_for_benchmarks(
+    strat_nav_df: pd.DataFrame,
+    aliases: dict[str, str] | None = None,
+    start: str | pd.Timestamp | None = None,
+    end: str | pd.Timestamp | None = None,
+) -> dict:
+    """Compute excess-return metrics against multiple benchmarks.
+
+    Returns a flat dict with keys like ``excess_sharpe_hs300``,
+    ``excess_annual_return_csi500``, etc.  Missing data yields ``NaN``
+    rather than raising.
+    """
+    aliases = aliases or _BENCHMARK_ALIASES
+    out: dict = {}
+    for alias, code in aliases.items():
+        try:
+            bench_nav = load_benchmark(code, start=start, end=end)
+            bm = compute_benchmark_metrics(strat_nav_df, bench_nav)
+            for out_key, src_key in _BENCH_METRIC_MAP.items():
+                out[f"{out_key}_{alias}"] = bm.get(src_key, float("nan"))
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(
+                f"Failed to compute excess metrics for {code} ({alias}): {exc}",
+                stacklevel=2,
+            )
+            for out_key in _BENCH_METRIC_MAP:
+                out[f"{out_key}_{alias}"] = float("nan")
+    return out

@@ -13,7 +13,7 @@ from typing import Literal
 
 import yaml
 
-from backtest.config_loader import get_section, load_yaml_file
+from backtest.config_loader import get_section, get_section_or, load_yaml_file
 
 
 # Hardcoded defaults used when no per-factor config is found.
@@ -79,37 +79,77 @@ def _pipe_thresholds(section: str, key: str):
     return lambda: get_section("thresholds", "pipeline", section, key)
 
 
+def _pipe_thresholds_or(default, section: str, key: str):
+    """Helper: read a threshold with fallback default."""
+    return lambda: get_section_or(default, "thresholds", "pipeline", section, key)
+
 
 @dataclass
 class StepThresholds:
     """Per-step admission thresholds — sourced from config.yaml."""
 
     # step1: coverage
-    max_missing_rate_pv: float = field(default_factory=_pipe_thresholds("coverage", "max_missing_rate_pv"))
-    max_missing_rate_fin: float = field(default_factory=_pipe_thresholds("coverage", "max_missing_rate_fin"))
+    max_missing_rate_pv: float | None = field(default_factory=_pipe_thresholds("coverage", "max_missing_rate_pv"))
+    max_missing_rate_fin: float | None = field(default_factory=_pipe_thresholds("coverage", "max_missing_rate_fin"))
 
     # step3: ICIR
-    min_abs_ic: float = field(default_factory=_pipe_thresholds("icir", "min_abs_ic"))
-    min_annual_icir: float = field(default_factory=_pipe_thresholds("icir", "min_annual_icir"))
-    min_ic_tstat: float = field(default_factory=_pipe_thresholds("icir", "min_ic_tstat"))
-    min_ic_positive_ratio: float = field(default_factory=_pipe_thresholds("icir", "min_ic_positive_ratio"))
+    min_abs_ic: float | None = field(default_factory=_pipe_thresholds("icir", "min_abs_ic"))
+    min_annual_icir: float | None = field(default_factory=_pipe_thresholds("icir", "min_annual_icir"))
+    min_ic_tstat: float | None = field(default_factory=_pipe_thresholds("icir", "min_ic_tstat"))
+    min_ic_positive_ratio: float | None = field(default_factory=_pipe_thresholds("icir", "min_ic_positive_ratio"))
 
     # step4: monotonicity
-    min_monotonicity: float = field(default_factory=_pipe_thresholds("monotonicity", "min_monotonicity"))
+    min_monotonicity: float | None = field(default_factory=_pipe_thresholds("monotonicity", "min_monotonicity"))
 
-    # step6: simple backtest
-    min_sharpe_simple: float = field(default_factory=_pipe_thresholds("simple_backtest", "min_sharpe"))
-    min_annual_return_simple: float = field(default_factory=_pipe_thresholds("simple_backtest", "min_annual_return"))
-    max_max_drawdown: float = field(default_factory=_pipe_thresholds("simple_backtest", "max_max_drawdown"))
-    min_calmar_simple: float = field(default_factory=_pipe_thresholds("simple_backtest", "min_calmar"))
-    max_annual_turnover: float = field(default_factory=_pipe_thresholds("simple_backtest", "max_annual_turnover"))
+    # step6: simple backtest — absolute
+    min_sharpe_simple: float | None = field(default_factory=_pipe_thresholds("simple_backtest", "min_sharpe"))
+    min_annual_return_simple: float | None = field(default_factory=_pipe_thresholds("simple_backtest", "min_annual_return"))
+    max_max_drawdown: float | None = field(default_factory=_pipe_thresholds("simple_backtest", "max_max_drawdown"))
+    min_calmar_simple: float | None = field(default_factory=_pipe_thresholds("simple_backtest", "min_calmar"))
+    max_annual_turnover: float | None = field(default_factory=_pipe_thresholds("simple_backtest", "max_annual_turnover"))
 
-    # step7: detailed backtest
-    min_sharpe_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "min_sharpe"))
-    min_annual_return_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "min_annual_return"))
-    min_calmar_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "min_calmar"))
-    max_max_drawdown_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "max_max_drawdown"))
-    max_annual_turnover_detailed: float = field(default_factory=_pipe_thresholds("detailed_backtest", "max_annual_turnover"))
+    # step6: simple backtest — relative HS300
+    min_excess_sharpe_simple_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_sharpe_hs300"))
+    min_excess_annual_return_simple_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_annual_return_hs300"))
+    max_excess_max_drawdown_simple_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "max_excess_max_drawdown_hs300"))
+    min_excess_calmar_simple_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_calmar_hs300"))
+
+    # step6: simple backtest — relative CSI500
+    min_excess_sharpe_simple_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_sharpe_csi500"))
+    min_excess_annual_return_simple_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_annual_return_csi500"))
+    max_excess_max_drawdown_simple_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "max_excess_max_drawdown_csi500"))
+    min_excess_calmar_simple_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_calmar_csi500"))
+
+    # step6: simple backtest — relative CSI1000
+    min_excess_sharpe_simple_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_sharpe_csi1000"))
+    min_excess_annual_return_simple_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_annual_return_csi1000"))
+    max_excess_max_drawdown_simple_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "max_excess_max_drawdown_csi1000"))
+    min_excess_calmar_simple_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_calmar_csi1000"))
+
+    # step7: detailed backtest — absolute
+    min_sharpe_detailed: float | None = field(default_factory=_pipe_thresholds("detailed_backtest", "min_sharpe"))
+    min_annual_return_detailed: float | None = field(default_factory=_pipe_thresholds("detailed_backtest", "min_annual_return"))
+    min_calmar_detailed: float | None = field(default_factory=_pipe_thresholds("detailed_backtest", "min_calmar"))
+    max_max_drawdown_detailed: float | None = field(default_factory=_pipe_thresholds("detailed_backtest", "max_max_drawdown"))
+    max_annual_turnover_detailed: float | None = field(default_factory=_pipe_thresholds("detailed_backtest", "max_annual_turnover"))
+
+    # step7: detailed backtest — relative HS300
+    min_excess_sharpe_detailed_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_sharpe_hs300"))
+    min_excess_annual_return_detailed_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_annual_return_hs300"))
+    max_excess_max_drawdown_detailed_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "max_excess_max_drawdown_hs300"))
+    min_excess_calmar_detailed_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_calmar_hs300"))
+
+    # step7: detailed backtest — relative CSI500
+    min_excess_sharpe_detailed_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_sharpe_csi500"))
+    min_excess_annual_return_detailed_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_annual_return_csi500"))
+    max_excess_max_drawdown_detailed_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "max_excess_max_drawdown_csi500"))
+    min_excess_calmar_detailed_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_calmar_csi500"))
+
+    # step7: detailed backtest — relative CSI1000
+    min_excess_sharpe_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_sharpe_csi1000"))
+    min_excess_annual_return_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_annual_return_csi1000"))
+    max_excess_max_drawdown_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "max_excess_max_drawdown_csi1000"))
+    min_excess_calmar_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_calmar_csi1000"))
 
 
 @dataclass

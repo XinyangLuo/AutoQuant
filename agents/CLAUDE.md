@@ -118,7 +118,7 @@ agents/
 两个子命令：
 
 - `schema --sources`：输出指定数据源在 `panel` 中的可用列名（JSON）
-- `run <factor_id> --run-dir --factor-file`：运行完整 step1~step10 流水线，输出 `result.json`
+- `run <factor_id> --run-dir --factor-file`：运行完整 step1~step10 流水线，输出 `result.json`（含自动计算的 HS300/CSI500/CSI1000 超额指标）
 
 通过的因子自动写入 `results/agent/candidates/<factor_id>/`，等待人工 review 后 admit。
 

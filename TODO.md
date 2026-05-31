@@ -38,7 +38,7 @@
 
 ### 仿真引擎
 
-- [ ] `SimulationConfig.benchmark` 字段实现：已定义但无功能逻辑
+- [x] `SimulationConfig.benchmark` 字段实现：benchmark 对比逻辑已下沉到 evaluation 层。`BacktestResult.summary()` 自动加载 HS300/CSI500/CSI1000 计算超额指标；`evaluate()` 默认计算三个基准超额，单基准对比仍由 `benchmark` 参数控制。
 - [ ] `DetailedSimulator` 输入校验：检查 market_data 包含必要列
 - [ ] Daily metrics fee 一致性：`detailed.py` 中 transfer_fee/stamp_duty 从 `t.amount * rate` 重算，与 `Trade.commission` 可能不一致
 

@@ -85,7 +85,7 @@ class SimulationConfig:
     transfer_fee_rate: float = 0.00002
     price_type: Literal["o2o", "c2c"] = "o2o"
     allow_short: bool = True
-    benchmark: str | None = None   # TODO
+    benchmark: str | None = None   # 主基准（用于 evaluate() 主基准对比；summary() 自动加载 HS300/CSI500/CSI1000）
 ```
 
 ### SimpleSimulator
@@ -133,7 +133,7 @@ class BacktestResult:
     trades_df: pd.DataFrame     # trade_date, symbol, direction, shares, price, ...
 
     def save(self, output_dir) -> None
-    def summary(self) -> dict   # 总收益, 年化, Sharpe, 最大回撤
+    def summary(self) -> dict   # 总收益, 年化, Sharpe, 最大回撤 + 自动加载 HS300/CSI500/CSI1000 超额指标
 ```
 
 ## 与上下游的交互

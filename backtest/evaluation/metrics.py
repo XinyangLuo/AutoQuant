@@ -352,6 +352,7 @@ def compute_all_metrics(
     artifacts: "BacktestArtifacts",
     bench_nav: pd.Series | None = None,
     rf: float = 0.0,
+    bench_navs: dict[str, pd.Series] | None = None,
 ) -> dict:
     """Compute every flat scalar metric and return one merged dict.
 
@@ -367,6 +368,18 @@ def compute_all_metrics(
     out.update(compute_winrate_metrics(nav_df))
     out.update(compute_trading_stats(artifacts.trades, artifacts.metrics, artifacts.initial_cash))
     out.update(compute_holdings_stats(artifacts.metrics))
+
+    # Multi-benchmark excess metrics (computed post-simulation)
+    if bench_navs:
+        # Local import avoids circular dependency at import time.
+        from backtest.evaluation.benchmark import (
+            _BENCH_METRIC_MAP,
+            compute_benchmark_metrics,
+        )
+        for alias, nav in bench_navs.items():
+            bm = compute_benchmark_metrics(nav_df, nav)
+            for out_key, src_key in _BENCH_METRIC_MAP.items():
+                out[f"{out_key}_{alias}"] = bm.get(src_key, float("nan"))
 
     out["n_days"] = artifacts.n_days
     out["start_date"] = artifacts.start.strftime("%Y-%m-%d")

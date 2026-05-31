@@ -60,15 +60,22 @@ KB 文件位于 `agents/knowledge_base/`，跨 run 积累知识：
 results/agent/runs/<YYYYMMDD_HHMMSS_slug>/
   hypothesis.md
   trace.jsonl
-  001/
-    factor.py
-    factor_sanitized.py
-    result.json
-  002/
-    ...
+  factor.py                  ← 当前因子代码（仅在 factor_change="formula" 时更新）
+  config.yaml                ← 当前策略配置
+  factor_eval/               ← step1-4 因子评估（同一因子共享，strategy_only 轮不重建）
+  variants/                  ← 策略变体结果（step5-6）
+    001_top100_1d_d5/
+      result.json
+      pipeline_report.md
+    002_top200_1d_d5/        ← strategy_only 修复时新增变体目录
+      result.json
+      pipeline_report.md
 ```
 
-`hypothesis.md` 保存用户原始输入、解析出的 data_sources、max_rounds 和启动时间。
+**目录规则**：
+- `factor.py` 和 `factor_eval/` 仅在 `factor_change="formula"` 的轮次更新。`factor_change="params"` 或 `strategy_only` 的轮次**不重建**这些目录，只新增 `variants/` 下的策略变体。
+- `variants/` 按 `{NNN}_{top_k}_{rebalance}_d{decay}` 命名。每次 strategy_only 修复新增一个变体目录。
+- CLI 产出的 `f_<factor_id>/factor_eval/`、`f_<factor_id>/decile_backtest/` 等共享产物放在 `factor_eval/` 下（首次跑后移动过来），后续 strategy_only 轮不重复生成。
 
 ## Per-round Procedure
 
@@ -102,9 +109,15 @@ For each round:
    - **⚠️ 因子只输出原始信号值**：去极值、中性化、截面排名均由 pipeline 统一处理。因子函数**只返回 raw signal**（可包含 `*(-1)` 方向），不要加 `cs_rank`、`cs_mad_winsorize`、`~is_st`、`limit_up/down` 过滤。
    - **⚠️ 财务数据是季度频率**：`inc_*`/`bs_*`/`cf_*` 列在每个交易日重复同一季度值，直到下季度财报发布。对财务列做时序变换（`ts_mean`/`ts_delta`/`pct_change`）**无意义**——会产生阶梯状伪影。截面比值（`inc_eps / bs_equity`）没问题；增长/斜率因子必须用 `event_driven=True` 模式。详见 `agents/FACTOR_CODE_GUIDE.md` §5.12。
    - **⚠️ 成交量单位**：`volume` 单位是**股**（非手），`amount` 单位是**元**。跨股票比较成交量用 `turnover_rate`（换手率）或 `amount`（成交额），不要用原始 `volume`。详见 `agents/FACTOR_CODE_GUIDE.md` §5.13。
-5. Write the candidate code + per-factor config to both:
-   - **因子代码**：`results/agent/runs/<run_id>/<NNN>/factor.py` 和 `alphas/exp/agent/<factor_id>/factor.py`
-   - **回测策略配置**：`alphas/exp/agent/<factor_id>/config.yaml`（**必须生成！**）——Pipeline 通过 `PipelineConfig.from_factor_config(factor_id)` 自动发现此文件，未指定的字段使用硬编码默认值。FC 根据因子特征选择参数：
+5. Write the factor code + config:
+
+   **Round 1 或 factor_change="formula"**（因子代码变化）：
+   - 因子代码写入 `results/agent/runs/<run_id>/factor.py` **和** `alphas/exp/agent/<factor_id>/factor.py`
+   - 策略配置写入 `alphas/exp/agent/<factor_id>/config.yaml`，同时 copy 到 `results/agent/runs/<run_id>/config.yaml`
+
+   **factor_change="params" 或 strategy_only**（因子代码不变）：
+   - **只更新** `alphas/exp/agent/<factor_id>/config.yaml`（改 decay/rebalance/top_k）
+   - 因子代码**不重写**，factor_eval/ 结果可复用
 
    ```yaml
    # alphas/exp/agent/<factor_id>/config.yaml
@@ -135,16 +148,28 @@ For each round:
    - **rebalance 选择**：日频信号 → 1D；周频信号 → 5D 或 1W；月频信号 → 1M
    - **top_k 选择**：ICIR > 3 的强因子 → 50~100 集中持有；ICIR 1~3 → 100~200；ICIR < 1 → 200~300 分散
    - **Repair 时**：如果 RC 的 `fix_level` 是 `strategy_only` 或 `both`，用 `strategy_params` 中的 `decay`/`rebalance`/`top_k` 更新 config.yaml；`fix_level=factor` 时用 `factor_params` 修改因子代码
-6. Run one deterministic evaluation:
+6. Run pipeline（区分两类修复）：
 
+   **Round 1 或 factor_change="formula"**（全量 pipeline）：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --run-dir results/agent/runs/<run_id>/<NNN> \
-     --factor-file results/agent/runs/<run_id>/<NNN>/factor.py
+     --run-dir results/agent/runs/<run_id>/factor_eval \
+     --factor-file results/agent/runs/<run_id>/factor.py
    ```
+   跑完后移动 `f_<factor_id>/factor_eval/`、`f_<factor_id>/decile_backtest/` 等共享产物到 `factor_eval/` 下。
 
-7. Read `<NNN>/result.json`。
-   - `result.json.report_path` 指向 pipeline 诊断报告（每轮都会生成，含全部 10 步详情 + 图表）。
+   **strategy_only 或 factor_change="params"**（仅策略变化）：
+   ```bash
+   VARIANT_DIR=results/agent/runs/<run_id>/variants/<NNN>_top<k>_<freq>_d<decay>
+   mkdir -p $VARIANT_DIR
+   conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
+     --run-dir $VARIANT_DIR \
+     --factor-file results/agent/runs/<run_id>/factor.py
+   ```
+   > factor_eval/ 结果不变，不重复生成。
+
+7. Read result.json（位于 `--run-dir` 下）。
+   - `result.json.report_path` 指向 pipeline 诊断报告。
    
 8. **If `result.json.status == "pass"`**：
    - Append final trace record with `status="pass"`.
@@ -170,7 +195,7 @@ For each round:
        - 本轮参数: {tried_params}
 
        ## 输入文件（必须全部 Read）
-       1. Read {run_dir}/{NNN}/result.json  — 本轮完整结果
+       1. Read {run_dir}/result.json（strategy_only 时在 variants/<NNN>_.../ 下；formula 变化时在 factor_eval/ 下）— 本轮完整结果
        2. Read {run_dir}/trace.jsonl              — 本 run 完整历史
        3. Read agents/knowledge_base/anti_patterns.json
        4. Read agents/knowledge_base/successful_patterns.json
@@ -214,8 +239,9 @@ For each round:
        {
          "failure_type": "用 result.json 中的 failure_type",
          "diagnosis": "根因分析，一段话，说清楚为什么失败",
-         "fix_strategy": "具体修复建议",
+         "fix_strategy": "具体修复建议。factor_change=formula 时必须包含具体公式改进方向",
          "fix_level": "factor",
+         "factor_change": "params",
          "factor_params": {},
          "strategy_params": {},
          "same_direction": true,
@@ -224,33 +250,40 @@ For each round:
        }
 
        `fix_level` 决定下一轮 FC 做什么：
-       - `"factor"` → 需要改因子代码（窗口/horizon/variant/公式）。`factor_params` 包含要改的参数。
-       - `"strategy_only"` → **因子代码不变**，只改 `alphas/exp/agent/<factor_id>/config.yaml`。`strategy_params` 包含新的 decay/rebalance/top_k。
+       - `"factor"` → 需要改因子代码。子类型通过 `factor_change` 字段区分：
+         - `factor_change: "params"` → 只调参数（窗口/horizon/variant）
+         - `factor_change: "formula"` → 改进公式结构（如差值→比率、加归一化、改加权方式）
+       - `"strategy_only"` → **因子代码不变**，只改 `alphas/exp/agent/<factor_id>/config.yaml`。
        - `"both"` → 两个都要改。
 
        `factor_params` 示例：{"window": 10, "horizon": 5, "variant": "barra_ind_size"}。不需要时用 {}。
+       `factor_change`（新增！）为 "params" 或 "formula"。当 `factor_change: "formula"` 时，`fix_strategy` 必须包含**具体的公式改进方向**（如「差值 → 比率归一化」「加 turnover 加权」「缩窗 + 取 log」），`factor_params` 可以只写窗口等参数，公式改进在 `fix_strategy` 中明确描述。
        `strategy_params` 示例：{"decay": 15, "rebalance": "5D", "top_k": 200}。不需要时用 {}。合法值：decay 1~30，rebalance "1D"/"5D"/"1W"/"2W"/"1M"/"EOM"，top_k 50~500，variant "none"/"barra_ind_size"/"barra_l3"。
        `new_anti_pattern` 示例：{"failure_type": "icir_fail", "pattern": "窗口过长导致反转因子失效", "category": "volume_reversal", "signature": "volume_window > 20", "fix": "缩窗到 5-10 天"}。**必须严格使用这四个字段名**：`pattern`（非 pattern_name）、`fix`（非 description）、`category`、`signature`。不需要新增反模式时用 null。
 
        ## Decision Rules
-       - code_error / schema_error → fix_level="factor"，只修代码/列名，不换假设。factor_params 定位到具体错误行。
-       - coverage_fail → fix_level="factor"。改数据源或放宽条件。
-       - neutralization_fail → fix_level="factor"。换 variant 或调整构造以减少 size/industry 相关性。
-       - icir_fail → fix_level="factor"。先查反模式：有匹配→采用其 fix；无匹配→改窗口/horizon（选一个，不要同时改两个）。如果同 category SOTA icir > 1.5 而我方 < 0.5 → 差距大，不急着 abandon。
-       - monotonicity_fail → fix_level="factor"。加二次过滤或改构造方式（如只在极端分位取信号）。
+       - code_error / schema_error → fix_level="factor", factor_change="params"。只修代码/列名，不换假设。factor_params 定位到具体错误行。
+       - coverage_fail → fix_level="factor", factor_change="params"。改数据源或放宽条件。
+       - neutralization_fail → fix_level="factor", factor_change="params"。换 variant 或调整构造以减少 size/industry 相关性。
+       - icir_fail → fix_level="factor"。先查反模式：有匹配→采用其 fix；无匹配→factor_change="params" 改窗口/horizon（选一个，不要同时改两个）。如果同 category SOTA icir > 1.5 而我方 < 0.5 → 差距大，不急着 abandon。
+       - monotonicity_fail → fix_level="factor"。factor_change="formula"：加二次过滤或改构造方式（如只在极端分位取信号）。
        - config_error → fix_level="strategy_only"。修正 config.yaml 中的 top_k/top_pct/decay/rebalance。
-       - **backtest_fail → 按差距分级**：
-         - Sharpe ≥ 阈值的 70%（如阈值 0.8 → Sharpe ≥ 0.56）且 ICIR 达标 → fix_level="strategy_only"。因子 alpha 没问题，只是组合构建粗糙。strategy_params 调整 decay/rebalance/top_k，**不动因子代码**。
-         - Sharpe < 阈值的 70% 或 ICIR 也不达标 → fix_level="factor"。策略调参救不了，需要重构因子（换窗口/horizon/variant/公式）。factor_params 给出新参数。
-         - 参考：round 1 的 vol_reversal（ICIR 4.37 但 Sharpe 0.457 vs 0.8=57%）→ strategy_only 边界，可先试策略调参。
+       - **backtest_fail → 按差距和尝试历史分级**：
+         - **首次 backtest_fail**：Sharpe ≥ 阈值的 70% 且 ICIR 达标 → fix_level="strategy_only"。因子 alpha 没问题，只是组合构建粗糙。strategy_params 调整 decay/rebalance/top_k，**不动因子代码**。
+         - **strategy_only 已尝试 ≥2 轮仍未 pass**：不再继续调策略参数。RC 必须分析因子公式的**结构性缺陷**，输出 fix_level="factor", factor_change="formula"。`fix_strategy` 必须包含具体改进方向（3 选 1 或多选）：
+           1. **变换算子**：差值→比率、线性→对数、原始值→排名
+           2. **归一化**：除以波动率/市值/行业均值，消除尺度差异
+           3. **组合增强**：与已有强因子（查 KB successful_patterns）做加权组合
+         - Sharpe < 阈值的 70% 或 ICIR 也不达标 → fix_level="factor", factor_change="params"。策略调参救不了，需要重构因子（换窗口/horizon/variant/公式）。factor_params 给出新参数。
        - ridge_fail → fix_level="factor"。查 max_existing_corr + max_existing_factor：
          - >0.85 且对手是用户 alpha → recommend_abandon=true（近似重复）
-         - >0.85 且对手是 Barra L1 → 换构造方式
-         - 无法判断对手类型 → 给一次 retry，换构造方式
+         - >0.85 且对手是 Barra L1 → factor_change="formula"，换构造方式
+         - 无法判断对手类型 → 给一次 retry，factor_change="formula"
        - residual_fail → recommend_abandon=true（无增量信息）。
        - execution_error → same_direction=true，fix_level="retry"（基础设施问题，不改任何东西）。DuckDB 锁/超时→原样重试；OOM→减数据量后重试。factor_params 和 strategy_params 都用 {}。
        - metrics_fail → 查看具体哪些指标不达标，参考最近反模式。
        - 连续 3 轮同 direction 无改善（annual_icir 或 simple_sharpe 未提升）→ recommend_abandon=true。
+       - **仅 strategy 调参 ≥2 轮无 pass → 必须给出 formula 改进建议，禁止继续 strategy_only。**
        - 只在确实发现新的通用性失败模式时才填充 new_anti_pattern，否则填 null。
 
        返回纯 JSON，不要 markdown 代码块包裹。
@@ -266,7 +299,8 @@ For each round:
       - **Update KB**（见 §Abandon 收尾）
       - End loop. 输出放弃报告（根因分析 + 为什么无法修复）。
     - 如果 `same_direction == true` 且 `recommend_abandon != true` 且 `round < max_rounds`：
-      - **fix_level="factor"**：以 RC 的 `factor_params` 为指导修改因子代码，进入下一轮。
+      - **fix_level="factor" + factor_change="params"**：以 RC 的 `factor_params` 为指导修改因子代码（窗口/horizon/variant），进入下一轮。
+      - **fix_level="factor" + factor_change="formula"**：按 RC 的 `fix_strategy` 中的**公式改进方向**重构因子代码（变换算子/归一化/组合增强），进入下一轮。
       - **fix_level="strategy_only"**：只更新 `config.yaml`（用 `strategy_params` 中的 decay/rebalance/top_k），**因子代码不变**，进入下一轮。
       - **fix_level="both"**：两个都改。
       - **fix_level="retry"**：什么都不改，原样重试。
@@ -287,6 +321,7 @@ Append exactly one object per round:
   "diagnosis": "根因分析（来自 RC subagent 输出）",
   "fix_strategy": "具体修复建议（来自 RC subagent 输出）",
   "fix_level": "factor",
+  "factor_change": "params",
   "factor_params": {"window": 5},
   "strategy_params": {},
   "code_summary": "20-day return reversal gated by abnormal amount and small-cap rank.",

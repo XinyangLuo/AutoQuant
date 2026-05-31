@@ -257,16 +257,17 @@ class AutoQuantFactorRunner:
     def _factor_data_exists(self, factor_id: str) -> bool:
         """Check whether factor values exist in the work DB."""
         try:
-            import duckdb
-
-            con = duckdb.connect(str(self.factor_storage.db_path), read_only=True)
-            try:
-                cols = con.execute(
-                    "SELECT column_name FROM information_schema.columns "
-                    "WHERE table_name='factors_daily'"
-                ).fetchall()
-                return factor_id in {c[0] for c in cols}
-            finally:
-                con.close()
-        except Exception:
-            return False
+            return factor_id in self.factor_storage.get_existing_factor_ids()
+        except Exception as exc:  # noqa: BLE001
+            msg = str(exc).lower()
+            # First run: table not created yet → treat as "no data".
+            if any(
+                phrase in msg
+                for phrase in ("does not exist", "not found", "no such table")
+            ):
+                return False
+            # Real errors (locked DB, permission denied, corrupted file) →
+            # surface them so the user sees the actual problem.
+            raise RuntimeError(
+                f"Cannot check factor data for {factor_id}: {exc}"
+            ) from exc

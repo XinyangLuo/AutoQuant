@@ -193,7 +193,7 @@ Agent tool params:
     - icir_fail → fix_level="factor"，先查反模式：有匹配→采用其 fix；无匹配→改窗口/horizon
     - monotonicity_fail → fix_level="factor"，加二次过滤或改构造方式
     - config_error → fix_level="strategy_only"
-    - backtest_fail → 按差距分级：Sharpe≥70%阈值且ICIR达标→fix_level="strategy_only"；否则→fix_level="factor"
+    - backtest_fail → 按差距分级：Sharpe≥70%阈值且ICIR达标→fix_level="strategy_only"；否则→fix_level="factor"。另可参考相对基准超额指标（vs HS300/CSI500/CSI1000）判断因子是否因风格暴露而失败
     - ridge_fail → 查 max_existing_corr：>0.85且用户alpha→recommend_abandon=true；Barra L1→fix_level="factor"换构造方式
     - residual_fail → recommend_abandon=true（无增量信息）
     - execution_error → fix_level="retry"
@@ -235,7 +235,7 @@ Agent tool params:
     {
       "factor_id": "f_vol_rev_5d",
       "formula_pattern": "rank(ts_mean(amount, 5)) * (-1) * rank(ret_5d)",
-      "key_metrics": {"annual_icir": 1.55, "simple_sharpe": 0.95},
+      "key_metrics": {"annual_icir": 1.55, "simple_sharpe": 0.95, "excess_sharpe_hs300": 0.72, "excess_sharpe_csi500": 0.68, "excess_sharpe_csi1000": 0.55},
       "why_it_works": "零售投资者过度反应导致短期反转，放量确认参与度",
       "admission_date": "2026-05-15"
     }

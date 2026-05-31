@@ -640,6 +640,18 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
         "annual_return": "min_annual_return_simple",
         "max_drawdown": "max_max_drawdown",
         "calmar": "min_calmar_simple",
+        "excess_sharpe_hs300": "min_excess_sharpe_simple_hs300",
+        "excess_annual_return_hs300": "min_excess_annual_return_simple_hs300",
+        "excess_max_drawdown_hs300": "max_excess_max_drawdown_simple_hs300",
+        "excess_calmar_hs300": "min_excess_calmar_simple_hs300",
+        "excess_sharpe_csi500": "min_excess_sharpe_simple_csi500",
+        "excess_annual_return_csi500": "min_excess_annual_return_simple_csi500",
+        "excess_max_drawdown_csi500": "max_excess_max_drawdown_simple_csi500",
+        "excess_calmar_csi500": "min_excess_calmar_simple_csi500",
+        "excess_sharpe_csi1000": "min_excess_sharpe_simple_csi1000",
+        "excess_annual_return_csi1000": "min_excess_annual_return_simple_csi1000",
+        "excess_max_drawdown_csi1000": "max_excess_max_drawdown_simple_csi1000",
+        "excess_calmar_csi1000": "min_excess_calmar_simple_csi1000",
     })
 
 
@@ -667,6 +679,18 @@ def step7_detailed_backtest(state: PipelineState) -> PipelineState:
         "max_drawdown": "max_max_drawdown_detailed",
         "calmar": "min_calmar_detailed",
         "annual_turnover": "max_annual_turnover_detailed",
+        "excess_sharpe_hs300": "min_excess_sharpe_detailed_hs300",
+        "excess_annual_return_hs300": "min_excess_annual_return_detailed_hs300",
+        "excess_max_drawdown_hs300": "max_excess_max_drawdown_detailed_hs300",
+        "excess_calmar_hs300": "min_excess_calmar_detailed_hs300",
+        "excess_sharpe_csi500": "min_excess_sharpe_detailed_csi500",
+        "excess_annual_return_csi500": "min_excess_annual_return_detailed_csi500",
+        "excess_max_drawdown_csi500": "max_excess_max_drawdown_detailed_csi500",
+        "excess_calmar_csi500": "min_excess_calmar_detailed_csi500",
+        "excess_sharpe_csi1000": "min_excess_sharpe_detailed_csi1000",
+        "excess_annual_return_csi1000": "min_excess_annual_return_detailed_csi1000",
+        "excess_max_drawdown_csi1000": "max_excess_max_drawdown_detailed_csi1000",
+        "excess_calmar_csi1000": "min_excess_calmar_detailed_csi1000",
     })
 
 
@@ -728,12 +752,15 @@ def _backtest_gate(
     checks: dict[str, bool] = {}
     for metric_key, th_key in threshold_map.items():
         threshold = getattr(th, th_key)
+        # None means the threshold is disabled — skip it.
+        if threshold is None:
+            continue
         val = metrics.get(metric_key)
         # NaN means the engine doesn't compute this metric (e.g. SimpleSimulator
         # doesn't track turnover).  Skip the check rather than failing.
         if val is None or (isinstance(val, float) and math.isnan(val)):
             continue
-        if metric_key in ("max_drawdown",):
+        if "max_drawdown" in metric_key:
             checks[metric_key] = val > -threshold
         elif metric_key in ("annual_turnover",):
             checks[metric_key] = val < threshold
@@ -993,8 +1020,19 @@ def run_pipeline(
         frequency=frequency,
         **overrides,
     )
-    state = PipelineState(factor_id=factor_id, config=config)
-    state.save(config.state_path())
+
+    state_path = config.state_path()
+    if from_step == 1 or not state_path.exists():
+        state = PipelineState(factor_id=factor_id, config=config)
+    else:
+        state = PipelineState.load(state_path)
+        # Update config with any new overrides (e.g. changed start/end dates).
+        state.config = config
+        if from_step > 5:
+            # When resuming from step6+, step5 may have been skipped.
+            # Warn if strategy kwargs were provided but step5 won't be re-run.
+            pass  # warning already emitted above
+    state.save(state_path)
 
     # Run all steps linearly (one attempt each).  Strategy param tuning is
     # the caller's responsibility: re-run with from_step=5 + new kwargs when

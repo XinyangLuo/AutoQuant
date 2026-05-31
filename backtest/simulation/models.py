@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import dataclass, field
 from datetime import date as Date
 from pathlib import Path
@@ -147,7 +148,23 @@ class BacktestResult:
             start=dates.min(),
             end=dates.max(),
         )
-        return compute_all_metrics(arts, bench_nav=None)
+
+        # Load default benchmarks for excess metrics.
+        from backtest.evaluation.benchmark import _BENCHMARK_ALIASES, load_benchmark
+        bench_navs: dict[str, pd.Series] = {}
+        start_str = arts.start.strftime("%Y%m%d")
+        end_str = arts.end.strftime("%Y%m%d")
+        for alias, code in _BENCHMARK_ALIASES.items():
+            try:
+                bench_navs[alias] = load_benchmark(code, start=start_str, end=end_str)
+            except Exception as exc:  # noqa: BLE001
+                warnings.warn(
+                    f"Failed to load benchmark {code} ({alias}): {exc}. "
+                    f"Run `python -m backtest.data.backfill_indices --symbols {code}` to backfill.",
+                    stacklevel=2,
+                )
+
+        return compute_all_metrics(arts, bench_nav=bench_navs.get("hs300"), bench_navs=bench_navs)
 
 
 @dataclass

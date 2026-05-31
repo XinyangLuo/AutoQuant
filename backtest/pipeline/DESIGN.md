@@ -53,9 +53,24 @@ thresholds:
       min_sharpe: 0.4
       min_annual_return: 0.08
       min_calmar: 0.5
+      max_max_drawdown: 0.5
+      max_annual_turnover: 50.0
+      # 相对阈值 — 设为 null 或省略表示不检查
+      min_excess_sharpe_hs300: null
+      min_excess_annual_return_hs300: null
+      max_excess_max_drawdown_hs300: null
+      min_excess_calmar_hs300: null
+      min_excess_sharpe_csi500: null
+      min_excess_annual_return_csi500: null
+      max_excess_max_drawdown_csi500: null
+      min_excess_calmar_csi500: null
+      min_excess_sharpe_csi1000: null
+      min_excess_annual_return_csi1000: null
+      max_excess_max_drawdown_csi1000: null
+      min_excess_calmar_csi1000: null
 ```
 
-修改阈值直接编辑此文件，所有因子共用。
+修改阈值直接编辑此文件，所有因子共用。**所有阈值均支持设为 `null` 以禁用该门控**。绝对阈值与相对阈值可共同生效，也可只生效其一。
 
 ### Per-factor config.yaml（回测参数）
 
@@ -189,8 +204,8 @@ python -m backtest.pipeline step5 f_001 \
 | step3 | ICIR | 离线 ICIR 门控 | 日频：|IC|≤0.01 或 ICIR≤1.0 或 t≤2.0 或 pos_ratio≤55%（任一 horizon 通过即可）；月频阈值见 config.yaml |
 | step4 | Monotonicity | 10 组单调性 | Spearman corr(group, mean_ret) ≤ 0.7 |
 | step5 | Strategy Config | 构建默认策略配置 | 无淘汰（总是通过） |
-| step6 | Simple Backtest | 向量化回测（无成本） | Sharpe≤0.8 或 ann_ret≤10% 或 max_dd≤-40% 或 Calmar≤0.5。不检查换手率（SimpleSimulator 不计算） |
-| step7 | Detailed Backtest | 事件驱动回测（含成本） | Sharpe≤0.4 或 ann_ret≤8% 或 max_dd≤-40% 或 Calmar≤0.5 或 turnover≥50x |
+| step6 | Simple Backtest | 向量化回测（无成本） | Sharpe≤0.8 或 ann_ret≤10% 或 max_dd≤-40% 或 Calmar≤0.5。可选检查相对 HS300/CSI500/CSI1000 的超额指标（当 config 中配置了相对阈值时生效）。不检查换手率（SimpleSimulator 不计算） |
+| step7 | Detailed Backtest | 事件驱动回测（含成本） | Sharpe≤0.4 或 ann_ret≤8% 或 max_dd≤-40% 或 Calmar≤0.5 或 turnover≥50x。可选检查相对 HS300/CSI500/CSI1000 的超额指标（当 config 中配置了相对阈值时生效） |
 | step8 | Ridge R² | 逐日截面 Ridge 回归（全部已入库因子），输出 R² 均值/中位数/P90/P95/P99 分布 | **不再淘汰**——标记 `needs_residual` 后委托 step9 判定 |
 | step9 | Residual ICIR | 复用 step8 残差 → RankIC → 决定入库模式 | 残差 ICIR 不通过 → 拒绝；通过 + needs_residual → **残差入库**；通过 + 非 needs_residual → 原值入库 |
 | step10 | Report | 生成诊断报告，标记 ready_for_review | 无淘汰（总是通过）。需人工 `admit` |
@@ -252,7 +267,7 @@ python -m agents.claude_cli run f_001 --run-dir ... --from-step 5 --decay 10 --t
 - **决策横幅**：拒绝 step 和原因
 - **Step 汇总表**：每步 pass/fail + 关键指标 + 拒绝原因
 - **因子评估**：IC decay 图 + 分位组收益图
-- **回测结果**：NAV + Drawdown 曲线（从 `nav.parquet` 加载实际数据）
+- **回测结果**：NAV + Drawdown 曲线（从 `nav.parquet` 加载实际数据），以及包含绝对 + 相对 HS300/CSI500/CSI1000 的超额指标表格
 - **Ridge R² 分类**：R² 值和 tier 分档
 
 ## 与现有模块的关系

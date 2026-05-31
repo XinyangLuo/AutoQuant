@@ -214,6 +214,12 @@ def _summarise_metrics(metrics: dict, step_key: str) -> str:
         "step10": [],
     }
     keys = step_priorities.get(step_key, list(metrics.keys())[:2])
+    # Prioritise the first available excess_sharpe_* key (e.g. hs300, csi500, csi1000)
+    # so the summary shows the relative metric when present.
+    if step_key in ("step6", "step7"):
+        excess_keys = [k for k in metrics if k.startswith("excess_sharpe_")]
+        if excess_keys:
+            keys = [keys[0], excess_keys[0]] + keys[1:]
     parts = []
     for key in keys:
         if key in metrics:
@@ -638,20 +644,58 @@ def _plot_group_returns(group_rets: dict, plots_dir: Path) -> Path | None:
 
 
 def _bt_metrics_table(metrics: dict) -> list[str]:
-    rows = [
-        ("年化收益", "annual_return", "pct"),
-        ("Sharpe", "sharpe", "f3"),
-        ("最大回撤", "max_drawdown", "pct"),
-        ("Calmar", "calmar", "f3"),
+    lines: list[str] = []
+
+    # Main table: absolute + relative excess metrics
+    core_rows = [
+        ("年化收益", "annual_return", "excess_annual_return", "pct"),
+        ("Sharpe", "sharpe", "excess_sharpe", "f3"),
+        ("最大回撤", "max_drawdown", "excess_max_drawdown", "pct"),
+        ("Calmar", "calmar", "excess_calmar", "f3"),
+    ]
+    aliases = [("hs300", "沪深300"), ("csi500", "中证500"), ("csi1000", "中证1000")]
+    header = "| 指标 | 绝对 | " + " | ".join(f"相对{label}" for _, label in aliases) + " |"
+    sep = "|------|------|" + "|".join("------" for _ in aliases) + "|"
+    lines.extend([header, sep])
+
+    for label, abs_key, rel_prefix, kind in core_rows:
+        cells = [label]
+        # absolute
+        val = metrics.get(abs_key)
+        cells.append(
+            _fmt(val, kind)
+            if val is not None and not (isinstance(val, float) and np.isnan(val))
+            else "n/a"
+        )
+        # relative
+        if rel_prefix:
+            for alias, _ in aliases:
+                key = f"{rel_prefix}_{alias}"
+                val = metrics.get(key)
+                cells.append(
+                    _fmt(val, kind)
+                    if val is not None and not (isinstance(val, float) and np.isnan(val))
+                    else "n/a"
+                )
+        else:
+            cells.extend(["—"] * len(aliases))
+        lines.append("| " + " | ".join(cells) + " |")
+
+    lines.append("")
+
+    # Supplementary table: metrics without relative versions
+    extra_rows = [
         ("年化换手率", "annual_turnover", "f2"),
         ("日胜率", "daily_win_rate", "pct"),
         ("总交易笔数", "total_trades", "int"),
     ]
-    lines = ["| 指标 | 数值 |", "|------|------|"]
-    for label, key, kind in rows:
+    lines.append("| 指标 | 数值 |")
+    lines.append("|------|------|")
+    for label, key, kind in extra_rows:
         val = metrics.get(key)
         if val is not None and not (isinstance(val, float) and np.isnan(val)):
             lines.append(f"| {label} | {_fmt(val, kind)} |")
+
     return lines
 
 

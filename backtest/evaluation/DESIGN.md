@@ -89,7 +89,8 @@ from backtest.evaluation import (
 
 report = evaluate(
     result_dir="results/<factor_id>/<variant>/<tag>/detailed",
-    benchmark=None,           # 可选，e.g. "000300.SH"
+    benchmark=None,           # 可选，主基准 e.g. "000300.SH"
+    benchmarks=None,          # 可选，额外基准列表 e.g. ["000905.SH", "000852.SH"]
     plot=True,                # 默认 True
     output_dir=None,         # 默认与 result_dir 同
     rf=0.0,                  # 年化无风险利率
@@ -139,6 +140,27 @@ print(render_table(report))
 | `calmar` | `annual_return / abs(max_drawdown)` |
 | `information_ratio` | `excess.mean() / excess.std(ddof=1) * sqrt(252)`，仅在有 benchmark 时计算 |
 
+### 多基准超额指标（`compute_excess_metrics_for_benchmarks`）
+
+对 HS300、CSI500、CSI1000 三个基准自动计算超额指标，返回扁平字典：
+
+```python
+from backtest.evaluation.benchmark import compute_excess_metrics_for_benchmarks
+
+out = compute_excess_metrics_for_benchmarks(strat_nav_df)
+# out keys:
+#   excess_sharpe_hs300, excess_annual_return_hs300,
+#   excess_max_drawdown_hs300, excess_calmar_hs300,
+#   excess_sharpe_csi500, ... (同理 csi1000)
+```
+
+默认基准映射（`_BENCHMARK_ALIASES`）：
+- `hs300` → `000300.SH`
+- `csi500` → `000905.SH`
+- `csi1000` → `000852.SH`
+
+这些指标由 `compute_all_metrics()` 在 `bench_navs` 参数传入时自动合并到输出字典中，key 格式为 `{metric}_{alias}`。
+
 ### 胜率（`compute_winrate_metrics`）
 
 | 指标 | 公式 |
@@ -176,7 +198,8 @@ print(render_table(report))
 
 ### 顶层合并
 
-`compute_all_metrics(artifacts, bench_nav=None, rf=0.0) -> dict`：合并以上六组指标到一个扁平 dict。
+`compute_all_metrics(artifacts, bench_nav=None, bench_navs=None, rf=0.0) -> dict`：合并以上六组指标到一个扁平 dict。
+当传入 `bench_navs: dict[str, pd.Series]` 时，自动为每个基准计算超额指标并合并（key 格式如 `excess_sharpe_hs300`）。
 DataFrame 形态的附属产出（monthly_returns / yearly_returns / drawdown / rolling_sharpe / excess_curve / reason_histogram）由 `evaluate()` 独立存到 `EvaluationReport`。
 
 ## 绘图
@@ -288,6 +311,7 @@ def summary(self) -> dict:
         return {}
     from backtest.evaluation.loader import BacktestArtifacts
     from backtest.evaluation.metrics import compute_all_metrics
+    from backtest.evaluation.benchmark import _BENCHMARK_ALIASES, load_benchmark
     from pathlib import Path
     arts = BacktestArtifacts(
         result_dir=Path("."),
@@ -300,7 +324,16 @@ def summary(self) -> dict:
         start=pd.to_datetime(self.nav_df["date"]).min(),
         end=pd.to_datetime(self.nav_df["date"]).max(),
     )
-    return compute_all_metrics(arts, bench_nav=None)
+    # Load default benchmarks for excess metrics.
+    bench_navs: dict[str, pd.Series] = {}
+    start_str = arts.start.strftime("%Y%m%d")
+    end_str = arts.end.strftime("%Y%m%d")
+    for alias, code in _BENCHMARK_ALIASES.items():
+        try:
+            bench_navs[alias] = load_benchmark(code, start=start_str, end=end_str)
+        except Exception:
+            pass
+    return compute_all_metrics(arts, bench_nav=bench_navs.get("hs300"), bench_navs=bench_navs)
 ```
 
 **已知行为变化**：`annual_return` 不再是 `(1+r.mean())**252-1`（算术），改为 `(nav_end/nav_start)**(252/n)-1`（几何）。在 ~1 年回测中两者数量级差距明显，是修 bug。其他指标向后兼容。

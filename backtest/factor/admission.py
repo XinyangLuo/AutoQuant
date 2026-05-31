@@ -708,42 +708,70 @@ def _discover_strategy_config(
     results_root: str | Path = "results",
     tag: str | None = None,
 ) -> dict | None:
-    """Read ``results/<factor_id>/<tag>/pipeline.json`` strategy_config block.
+    """Read strategy config from pipeline artifacts.
 
-    Returns ``None`` if the factor's results directory or pipeline.json is
-    missing (skipping the strategy_config record is fine). Raises
-    ``ValueError`` if multiple tag subdirectories exist and ``tag`` is
-    unspecified.
+    Tries in order:
+    1. ``results/<factor_id>/<tag>/pipeline.json`` (legacy / agent candidates)
+    2. ``results/<factor_id>/<tag>/strategy_config.json`` (new pipeline)
+    3. ``results/<factor_id>/strategy_config.json`` (fallback, factor-level)
+
+    Returns ``None`` if nothing is found. Raises ``ValueError`` if multiple
+    tag subdirectories exist and ``tag`` is unspecified.
     """
     factor_dir = _resolve_results_dir(factor_id, results_root=results_root)
     if factor_dir is None:
         return None
 
-    if tag is not None:
-        target = factor_dir / tag / "pipeline.json"
-        if not target.exists():
-            available = sorted(
-                p.name for p in factor_dir.iterdir()
-                if p.is_dir() and p.name != "factor_eval"
-            )
-            raise FileNotFoundError(
-                f"pipeline.json not found at {target}. Available tags: {available}"
-            )
-        return _load_pipeline_strategy_config(target)
+    def _load_json(path: Path) -> dict | None:
+        if not path.exists():
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Legacy pipeline.json has top-level "strategy_config" block.
+        cfg = payload.get("strategy_config") if isinstance(payload, dict) else None
+        if isinstance(cfg, dict):
+            return cfg
+        # New strategy_config.json is the config itself.
+        return payload if isinstance(payload, dict) else None
 
-    candidates = sorted(
+    if tag is not None:
+        tag_dir = factor_dir / tag
+        for name in ("pipeline.json", "strategy_config.json"):
+            cfg = _load_json(tag_dir / name)
+            if cfg is not None:
+                return cfg
+        available = sorted(
+            p.name for p in factor_dir.iterdir()
+            if p.is_dir() and p.name != "factor_eval"
+        )
+        raise FileNotFoundError(
+            f"No strategy config found at {tag_dir}. Available tags: {available}"
+        )
+
+    # Auto-discover: collect tag subdirs that have a strategy config file.
+    tag_candidates = sorted(
         p for p in factor_dir.iterdir()
-        if p.is_dir() and p.name != "factor_eval" and (p / "pipeline.json").exists()
+        if p.is_dir()
+        and p.name != "factor_eval"
+        and any((p / name).exists() for name in ("pipeline.json", "strategy_config.json"))
     )
-    if not candidates:
-        return None
-    if len(candidates) > 1:
-        names = [p.name for p in candidates]
+    if len(tag_candidates) > 1:
+        names = [p.name for p in tag_candidates]
         raise ValueError(
-            f"Found multiple pipeline.json under {factor_dir}: {names}. "
+            f"Found multiple pipeline.json / strategy_config.json under {factor_dir}: {names}. "
             f"Pass --tag <tag> to pick one (or --no-strategy-config to skip)."
         )
-    return _load_pipeline_strategy_config(candidates[0] / "pipeline.json")
+    if len(tag_candidates) == 1:
+        for name in ("pipeline.json", "strategy_config.json"):
+            cfg = _load_json(tag_candidates[0] / name)
+            if cfg is not None:
+                return cfg
+
+    # Factor-level fallback (new pipeline writes strategy_config.json here).
+    cfg = _load_json(factor_dir / "strategy_config.json")
+    if cfg is not None:
+        return cfg
+
+    return None
 
 
 def _load_pipeline_strategy_config(path: Path) -> dict | None:
