@@ -394,22 +394,6 @@ class TestStep5BuildStrategy:
         assert result.strategy_config.decay == 5
         assert result.strategy_config.rebalance_freq == "1D"
 
-    def test_retry_params_override(self):
-        cfg = PipelineConfig(
-            factor_id="f_001",
-            start_date="20200101",
-            end_date="20241231",
-        )
-        state = PipelineState(
-            factor_id="f_001",
-            config=cfg,
-            retry_params={"top_k": 30, "decay": 10},
-        )
-        result = step5_build_strategy(state)
-
-        assert result.strategy_config.selection.top_k == 30
-        assert result.strategy_config.decay == 10
-
     def test_cli_kwargs_override(self):
         cfg = PipelineConfig(
             factor_id="f_001",

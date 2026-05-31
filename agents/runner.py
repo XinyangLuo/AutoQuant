@@ -93,13 +93,27 @@ class AutoQuantFactorRunner:
     def run(
         self,
         experiment: AutoQuantFactorExperiment,
+        from_step: int = 1,
+        top_k: int | None = None,
+        top_pct: float | None = None,
+        decay: int | None = None,
+        universe: str | None = None,
+        rebalance: str | None = None,
     ) -> AutoQuantFactorExperiment:
         experiment.status = "running"
 
         try:
-            # Phase A: register + backfill (agent-owned, not in pipeline steps)
-            self._register_factor(experiment)
-            self._backfill_factor(experiment)
+            # Phase A: register + backfill (agent-owned, not in pipeline steps).
+            # Skip when re-running from a later step (e.g. strategy-only param changes).
+            if from_step == 1:
+                self._register_factor(experiment)
+                self._backfill_factor(experiment)
+            elif not self._factor_data_exists(experiment.factor_id):
+                raise RuntimeError(
+                    f"Factor {experiment.factor_id} has no data in the work DB. "
+                    f"Cannot resume from step {from_step} — run with --from-step 1 first "
+                    f"to register and backfill the factor."
+                )
 
             # Phase B: canonical step1~step10 (shared with manual CLI)
             ret_type = get_section_or("open", "pipeline", "ret_type")
@@ -111,6 +125,12 @@ class AutoQuantFactorRunner:
                 results_root=str(self.results_root),
                 ret_type=ret_type,
                 benchmark=self.benchmark,
+                from_step=from_step,
+                top_k=top_k,
+                top_pct=top_pct,
+                decay=decay,
+                universe=universe,
+                rebalance=rebalance,
                 skip_mark_rejected=True,
             )
 
@@ -233,3 +253,20 @@ class AutoQuantFactorRunner:
                 "Check that the factor function returns non-NaN values."
             )
         self.factor_storage.insert_factors(df)
+
+    def _factor_data_exists(self, factor_id: str) -> bool:
+        """Check whether factor values exist in the work DB."""
+        try:
+            import duckdb
+
+            con = duckdb.connect(str(self.factor_storage.db_path), read_only=True)
+            try:
+                cols = con.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='factors_daily'"
+                ).fetchall()
+                return factor_id in {c[0] for c in cols}
+            finally:
+                con.close()
+        except Exception:
+            return False

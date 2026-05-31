@@ -21,6 +21,7 @@
 - 每轮开始前必须读取 `trace.jsonl`（如果存在），避免重复错误和重复参数。
 - 代码错误和 schema 错误必须同方向修复，不得直接换新因子假设。
 - 失败诊断：**启动 Result Critic subagent（Agent tool）**，由其读取 result.json + trace.jsonl + KB，输出结构化诊断 JSON。父进程根据 RC 输出决定 repair / abandon / 换方向。
+- **绝对不能更改阈值（thresholds）来让因子 admit**。阈值是项目级的质量标准，降低阈值等同于自欺欺人。如果因子达不到阈值，只能改进因子或策略参数，不能改阈值。
 
 ## Knowledge Base
 

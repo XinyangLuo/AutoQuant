@@ -164,7 +164,15 @@ def cmd_run(args: argparse.Namespace) -> int:
             generated_dir=generated_dir,
         ) as runner:
             try:
-                experiment = runner.run(experiment)
+                experiment = runner.run(
+                    experiment,
+                    from_step=args.from_step,
+                    top_k=args.top_k,
+                    top_pct=args.top_pct,
+                    decay=args.decay,
+                    universe=args.universe,
+                    rebalance=args.rebalance,
+                )
                 feedback = evaluator.evaluate(experiment)
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
@@ -329,6 +337,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-work-db", action="store_true",
         help="Keep failed factor values in the pending factor DB for inspection",
     )
+    run.add_argument(
+        "--from-step", type=int, default=1, choices=range(1, 6),
+        help="Start pipeline from this step (1-5). Use >1 to skip register+backfill.",
+    )
+    run.add_argument("--top-k", type=int, help="Override top_k for step5 strategy")
+    run.add_argument("--top-pct", type=float, help="Override top_pct for step5 strategy")
+    run.add_argument("--decay", type=int, help="Override decay for step5 strategy")
+    run.add_argument("--universe", type=str, help="Override universe for step5 strategy")
+    run.add_argument("--rebalance", type=str, help="Override rebalance for step5 strategy")
     run.set_defaults(func=cmd_run)
 
     return parser

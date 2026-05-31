@@ -56,8 +56,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run = sub.add_parser("run-all", help="Run all steps sequentially")
     p_run.add_argument("factor_id")
     p_run.add_argument("--frequency", choices=["D", "M"], default="D")
-    p_run.add_argument("--from-step", type=int, default=1, choices=range(1, 11))
+    p_run.add_argument("--from-step", type=int, default=1, choices=range(1, 6))
     p_run.add_argument("--results-root", default="results")
+    p_run.add_argument("--top-k", type=int)
+    p_run.add_argument("--top-pct", type=float)
+    p_run.add_argument("--decay", type=int)
+    p_run.add_argument("--universe")
+    p_run.add_argument("--rebalance")
 
     return parser
 
@@ -154,6 +159,11 @@ def cmd_run_all(args) -> int:
         frequency=args.frequency,
         results_root=args.results_root,
         from_step=args.from_step,
+        top_k=args.top_k,
+        top_pct=args.top_pct,
+        decay=args.decay,
+        universe=args.universe,
+        rebalance=args.rebalance,
     )
 
     for step_name in [s for s in STEP_ORDER if s in state.step_results]:

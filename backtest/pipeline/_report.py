@@ -114,7 +114,6 @@ def generate_pipeline_report(state: PipelineState) -> Path:
         f"- **成交类型**：{config.ret_type}（{'开盘' if config.ret_type == 'open' else '收盘'}价成交）",
         f"- **频率**：{config.frequency}",
         f"- **状态**：{state.status}",
-        f"- **重试次数**：{state.retry_count}",
         "",
     ]
 

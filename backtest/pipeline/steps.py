@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -503,21 +504,19 @@ def step5_build_strategy(
 
     Params are taken from (in order of priority):
     1. CLI kwargs passed to this function
-    2. state.retry_params from a previous failed attempt
-    3. PipelineConfig defaults
+    2. PipelineConfig defaults
 
     ``top_k`` and ``top_pct`` are mutually exclusive — exactly one must be
     specified.  ``top_k`` takes priority if both are provided.
     """
     config = state.config
 
-    # Resolve params with priority: CLI > retry_params > defaults
-    rp = state.retry_params
-    _top_k = top_k if top_k is not None else rp.get("top_k", config.default_top_k)
-    _top_pct = top_pct if top_pct is not None else rp.get("top_pct", config.default_top_pct)
-    _decay = decay if decay is not None else rp.get("decay", config.default_decay)
-    _rebalance = rebalance if rebalance is not None else rp.get("rebalance", config.default_rebalance)
-    _universe = universe if universe is not None else rp.get("universe", config.default_universe)
+    # Resolve params with priority: CLI > config defaults
+    _top_k = top_k if top_k is not None else config.default_top_k
+    _top_pct = top_pct if top_pct is not None else config.default_top_pct
+    _decay = decay if decay is not None else config.default_decay
+    _rebalance = rebalance if rebalance is not None else config.default_rebalance
+    _universe = universe if universe is not None else config.default_universe
 
     # Determine selection: top_k takes priority if specified
     if _top_k is not None:
@@ -528,7 +527,7 @@ def step5_build_strategy(
         raise ValueError(
             "Neither top_k nor top_pct is specified. "
             "Set exactly one of default_top_k or default_top_pct in config.yaml, "
-            "or pass it via CLI / retry_params."
+            "or pass it via CLI."
         )
 
     strategy_config = StrategyConfig(
@@ -754,17 +753,10 @@ def _backtest_gate(
 
 
 def _build_tag(state: PipelineState) -> str:
-    """Mirror run_factor_pipeline.py tag format."""
-    cfg = state.strategy_config
-    if cfg is None:
-        return "default"
-    sel = cfg.selection
-    if sel.top_pct is not None:
-        tag = f"top{int(round(sel.top_pct * 100))}pct"
-    else:
-        tag = f"top{sel.top_k}"
-    decay = cfg.decay or 0
-    return f"{tag}_{cfg.rebalance_freq.lower()}_d{decay}"
+    """Build strategy tag for artifact paths (delegates to shared implementation)."""
+    from backtest.pipeline._report import _build_tag as _bt
+
+    return _bt(state)
 
 
 
@@ -931,84 +923,6 @@ _STEP_ORDER = [
     ("step10", step10_report_and_admit),
 ]
 
-
-def _run_with_retry(
-    state: PipelineState,
-    config,
-    retry_steps: list[tuple[str, Any]],
-) -> PipelineState:
-    """Run step5→step6→step7 with progressive strategy relaxation on failure.
-
-    When step6 or step7 fails, automatically adjusts decay, top_k, and
-    rebalance frequency to see if a wider/slower strategy passes the gates.
-    This avoids expensive factor recomputation (step1~step4) when only the
-    portfolio construction is suboptimal.
-
-    Retry schedule (up to ``config.max_retries`` attempts):
-      1. Original params from config.yaml
-      2. Double decay (cap 30)
-      3. Triple decay + widen top_k to 200
-      4. Triple decay + top_k=300 + rebalance=5D
-    """
-    max_retries = config.max_retries
-
-    for retry_num in range(max_retries + 1):
-        state.retry_count = retry_num
-        # Reset rejection so the retry loop can proceed past step5.
-        # _reject() sets status="rejected", which gates all subsequent
-        # step functions via is_rejected().
-        state.status = "running"
-
-        # Detect whether user uses top_k or top_pct to widen correctly
-        uses_pct = (
-            config.default_top_pct is not None
-            and config.default_top_k is None
-        )
-
-        if retry_num == 0:
-            state.retry_params = {}
-        elif retry_num == 1:
-            orig_decay = config.default_decay
-            state.retry_params = {"decay": min(orig_decay * 2, 30)}
-        elif retry_num == 2:
-            orig_decay = config.default_decay
-            if uses_pct:
-                state.retry_params = {"decay": min(orig_decay * 3, 30), "top_pct": 0.15}
-            else:
-                state.retry_params = {"decay": min(orig_decay * 3, 30), "top_k": 200}
-        else:
-            if uses_pct:
-                state.retry_params = {
-                    "decay": min(config.default_decay * 4, 30),
-                    "top_pct": 0.20,
-                    "rebalance": "5D",
-                }
-            else:
-                state.retry_params = {
-                    "decay": min(config.default_decay * 3, 30),
-                    "top_k": 300,
-                    "rebalance": "5D",
-                }
-
-        # Run step5 (rebuild strategy with current retry_params)→step6→step7
-        for step_name, step_fn in retry_steps:
-            if state.is_rejected():
-                break
-            # For retry attempts, reset the backtest steps' pass/fail
-            if retry_num > 0 and step_name in ("step6", "step7"):
-                state.step_results.pop(step_name, None)
-            state = step_fn(state)
-            state.save(config.state_path())
-
-        # If step6 and step7 both passed, retry succeeded
-        sr6 = state.step_results.get("step6")
-        sr7 = state.step_results.get("step7")
-        if sr6 and sr6.passed and (sr7 is None or sr7.passed):
-            break
-
-    return state
-
-
 def run_pipeline(
     factor_id: str,
     *,
@@ -1020,6 +934,12 @@ def run_pipeline(
     benchmark: str | None = None,
     from_step: int = 1,
     skip_mark_rejected: bool = False,
+    # Strategy kwargs forwarded to step5_build_strategy
+    top_k: int | None = None,
+    top_pct: float | None = None,
+    decay: int | None = None,
+    universe: str | None = None,
+    rebalance: str | None = None,
 ) -> PipelineState:
     """Execute step1~step10 and generate report.
 
@@ -1035,7 +955,29 @@ def run_pipeline(
         If True, do not call ``mark_rejected()`` on failure.  The agent
         runner sets this to True because it manages rejection differently
         (cleanup_work_db + experiment error field).
+    top_k / top_pct / decay / universe / rebalance : optional
+        Strategy params forwarded to step5.  When provided, they take
+        priority over config.yaml defaults.  Useful for re-running from
+        step5 with adjusted params after a backtest_fail.
     """
+    # Validate from_step range.  Values >5 can only work when PipelineState
+    # is loaded from a prior run (per-step CLI), not with a fresh state.
+    if not 1 <= from_step <= 10:
+        raise ValueError(f"from_step must be 1-10, got {from_step}")
+    strategy_kwargs = {
+        k: v for k, v in (("top_k", top_k), ("top_pct", top_pct),
+                           ("decay", decay), ("universe", universe),
+                           ("rebalance", rebalance))
+        if v is not None
+    }
+    if strategy_kwargs and from_step > 5:
+        warnings.warn(
+            f"Strategy kwargs {list(strategy_kwargs.keys())} provided but "
+            f"from_step={from_step} > 5 — step5 will be skipped and these "
+            f"kwargs ignored. Use --from-step 5 to apply strategy overrides.",
+            stacklevel=2,
+        )
+
     overrides: dict[str, Any] = {"results_root": results_root}
     if start_date is not None:
         overrides["start_date"] = start_date
@@ -1054,39 +996,21 @@ def run_pipeline(
     state = PipelineState(factor_id=factor_id, config=config)
     state.save(config.state_path())
 
-    # Run step1~step4 first (factor evaluation — no retry needed)
-    pre_retry_steps = [(n, f) for n, f in _STEP_ORDER[from_step - 1:] if n in ("step1", "step2", "step3", "step4")]
-    retry_steps = [(n, f) for n, f in _STEP_ORDER if n in ("step5", "step6", "step7")]
-    post_retry_steps = [(n, f) for n, f in _STEP_ORDER if n in ("step8", "step9", "step10")]
-
-    for step_name, step_fn in pre_retry_steps:
+    # Run all steps linearly (one attempt each).  Strategy param tuning is
+    # the caller's responsibility: re-run with from_step=5 + new kwargs when
+    # step6 or step7 fails.
+    for step_name, step_fn in _STEP_ORDER:
+        step_idx = int(step_name[4:])
+        if step_idx < from_step:
+            continue
         if state.is_rejected():
             break
-        state = step_fn(state)
-        state.save(config.state_path())
-
-    # Retry loop: step5→step6→step7 with progressive strategy relaxation.
-    # Only applies when starting from step5 or earlier (step1-4 must be done).
-    if not state.is_rejected() and from_step <= 5:
-        state = _run_with_retry(state, config, retry_steps)
-        state.save(config.state_path())
-    elif not state.is_rejected() and from_step > 5:
-        # from_step >= 6: strategy already built, run step5→7 linearly.
-        # Filter by from_step to avoid re-running already-completed steps.
-        for step_name, step_fn in [(n, f) for n, f in _STEP_ORDER[from_step - 1:]
-                                   if n in ("step5", "step6", "step7")]:
-            if state.is_rejected():
-                break
+        if step_name == "step5":
+            state = step_fn(state, top_k=top_k, top_pct=top_pct,
+                            decay=decay, universe=universe, rebalance=rebalance)
+        else:
             state = step_fn(state)
-            state.save(config.state_path())
-
-    # Remaining steps (step8~step10)
-    if not state.is_rejected():
-        for step_name, step_fn in post_retry_steps:
-            if state.is_rejected():
-                break
-            state = step_fn(state)
-            state.save(config.state_path())
+        state.save(config.state_path())
 
     # Always generate a diagnostic report
     from backtest.pipeline._report import generate_pipeline_report

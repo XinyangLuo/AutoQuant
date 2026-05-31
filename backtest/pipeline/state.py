@@ -30,8 +30,6 @@ class PipelineState:
     status: Literal["running", "passed", "rejected", "admitted", "ready_for_review"] = "running"
     current_step: StepName | None = None
     step_results: dict[str, StepResult] = field(default_factory=dict)
-    retry_count: int = 0
-    retry_params: dict = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
 
     # Shared data populated during pipeline execution (not serialised)
@@ -72,6 +70,9 @@ class PipelineState:
         step_results = {
             k: StepResult(**v) for k, v in step_results_raw.items()
         }
+        # Discard legacy retry fields for backward compatibility
+        data.pop("retry_count", None)
+        data.pop("retry_params", None)
         return cls(
             config=config,
             step_results=step_results,
@@ -114,6 +115,10 @@ class PipelineState:
         self.current_step = step
         if not result.passed:
             self.status = "rejected"
+        elif self.status == "rejected":
+            # Reset rejection so re-running a previously-failed step
+            # doesn't permanently block downstream steps from proceeding.
+            self.status = "running"
 
 
 def _config_from_dict(data: dict) -> PipelineConfig:
@@ -160,4 +165,6 @@ def _config_from_dict(data: dict) -> PipelineConfig:
     except (KeyError, FileNotFoundError, ValueError):
         pass  # keep serialized thresholds
     thresholds = StepThresholds(**th_dict)
+    # Discard legacy retry field for backward compatibility
+    data.pop("max_retries", None)
     return PipelineConfig(**data, thresholds=thresholds)

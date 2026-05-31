@@ -29,7 +29,6 @@ _DEFAULT_PIPELINE = {
     "default_top_pct": None,
     "default_decay": 5,
     "default_rebalance": "1D",
-    "max_retries": 3,
     "ret_type": "open",
     "benchmark": "000300.SH",
 }
@@ -143,9 +142,6 @@ class PipelineConfig:
     default_rebalance: str = field(default_factory=lambda: _DEFAULT_PIPELINE["default_rebalance"])
     default_universe: str | None = None
 
-    # retry
-    max_retries: int = field(default_factory=lambda: _DEFAULT_PIPELINE["max_retries"])
-
     # thresholds (frequency-aware)
     thresholds: StepThresholds = field(default_factory=StepThresholds)
 
@@ -240,7 +236,6 @@ class PipelineConfig:
             default_decay=data.get("default_decay", 5),
             default_rebalance=data.get("default_rebalance", "1D"),
             default_universe=data.get("default_universe"),
-            max_retries=data.get("max_retries", 3),
             thresholds=thresholds,
             results_root=data.get("results_root", "results"),
             ret_type=data.get("ret_type", "open"),
@@ -300,7 +295,6 @@ class PipelineConfig:
             default_top_pct=pipe["default_top_pct"],
             default_decay=pipe["default_decay"],
             default_rebalance=pipe["default_rebalance"],
-            max_retries=pipe["max_retries"],
             thresholds=th,
             results_root=results_root_val,
             ret_type=str(overrides.pop("ret_type", pipe["ret_type"])),
