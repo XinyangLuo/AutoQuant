@@ -271,7 +271,7 @@ class AutoQuantFactorEvaluator:
         if decision:
             return (
                 "All pipeline steps passed. The factor is a candidate for admission. "
-                "Review the pipeline report in results/agent/candidates/ before admitting."
+                "Review the pipeline report in results/candidates/ before admitting."
             )
 
         if failed_step is None:

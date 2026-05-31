@@ -72,8 +72,8 @@ python -m backtest.pipeline step2 f_xxx
 # 查询数据 schema
 python -m agents.claude_cli schema --sources market_daily
 
-# 单轮执行（完整 step1~step10）
-python -m agents.claude_cli run f_auto_xxx --run-dir results/agent/runs/my_run/round_001
+# 单轮执行（完整 step1~step10；默认输出到 results/f_auto_xxx/）
+python -m agents.claude_cli run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py
 
 # === 手动流程（附录 A） ===
 
@@ -88,7 +88,7 @@ python -m backtest.pipeline run-all f_xxx
 
 # === 人工决策 ===
 
-# 通过流水线的因子在 results/agent/candidates/<fid>/，review 后手动 admit
+# 通过流水线的因子在 results/candidates/<fid>/，review 后手动 admit
 python -m backtest.factor.admission admit  f_xxx --notes "Sharpe 1.45"
 
 # 拒绝
@@ -592,7 +592,7 @@ result = sim.run(signals, market_data, dividends)
 step1~step9 全部通过后：
 
 1. 生成 `pipeline_report.md`（汇总所有阶段的关键指标、阈值对照、决策汇总）
-2. Agent 模式下写入 `results/agent/candidates/<factor_id>/`（含 factor.py、pipeline_state.json、result.json）
+2. Agent 模式下写入 `results/candidates/<factor_id>/`（含 factor.py、pipeline_state.json、result.json）
 3. **不自动 admit**——等待人工 review
 
 ### 10.2 人工决策
@@ -821,7 +821,7 @@ python -m agents.claude_cli run f_auto_xxx --run-dir <dir>
 - [x] Barra 风险模型（7 个 L1 因子）
 - [x] Ridge R² 风格分类 + 残差 ICIR 增量信息检查
 - [x] Agent 投研系统接入（`agents/runner.py` 复用 pipeline step 函数）
-- [x] Candidates 目录（`results/agent/candidates/`）
+- [x] Candidates 目录（`results/candidates/`）
 - [x] `sw_industry` 表落地 → 行业中性化、板块归因
 - [x] `index_members` 表落地 → 限定股票池
 - [ ] 多因子组合的样本外参数选择器

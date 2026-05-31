@@ -29,7 +29,7 @@ find agents/pdf_hypotheses -name "*.md" -type f | sort
 - **`--hypothesis <path>` 模式**：当用户提供 hypothesis.md 路径时，先 Read 该文件提取 `## Formula`、`## Construction Logic`、`## Parameters`、`## Suggested Config`。Formula 作为 FC 编码起点，Suggested Config 作为 `config.yaml` 初始值。FC 仍需校验列名和 transforms 是否存在。此模式下不需要用户再输入自然语言假设，`hypothesis.md` 中的 `## Hypothesis` 即为假设。
 - 所有 Python 命令前必须使用 `conda activate AutoQuant`。
 - 因子代码写入 `alphas/exp/agent/<factor_id>/factor.py`。
-- 运行产物写入 `results/agent/runs/<run_id>/`。
+- 运行产物写入 `results/<factor_id>/`（因子评估与回测）和 `results/agents/<run_id>/`（追踪文件）。
 - 每轮必须 append 一行 JSON 到 `trace.jsonl`。
 - 每轮开始前必须读取 `trace.jsonl`（如果存在），避免重复错误和重复参数。
 - 代码错误和 schema 错误必须同方向修复，不得直接换新因子假设。
@@ -57,25 +57,36 @@ KB 文件位于 `agents/knowledge_base/`，跨 run 积累知识：
 创建：
 
 ```text
-results/agent/runs/<YYYYMMDD_HHMMSS_slug>/
-  hypothesis.md
-  trace.jsonl
-  factor.py                  ← 当前因子代码（仅在 factor_change="formula" 时更新）
-  config.yaml                ← 当前策略配置
-  factor_eval/               ← step1-4 因子评估（同一因子共享，strategy_only 轮不重建）
-  variants/                  ← 策略变体结果（step5-6）
-    001_top100_1d_d5/
-      result.json
+results/
+  agents/                                   ← agent 追踪文件与代码
+    <run_id>/
+      hypothesis.md
+      trace.jsonl
+      factor.py                             ← 当前因子代码（仅在 factor_change="formula" 时更新）
+      config.yaml                           ← 当前策略配置
+  <factor_id>/                              ← 同一因子代码共享一个目录
+    factor_eval/                            ← step1-4 因子评估（同一因子共享，strategy_only 轮不重建）
+    decile_backtest/                        ← 十段分层/多空测试
+    <strategy>/                             ← 策略变体（step5-10）
+      plots/
+      simple/
+      detailed/
       pipeline_report.md
-    002_top200_1d_d5/        ← strategy_only 修复时新增变体目录
       result.json
+    <strategy2>/                            ← 不同参数的策略变体
+      ...
+  candidates/                               ← 已通过 pipeline 等待人工决策的因子
+    <factor_id>/
+      factor.py
       pipeline_report.md
+      pipeline_state.json
+      result.json
 ```
 
 **目录规则**：
-- `factor.py` 和 `factor_eval/` 仅在 `factor_change="formula"` 的轮次更新。`factor_change="params"` 或 `strategy_only` 的轮次**不重建**这些目录，只新增 `variants/` 下的策略变体。
-- `variants/` 按 `{NNN}_{top_k}_{rebalance}_d{decay}` 命名。每次 strategy_only 修复新增一个变体目录。
-- CLI 产出的 `f_<factor_id>/factor_eval/`、`f_<factor_id>/decile_backtest/` 等共享产物放在 `factor_eval/` 下（首次跑后移动过来），后续 strategy_only 轮不重复生成。
+- `factor.py` 和 `factor_eval/` / `decile_backtest/` 仅在 `factor_change="formula"` 的轮次更新。`factor_change="params"` 或 `strategy_only` 的轮次**不重建**这些目录，只新增策略变体目录。
+- 策略变体目录按 `{top_k}_{rebalance}_d{decay}` 命名（如 `top100_1d_d5`），由 pipeline 自动生成。
+- `results.json` 与 `pipeline_report.md` 放在同一策略变体目录下。
 
 ## Per-round Procedure
 
@@ -112,8 +123,8 @@ For each round:
 5. Write the factor code + config:
 
    **Round 1 或 factor_change="formula"**（因子代码变化）：
-   - 因子代码写入 `results/agent/runs/<run_id>/factor.py` **和** `alphas/exp/agent/<factor_id>/factor.py`
-   - 策略配置写入 `alphas/exp/agent/<factor_id>/config.yaml`，同时 copy 到 `results/agent/runs/<run_id>/config.yaml`
+   - 因子代码写入 `results/agents/<run_id>/factor.py` **和** `alphas/exp/agent/<factor_id>/factor.py`
+   - 策略配置写入 `alphas/exp/agent/<factor_id>/config.yaml`，同时 copy 到 `results/agents/<run_id>/config.yaml`
 
    **factor_change="params" 或 strategy_only**（因子代码不变）：
    - **只更新** `alphas/exp/agent/<factor_id>/config.yaml`（改 decay/rebalance/top_k）
@@ -153,22 +164,18 @@ For each round:
    **Round 1 或 factor_change="formula"**（全量 pipeline）：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --run-dir results/agent/runs/<run_id>/factor_eval \
-     --factor-file results/agent/runs/<run_id>/factor.py
+     --factor-file results/agents/<run_id>/factor.py
    ```
-   跑完后移动 `f_<factor_id>/factor_eval/`、`f_<factor_id>/decile_backtest/` 等共享产物到 `factor_eval/` 下。
+   Pipeline 自动将产物写入 `results/<factor_id>/factor_eval/`、`results/<factor_id>/decile_backtest/` 以及默认策略变体目录下。
 
    **strategy_only 或 factor_change="params"**（仅策略变化）：
    ```bash
-   VARIANT_DIR=results/agent/runs/<run_id>/variants/<NNN>_top<k>_<freq>_d<decay>
-   mkdir -p $VARIANT_DIR
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --run-dir $VARIANT_DIR \
-     --factor-file results/agent/runs/<run_id>/factor.py
+     --factor-file results/agents/<run_id>/factor.py
    ```
-   > factor_eval/ 结果不变，不重复生成。
+   > factor_eval/ / decile_backtest/ 结果不变，不重复生成。新的策略参数会产生一个新的策略变体目录（如 `top200_1d_d10`）。
 
-7. Read result.json（位于 `--run-dir` 下）。
+7. Read `result.json`（位于 `results/<factor_id>/<strategy>/result.json`）。
    - `result.json.report_path` 指向 pipeline 诊断报告。
    
 8. **If `result.json.status == "pass"`**：
@@ -195,8 +202,8 @@ For each round:
        - 本轮参数: {tried_params}
 
        ## 输入文件（必须全部 Read）
-       1. Read {run_dir}/result.json（strategy_only 时在 variants/<NNN>_.../ 下；formula 变化时在 factor_eval/ 下）— 本轮完整结果
-       2. Read {run_dir}/trace.jsonl              — 本 run 完整历史
+       1. Read results/<factor_id>/<strategy>/result.json — 本轮完整结果
+       2. Read results/agents/<run_id>/trace.jsonl        — 本 run 完整历史
        3. Read agents/knowledge_base/anti_patterns.json
        4. Read agents/knowledge_base/successful_patterns.json
 
@@ -379,7 +386,7 @@ When loop ends with pass:
    ```
    `code_summary` 来自 trace 最后一轮，**必须记录**——即使 pass 了，保留公式便于后续发现近似重复时快速识别。
 
-3. 因子已由 CLI 自动写入 `results/agent/candidates/<factor_id>/`（含 `factor.py`、`pipeline_state.json`、`result.json`、`pipeline_report.md`）。
+3. 因子已由 CLI 自动写入 `results/candidates/<factor_id>/`（含 `factor.py`、`pipeline_state.json`、`result.json`、`pipeline_report.md`）。
 
 4. 总结输出：factor id、路径、核心公式、关键指标、**pipeline 报告路径**、candidates 目录。提示用户 Read 报告做最终决策。
 

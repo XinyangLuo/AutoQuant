@@ -193,7 +193,7 @@ def _restore_factor_from_admitted(
     return dst_file
 
 
-_AGENT_CANDIDATES_ROOT = "results/agent/candidates"
+_AGENT_CANDIDATES_ROOT = "results/candidates"
 
 
 def _resolve_results_dir(
@@ -204,14 +204,14 @@ def _resolve_results_dir(
     """Resolve the results directory for a factor, with agent-candidate fallback.
 
     Agent-generated factors have their pipeline artifacts under
-    ``results/agent/candidates/<factor_id>/`` instead of the usual
+    ``results/candidates/<factor_id>/`` instead of the usual
     ``results/<factor_id>/``.  This helper returns the first existing path.
     """
     primary = Path(results_root) / factor_id
     if primary.exists():
         return primary
     # Fallback for agent-generated candidates
-    fallback = Path(results_root) / "agent" / "candidates" / factor_id
+    fallback = Path(results_root) / "candidates" / factor_id
     if fallback.exists():
         return fallback
     return None

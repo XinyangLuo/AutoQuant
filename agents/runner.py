@@ -37,7 +37,7 @@ class AutoQuantFactorRunner:
         start_date: str,
         end_date: str,
         *,
-        results_root: Path | str = "results/agent",
+        results_root: Path | str = "results",
         generated_dir: Path | str | None = None,
         market_storage: MarketStorage | None = None,
         factor_storage: FactorStorage | None = None,

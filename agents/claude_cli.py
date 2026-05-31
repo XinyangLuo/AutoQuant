@@ -129,17 +129,29 @@ def cmd_schema(args: argparse.Namespace) -> int:
 
 def cmd_run(args: argparse.Namespace) -> int:
     factor_id = args.factor_id
-    run_dir = Path(args.run_dir)
+    run_dir = Path(args.run_dir) if args.run_dir else None
     generated_dir = Path(args.generated_dir)
-    result_path = Path(args.result_path) if args.result_path else run_dir / "result.json"
     cfg = AgentConfig()
+
+    # Determine output layout.
+    # Legacy mode: explicit --run-dir (kept for compatibility).
+    # New mode: auto-layout under results/<factor_id>/.
+    if run_dir:
+        result_path = Path(args.result_path) if args.result_path else run_dir / "result.json"
+        sanitized_code_path = run_dir / "factor_sanitized.py"
+        results_root = run_dir
+    else:
+        factor_results_dir = Path("results") / factor_id
+        factor_results_dir.mkdir(parents=True, exist_ok=True)
+        result_path = Path(args.result_path) if args.result_path else factor_results_dir / "result.json"
+        sanitized_code_path = Path("results/agents") / factor_id / "factor_sanitized.py"
+        results_root = Path("results")
 
     experiment = AutoQuantFactorExperiment(factor_id=factor_id)
     feedback: QuantFeedback | None = None
     error: str | None = None
     tb: str | None = None
     factor_file_path: Path | None = None
-    sanitized_code_path: Path | None = None
 
     try:
         code, factor_file_path = _read_factor_code(
@@ -150,7 +162,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         validate_python_code(code)
         validate_transforms_imports(code)
         code = force_register_factor_id(code, factor_id)
-        sanitized_code_path = run_dir / "factor_sanitized.py"
         sanitized_code_path.parent.mkdir(parents=True, exist_ok=True)
         sanitized_code_path.write_text(code, encoding="utf-8")
 
@@ -160,7 +171,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         with AutoQuantFactorRunner(
             start_date=cfg.start_date,
             end_date=cfg.end_date,
-            results_root=run_dir,
+            results_root=results_root,
             generated_dir=generated_dir,
         ) as runner:
             try:
@@ -198,6 +209,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     else:
         status = "fail"
 
+    # When running in auto-layout mode, place result.json next to the
+    # pipeline report so that all artifacts for a given strategy variant
+    # live in the same directory.
+    if not args.result_path and not run_dir and experiment.report_path:
+        tag_dir = Path(experiment.report_path).parent
+        tag_dir.mkdir(parents=True, exist_ok=True)
+        result_path = tag_dir / "result.json"
+
     result = {
         "factor_id": factor_id,
         "status": status,
@@ -207,7 +226,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "factor_file": str(factor_file_path) if factor_file_path else None,
         "sanitized_factor_file": str(sanitized_code_path) if sanitized_code_path else None,
         "result_path": str(result_path),
-        "run_dir": str(run_dir),
+        "run_dir": str(run_dir) if run_dir else str(result_path.parent),
         "thresholds": _read_pipeline_thresholds(),
         "metrics": feedback.metrics if feedback else {},
         "feedback": feedback.to_dict() if feedback else None,
@@ -217,8 +236,10 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     _write_json(result_path, result)
 
-    # Copy pipeline report to round directory for visibility (pass or fail)
-    _copy_report_to_round(experiment.report_path, run_dir)
+    # In legacy mode, copy the pipeline report into the run directory for
+    # visibility. In auto-layout mode the report is already at the right place.
+    if run_dir:
+        _copy_report_to_round(experiment.report_path, run_dir)
 
     if status == "pass":
         # Find report for candidates/
@@ -265,8 +286,8 @@ def _write_candidate(
     report_path: Path | None = None,
     plots_path: Path | None = None,
 ) -> None:
-    """Write passing factor to ``results/agent/candidates/<factor_id>/`` for human review."""
-    candidates_root = Path("results/agent/candidates")
+    """Write passing factor to ``results/candidates/<factor_id>/`` for human review."""
+    candidates_root = Path("results/candidates")
     candidate_dir = candidates_root / factor_id
     candidate_dir.mkdir(parents=True, exist_ok=True)
 
@@ -326,7 +347,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Run one generated factor through the AutoQuant pipeline")
     run.add_argument("factor_id", help="Factor id to run, e.g. f_auto_run001_001")
-    run.add_argument("--run-dir", required=True, help="Round output directory")
+    run.add_argument("--run-dir", help="Optional explicit round output directory (legacy). When omitted, artifacts are written to results/<factor_id>/ automatically.")
     run.add_argument("--factor-file", help="Path to the factor code file to execute")
     run.add_argument(
         "--generated-dir", default="alphas/exp/agent",

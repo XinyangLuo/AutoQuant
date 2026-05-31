@@ -58,10 +58,9 @@ conda activate AutoQuant
 python -m agents.claude_cli schema --sources market_daily
 python -m agents.claude_cli schema --sources market_daily,income_q
 
-# 单轮执行（传入因子 ID 和因子文件）
+# 单轮执行（传入因子 ID 和因子文件；--run-dir 可选，默认输出到 results/<factor_id>/）
 python -m agents.claude_cli run f_auto_001 \
-    --run-dir results/agent/runs/my_run/round_001 \
-    --factor-file results/agent/runs/my_run/round_001/factor.py
+    --factor-file results/agents/my_run/factor.py
 
 # 帮助
 python -m agents.claude_cli --help
@@ -120,7 +119,7 @@ agents/
 - `schema --sources`：输出指定数据源在 `panel` 中的可用列名（JSON）
 - `run <factor_id> --run-dir --factor-file`：运行完整 step1~step10 流水线，输出 `result.json`（含自动计算的 HS300/CSI500/CSI1000 超额指标）
 
-通过的因子自动写入 `results/agent/candidates/<factor_id>/`，等待人工 review 后 admit。
+通过的因子自动写入 `results/candidates/<factor_id>/`，等待人工 review 后 admit。
 
 ### `runner.py` — 流水线执行器
 
