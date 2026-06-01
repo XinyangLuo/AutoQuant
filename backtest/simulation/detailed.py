@@ -362,16 +362,20 @@ class DetailedSimulator:
             return metrics
 
         # 交易统计 —— 单次遍历
+        # Trade.commission 是总费用（佣金+印花税+过户费），为避免与分项重复累加，
+        # 这里用 executor.calculate_cost_breakdown 重新拆分。
         buy_amount = sell_amount = commission = stamp_duty = transfer_fee = total_amount = 0.0
         for t in daily_trades:
             if t.direction in ("buy", "cover"):
                 buy_amount += t.amount
             else:
                 sell_amount += t.amount
-            commission += t.commission
-            transfer_fee += t.amount * self.config.transfer_fee_rate
-            if t.direction in ("sell", "short"):
-                stamp_duty += t.amount * self.config.stamp_duty_rate
+            comm, stamp, trans = self.executor.calculate_cost_breakdown(
+                t.amount, t.direction
+            )
+            commission += comm
+            stamp_duty += stamp
+            transfer_fee += trans
             total_amount += t.amount
 
         metrics.turnover = (buy_amount + sell_amount) / total_value

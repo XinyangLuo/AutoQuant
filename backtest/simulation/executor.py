@@ -92,7 +92,21 @@ class OrderExecutor:
 
     def calculate_cost(self, amount: float, direction: str) -> float:
         """计算总费用 = 佣金 + 印花税(仅卖出/short) + 过户费。"""
+        commission, stamp_duty, transfer_fee = self.calculate_cost_breakdown(
+            amount, direction
+        )
+        return commission + stamp_duty + transfer_fee
+
+    def calculate_cost_breakdown(
+        self, amount: float, direction: str
+    ) -> tuple[float, float, float]:
+        """拆分计算费用，返回 (佣金, 印花税, 过户费)。
+
+        佣金 = max(amount * commission_rate, min_commission)
+        印花税 = amount * stamp_duty_rate（仅卖出/short）
+        过户费 = amount * transfer_fee_rate（双向）
+        """
         commission = max(amount * self.commission_rate, self.min_commission)
         stamp_duty = amount * self.stamp_duty_rate if direction in ("sell", "short") else 0.0
         transfer_fee = amount * self.transfer_fee_rate
-        return commission + stamp_duty + transfer_fee
+        return commission, stamp_duty, transfer_fee

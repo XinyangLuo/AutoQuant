@@ -51,7 +51,8 @@ class DividendHandler:
                 if stk_div <= 0:
                     continue
                 pos = snapshot.positions[symbol]
-                new_shares = round_lot_for_symbol(pos.shares * (1 + stk_div), symbol)
+                # 送转股产生的股数保留精确值（不取整），仅交易时按板块规则取整
+                new_shares = int(pos.shares * (1 + stk_div))
                 if new_shares != pos.shares:
                     events.append({
                         "date": date,
@@ -61,6 +62,9 @@ class DividendHandler:
                         "new_shares": new_shares,
                         "stk_div": stk_div,
                     })
+                    # 同步调整持仓成本：送转后每股成本稀释
+                    if pos.avg_cost > 0:
+                        pos.avg_cost = pos.avg_cost / (1 + stk_div)
                     pos.shares = new_shares
 
         # 现金分红：pay_date 当天到账

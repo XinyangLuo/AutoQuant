@@ -160,6 +160,7 @@ def compute_factor(
                 end=end_date,
                 columns=fina_cols,
                 last_n_quarters=last_n_quarters,
+                delay=1,
             )
             if not fina_all.empty:
                 # Range function returns DATE; align with market_daily merge key.

@@ -288,12 +288,10 @@ def compute_trading_stats(
     if trades is None and metrics_df is None:
         return out
 
-    if trades is not None and not trades.empty:
-        out["total_trades"] = int(len(trades))
-        if "commission" in trades.columns:
-            out["total_commission"] = float(trades["commission"].sum())
-
+    # 优先从 metrics_df 读取拆分后的费用（commission 为纯佣金，不含税费）
     if metrics_df is not None and not metrics_df.empty:
+        if "commission" in metrics_df.columns:
+            out["total_commission"] = float(metrics_df["commission"].sum())
         if "stamp_duty" in metrics_df.columns:
             out["total_stamp_duty"] = float(metrics_df["stamp_duty"].sum())
         if "transfer_fee" in metrics_df.columns:
@@ -302,6 +300,12 @@ def compute_trading_stats(
             avg_turn = float(metrics_df["turnover"].mean())
             out["avg_daily_turnover"] = avg_turn
             out["annual_turnover"] = avg_turn * _TRADING_DAYS
+
+    # Fallback: trades 中 commission 是总费用（含税费），仅在 metrics_df 缺失时使用
+    if trades is not None and not trades.empty:
+        out["total_trades"] = int(len(trades))
+        if np.isnan(out["total_commission"]) and "commission" in trades.columns:
+            out["total_commission"] = float(trades["commission"].sum())
 
     # Fallback stamp_duty if metrics_df missing but trades has it
     if np.isnan(out["total_stamp_duty"]) and trades is not None and not trades.empty:

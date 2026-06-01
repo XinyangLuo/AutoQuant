@@ -723,6 +723,7 @@ class MarketStorage:
         symbols: list[str] | None = None,
         columns: list[str] | None = None,
         last_n_quarters: int | None = None,
+        delay: int = 0,
     ) -> pd.DataFrame:
         """Batched PIT snapshots for every trade date in ``[start, end]``.
 
@@ -737,8 +738,14 @@ class MarketStorage:
         1. For each ``(symbol, end_date)`` group compute ``superseded_at =
            LEAD(f_ann_date)`` — the next version's publication date — once.
         2. Range-join against ``trade_calendar``: a version row ``v`` is the
-           D-day-visible-latest iff ``v.f_ann_date <= D < v.superseded_at``
+           D-day-visible-latest iff ``v.f_ann_date + delay <= D < v.superseded_at + delay``
            (NULL ``superseded_at`` means "still current").
+
+        ``delay`` (default 0) shifts the visibility window forward by *delay*
+        calendar days.  For A-share factors this should be set to 1 so that a
+        report announced on ``f_ann_date`` only becomes visible on the **next**
+        trade date, matching the real-world timing: announcement after market
+        close → usable the following day.
 
         ``last_n_quarters`` (if given) caps to the most recent N ``end_date``
         rows per ``(date, symbol)``. Slope / TTM factors only need the last
@@ -782,6 +789,7 @@ class MarketStorage:
                 symbols=symbols,
                 columns=columns,
                 last_n_quarters=last_n_quarters,
+                delay=delay,
             )
             if not sub.empty:
                 pieces.append(sub)
@@ -800,6 +808,7 @@ class MarketStorage:
         symbols: list[str] | None = None,
         columns: list[str] | None = None,
         last_n_quarters: int | None = None,
+        delay: int = 0,
     ) -> pd.DataFrame:
         """One range-join SQL per fina table for the ``[start, end]`` window.
 
@@ -882,9 +891,9 @@ class MarketStorage:
                 SELECT td.cal_date AS date, v.*
                 FROM versions v
                 JOIN trade_calendar td
-                  ON td.cal_date >= strptime(v.f_ann_date, '%Y%m%d')::DATE
+                  ON td.cal_date >= strptime(v.f_ann_date, '%Y%m%d')::DATE + INTERVAL '{delay}' DAY
                  AND (v.superseded_at IS NULL
-                      OR td.cal_date < strptime(v.superseded_at, '%Y%m%d')::DATE)
+                      OR td.cal_date < strptime(v.superseded_at, '%Y%m%d')::DATE + INTERVAL '{delay}' DAY)
                  AND td.cal_date BETWEEN strptime(?, '%Y%m%d')::DATE
                                      AND strptime(?, '%Y%m%d')::DATE
                  AND td.is_open

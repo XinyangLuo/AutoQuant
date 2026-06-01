@@ -38,17 +38,14 @@ class SimpleSimulator:
         df["adj_price"] = compute_adj_price(df, self.config.price_type)
 
         # 2. 将数据 pivot 成 wide，计算前向收益。
-        #    price_{T+1} / price_T - 1: the period that starts at T, whose
-        #    return is not yet known when the factor is computed at T close.
-        #    Matched with weight.shift(1) below → factor_{T-1} predicts
-        #    return_{T→T+1}.  No look-ahead for either c2c or o2o.
+        #    price_{T+1} / price_T - 1: T 日的值代表 T→T+1 这段周期的收益。
+        #    signals.date 是持仓生效日（已含 delay=1），T 日生效的 weight
+        #    应实现 T-1→T 的收益，因此 returns_wide 需 shift(1) 对齐。
         adj_price_wide = df.pivot(index="date", columns="symbol", values="adj_price")
         returns_wide = adj_price_wide.shift(-1) / adj_price_wide - 1.0
 
         # 3. 将 signals pivot 成 wide，对齐日期/股票
         weight_wide = signals.pivot(index="date", columns="symbol", values="target_weight")
-        # delay=1: T-1 日信号 → T 日 weight, 匹配 T→T+1 forward return
-        weight_wide = weight_wide.shift(1)
         weight_wide = weight_wide.reindex_like(returns_wide)
         # 调仓日：不在持仓中的股票 weight 显式置为 0
         signal_dates = set(signals["date"])
@@ -61,9 +58,9 @@ class SimpleSimulator:
         weight_wide = weight_wide.fillna(0)
 
         # 4. 组合日收益 = sum(weight * return)
-        # 对缺失数据（停牌/退市），returns_wide 为 NaN，weight 可能非零
-        # fillna(0) 后该股票当天收益为 0，不影响组合
-        daily_return = (weight_wide * returns_wide.fillna(0)).sum(axis=1)
+        #    returns_wide.shift(1): T 日生效的 weight 匹配 T-1→T 的收益。
+        #    对缺失数据（停牌/退市），收益为 NaN，fillna(0) 后不影响组合。
+        daily_return = (weight_wide * returns_wide.shift(1).fillna(0)).sum(axis=1)
 
         # 5. 累积净值
         nav = cumulate_nav(daily_return)
