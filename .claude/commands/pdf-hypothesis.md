@@ -2,6 +2,8 @@
 
 读取券商/学术研报 PDF，通过 mcp-pdf 提取文本后，**穷举研报中列出的所有单因子**，按预期 Sharpe/ICIR 排序，筛选出数据可得、非重复、高夏普的可行因子短名单。审阅后可直接转入 `/factor-iterate` 执行。
 
+**Phase 2 增强**：Step 5 后增加 Hypothesis Optimizer (HO) 批量评审，对候选因子做静态查重/反模式匹配/参数建议，排名表附加 `ho_review` 字段。
+
 ## Usage
 
 ```text
@@ -47,6 +49,7 @@
 - 输出保存到 `agents/pdf_hypotheses/<YYYYMMDD_HHMMSS_slug>.json`。
 - 必须验证每个因子的数据可用性（调用 `claude_cli schema` 确认所需列名存在）。
 - 必须查 KB 反模式库，标记与已知失败模式高度相似的因子。
+- **Step 6 增加 HO 批量评审**：对每个候选因子调用 HO 静态评审（查重/反模式/参数建议），将 `ho_review` 附加到输出。
 - **不筛选 novelty**：即使和已有因子方向类似，只要 Sharpe 高且构造方式有差异，也列入候选。
 
 ## Prerequisites
@@ -151,17 +154,73 @@ conda activate AutoQuant && python -m agents.claude_cli schema --sources <data_s
 - 推荐优先级（见 Decision Rules）
 - 如果研报中有详细构造描述 → 附 `construction_logic`
 
-### Step 5: 生成 hypothesis.md + 提示下一步
+### Step 5 [新增]: HO 批量评审
 
-1. 展示**排名表**（名次 / 因子名 / 公式 / 预期 Sharpe / 数据可用 / 推荐）
+对每个候选因子（高优 + 中优），调用 Hypothesis Optimizer 做静态评审：
+
+```bash
+conda activate AutoQuant && python -m agents.kb_query \
+  --category <category> \
+  --check-duplicate \
+  --formula-fingerprint "<formula_draft>"
+```
+
+**HO 评审内容**：
+1. **查重**：与 `hypothesis_index.jsonl` 中的已有因子对比，标记近似重复
+2. **反模式**：construction_logic 是否触发已知 anti_pattern
+3. **参数建议**：基于 successful_patterns 同 category SOTA 调整 window/decay
+4. **数据可行性**：所需列是否全部可用
+5. **逻辑评审**：构造是否有已知反直觉问题
+
+**附加到输出 JSON**：
+
+```json
+{
+  "ho_review": {
+    "duplicate_risk": "low|medium|high",
+    "similar_factors": [
+      {"factor_id": "f_auto_xxx", "similarity": "medium", "note": "ICIR=2.62, 构造不同"}
+    ],
+    "anti_pattern_warnings": [],
+    "param_suggestions": {"window": "建议 5-10", "decay": "建议 3-5"},
+    "data_availability": "full",
+    "logic_issues": [],
+    "overall_risk": "low",
+    "recommendation": "proceed|revise|abandon"
+  }
+}
+```
+
+### Step 6: 展示排名表（含 HO 评审结果）
+
+展示排名表时，附加 HO 评审结果：
+
+| 排名 | 因子 | 公式 | 预期 Sharpe | HO 评审 | 推荐 |
+|------|------|------|-----------|---------|------|
+| 1 | 放量反转 | `...` | 0.95 | ✅ 无警告，参数已优化 | 🟢 |
+| 2 | ROE 质量 | `...` | 0.72 | ⚠️ 近似 f_barra_quality | 🟡 |
+| 3 | 流动性折价 | `...` | 0.55 | ❌ 触发反模式 | 🔴 |
+
+**推荐规则更新**：
+- 🟢 高优：`estimated_sharpe ≥ 0.8` + `feasible=true` + `ho_review.recommendation == "proceed"`
+- 🟡 中优：`estimated_sharpe ≥ 0.5` 或 `ho_review.recommendation == "revise"`
+- 🔴 低优：`estimated_sharpe < 0.5` 或 `ho_review.recommendation == "abandon"`
+- ⚫ 不可行：关键数据缺失
+
+### Step 7: 用户选择因子
+
+1. 展示**排名表**（名次 / 因子名 / 公式 / 预期 Sharpe / HO 评审 / 推荐）
 2. 询问用户确认要执行的因子（可多选）
-3. 对每个选中的因子，生成 `hypothesis.md` 到：
+
+### Step 8: 生成 hypothesis.md + 提示下一步
+
+1. 对每个选中的因子，生成 `hypothesis.md` 到：
 
    ```
    agents/pdf_hypotheses/<YYYYMMDD_HHMMSS_slug>/<factor_name>_hypothesis.md
    ```
 
-4. 告知用户文件路径，提示可手动审阅修改 `hypothesis.md`（公式/参数/config），确认后执行：
+2. 告知用户文件路径，提示可手动审阅修改 `hypothesis.md`（公式/参数/config），确认后执行：
 
    ```text
    /factor-iterate --hypothesis agents/pdf_hypotheses/<slug>/<factor_name>_hypothesis.md
@@ -175,14 +234,15 @@ conda activate AutoQuant && python -m agents.claude_cli schema --sources <data_s
 
 | 档位 | 条件 | 行动 |
 |------|------|------|
-| 🟢 高优 | `estimated_sharpe ≥ 0.8` 且 `feasible=true` 且 `kb_warning=null` | 直接进入 `/factor-iterate` |
-| 🟡 中优 | `estimated_sharpe ≥ 0.5` 或 `kb_warning` 存在但 count < 3 | 审阅后决定 |
-| 🔴 低优 | `estimated_sharpe < 0.5` 或数据依赖 proxy | 最后考虑，或直接 skip |
+| 🟢 高优 | `estimated_sharpe ≥ 0.8` 且 `feasible=true` 且 `kb_warning=null` 且 `ho_review.recommendation="proceed"` | 直接进入 `/factor-iterate` |
+| 🟡 中优 | `estimated_sharpe ≥ 0.5` 或 `kb_warning` 存在但 count < 3 或 `ho_review.recommendation="revise"` | 审阅后决定 |
+| 🔴 低优 | `estimated_sharpe < 0.5` 或 `ho_review.recommendation="abandon"` | 最后考虑，或直接 skip |
 | ⚫ 不可行 | 关键数据缺失且无 proxy | rejected |
 
 **去重判断**：
 - 两个因子构造逻辑和参数高度重合（>80%）→ 只保留 Sharpe 更高的那个
 - 与 KB successful_patterns 中已有因子 MC > 0.85 → 标记「近似重复」，仍保留但降低优先级
+- HO 发现 `duplicate_risk="high"` 且相似因子已成功 → 直接标记 abandon
 
 ## Output Format
 
@@ -227,11 +287,38 @@ conda activate AutoQuant && python -m agents.claude_cli schema --sources <data_s
         "kb_warning": null,
         "duplicate_of": null
       },
+      "ho_review": {
+        "duplicate_risk": "low",
+        "anti_pattern_warnings": [],
+        "param_suggestions": {"window": "5-10", "decay": "3-5"},
+        "overall_risk": "low",
+        "recommendation": "proceed"
+      },
       "source_quote": "研报原文引用段落",
       "suggested_config": {
-        "decay": 5,
-        "rebalance": "1D",
-        "top_k": 100
+        "pipeline": {
+          "default_decay": 5,
+          "default_rebalance": "1D",
+          "default_top_k": 100,
+          "ret_type": "open"
+        },
+        "strategy": {
+          "universe": {
+            "exclude_st": true,
+            "exclude_new_ipo_days": 252,
+            "include_cyb": true,
+            "include_kcb": false,
+            "include_bse": false,
+            "min_market_cap": 500000000,
+            "min_avg_amount": 10000000
+          }
+        },
+        "simulation": {
+          "initial_cash": 100000000,
+          "commission_rate": 0.0003,
+          "stamp_duty_rate": 0.001,
+          "allow_short": false
+        }
       }
     }
   ],
@@ -303,12 +390,12 @@ conda activate AutoQuant && python -m agents.claude_cli schema --sources <data_s
 ```
 ## 研报因子排名：{pdf_title}
 
-| 排名 | 因子 | 公式 | 预期 Sharpe | 研报来源 | 数据可用 | 推荐 |
-|------|------|------|-----------|---------|---------|------|
-| 1 | 放量反转 | `ts_mean(amount,5)/ts_mean(amount,20)*ts_delta(close*adj,5)*(-1)` | 0.95 | 研报回测 | ✅ | 🟢 |
-| 2 | ROE 质量 | `inc_return_on_equity` | 0.72 | ICIR 估算 | ✅ | 🟡 |
-| 3 | 流动性折价 | `1 / ts_mean(turnover_rate, 20) * (-1)` | 0.55 | 逻辑推断 | ⚠️ | 🔴 |
-| ... | ... | ... | ... | ... | ... | ... |
+| 排名 | 因子 | 公式 | 预期 Sharpe | HO 评审 | 推荐 |
+|------|------|------|-----------|---------|------|
+| 1 | 放量反转 | `ts_mean(amount,5)/ts_mean(amount,20)*ts_delta(close*adj,5)*(-1)` | 0.95 | ✅ | 🟢 |
+| 2 | ROE 质量 | `inc_return_on_equity` | 0.72 | ⚠️ | 🟡 |
+| 3 | 流动性折价 | `1 / ts_mean(turnover_rate, 20) * (-1)` | 0.55 | ❌ | 🔴 |
+| ... | ... | ... | ... | ... | ... |
 
 数据不可用 (rejected): 北向资金因子、机构调研因子
 ```
@@ -360,7 +447,7 @@ conda activate AutoQuant && python -m agents.claude_cli schema --sources <data_s
 - (ST/涨跌停过滤由 strategy/simulation 层处理，因子不需使用 `is_st`, `limit_up`, `limit_down`)
 
 ## Suggested Config
-\`\`\`yaml
+```yaml
 pipeline:
   default_decay: 5
   default_rebalance: "1D"
@@ -380,7 +467,7 @@ simulation:
   commission_rate: 0.0003
   stamp_duty_rate: 0.001
   allow_short: false
-\`\`\`
+```
 ```
 
 ### 与 /factor-iterate 的联用
