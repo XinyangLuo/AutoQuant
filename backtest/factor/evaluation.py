@@ -170,14 +170,29 @@ def _compute_ic_stats(ic_series: pd.Series) -> dict:
 
 
 def _turnover(factor_df: pd.DataFrame) -> float:
-    """Average rank turnover between consecutive periods."""
+    """Average rank turnover between consecutive periods.
+
+    Uses a long-format diff instead of a dense pivot matrix to avoid
+    materialising a ``dates × symbols`` wide DataFrame (e.g. 2 500 × 5 000
+    ≈ 100 MiB of float64).
+    """
     df = factor_df[["date", "symbol", "value"]].copy()
     df["rank"] = df.groupby("date")["value"].rank(pct=True)
 
-    # Use wide format but avoid materializing full dense matrix
-    wide = df.pivot(index="date", columns="symbol", values="rank")
-    wide = wide.fillna(0.5)
-    turnover = wide.diff().abs().mean().mean() * 2
+    # Long-format: sort by symbol then compute per-symbol rank diff.
+    df = df.sort_values(["symbol", "date"])
+    df["prev_rank"] = df.groupby("symbol")["rank"].shift(1)
+
+    mask = df["prev_rank"].notna()
+    if not mask.any():
+        return 0.0
+
+    df.loc[mask, "abs_diff"] = (df.loc[mask, "rank"] - df.loc[mask, "prev_rank"]).abs()
+    # Mean abs change per symbol, then mean across symbols — equivalent to
+    # ``wide.diff().abs().mean().mean()`` when every symbol has the same
+    # number of observations.
+    avg_per_symbol = df.loc[mask].groupby("symbol")["abs_diff"].mean()
+    turnover = avg_per_symbol.mean() * 2
     return float(turnover)
 
 

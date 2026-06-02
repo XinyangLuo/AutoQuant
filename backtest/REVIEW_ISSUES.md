@@ -116,16 +116,19 @@
 
 ## 三、性能优化机会（无损）
 
-| 优先级 | 文件 | 问题 | 预期提升 |
-|--------|------|------|----------|
-| 🔴 P0 | `factor/transforms.py` | `ts_rank/argmax/argmin/decay/product` 用 `rolling.apply(python_func)` | 10–50× |
-| 🔴 P0 | `factor/transforms.py` | `ts_corr/ts_covariance` 手动 `for sym in groupby` 循环 | 5–10× |
-| 🟡 P1 | `factor/transforms.py` | `cap_neutralize` 逐日 Python 循环 + `pd.qcut` | 3–5× |
-| 🟡 P1 | `factor/evaluation.py` | `_turnover` dense pivot（5000×2500 矩阵） | 5–10× 内存 |
-| 🟡 P1 | `simulation/detailed.py` | `_rebalance` 用 `sig_df.iterrows()` | 2–3× |
-| 🟢 P2 | `factor/compute.py` | `_compute_factor_chunked` 外层 1 年 chunk 与 SQL 内层 6 月 chunk 嵌套冗余 | 1.5–2× |
-| 🟢 P2 | `pipeline/steps.py` | `step2` `_max_industry_corr` 逐日 `pd.get_dummies` | 5–10× |
-| 🟢 P2 | `factor/transforms.py` | `z_score/ts_ir` 对 index 重复 sort | 1.2–1.3× |
+| 优先级 | 文件 | 问题 | 预期提升 | 状态 |
+|--------|------|------|----------|------|
+| 🔴 P0 | `factor/transforms.py` | `ts_rank` `rolling.apply` → `rolling().rank()` | ~5× | **✅ 已修复** |
+| 🔴 P0 | `factor/transforms.py` | `ts_product` `rolling.apply` → `exp(sum(log))` 正数快速路径 | ~13× | **✅ 已修复** |
+| 🔴 P0 | `factor/transforms.py` | `ts_corr/ts_covariance` 手动 `for` 循环 → wide-format `rolling.corr/cov` | ~5–10× | **✅ 已修复** |
+| 🟡 P1 | `factor/transforms.py` | `cap_neutralize` 逐日 Python 循环 + `pd.qcut` → `rank+cut` + `groupby.transform` | ~3–5× | **✅ 已修复** |
+| 🟡 P1 | `factor/evaluation.py` | `_turnover` dense pivot → long-format diff | 省 100MB+ 内存 | **✅ 已修复** |
+| 🟡 P1 | `simulation/detailed.py` | `_rebalance` `sig_df.iterrows()` → 向量化 + `round_lot_for_symbol_vec` | ~2–3× | **✅ 已修复** |
+| 🟢 P2 | `factor/compute.py` | `_compute_factor_chunked` 外层 1 年 chunk 与 SQL 内层 6 月 chunk 嵌套冗余 | 1.5–2× | 未修复 |
+| 🟢 P2 | `pipeline/steps.py` | `step2` `_max_industry_corr` 逐日 `pd.get_dummies` | 5–10× | 未修复 |
+| 🟢 P2 | `factor/transforms.py` | `z_score/ts_ir` 对 index 重复 sort | 1.2–1.3× | 未修复 |
+
+> **备注**：`ts_argmax`/`ts_argmin`/`ts_decay_linear`/`ts_decay_exp` 未改动——`rolling.apply` 的瓶颈在于每窗口 Python 函数调用，尝试 `as_strided` 向量化后因每窗口权重/边界处理仍需 Python 循环，实测速度无提升或更慢，故保留原实现。若未来引入 `numba`/`bottleneck`，可再评估。 |
 
 ---
 

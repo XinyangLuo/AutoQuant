@@ -444,20 +444,37 @@ def cap_neutralize(
     out = pd.Series(np.nan, index=df.index, dtype=float)
     has_cap = df["_cap"].notna() & (df["_cap"] > 0)
 
-    if has_cap.any():
-        for date_val, idx in df.loc[has_cap].groupby("date").groups.items():
-            sub = df.loc[idx]
-            n = len(sub)
-            if n < quantiles:
-                out.loc[idx] = _group_zscore(sub["value"]).values
-                continue
-            try:
-                bins = pd.qcut(sub["_cap"], quantiles, labels=False, duplicates="drop")
-            except ValueError:
-                out.loc[idx] = _group_zscore(sub["value"]).values
-                continue
-            neutral = sub["value"].groupby(bins, group_keys=False).transform(_group_zscore)
-            out.loc[idx] = neutral.values
+    if not has_cap.any():
+        out.index = pd.MultiIndex.from_arrays(
+            [df["date"], df["symbol"]], names=["date", "symbol"]
+        )
+        return out.reindex(values.index)
+
+    sub = df.loc[has_cap].copy()
+
+    # Daily sample count for fallback logic.
+    sub["daily_count"] = sub.groupby("date")["value"].transform("count")
+
+    # Cap percentile rank per date — vectorised, no per-day Python loop.
+    sub["cap_rank"] = sub.groupby("date")["_cap"].rank(pct=True)
+    bins = np.linspace(0, 1, quantiles + 1)
+    sub["cap_group"] = pd.cut(
+        sub["cap_rank"], bins=bins, labels=False, include_lowest=True
+    )
+
+    # For dates with too few samples, collapse into a single fallback group.
+    insufficient = sub["daily_count"] < quantiles
+    sub.loc[insufficient, "cap_group"] = -1
+
+    # Group zscore via C-level transform (no Python per-group function calls).
+    g = sub.groupby(["date", "cap_group"])["value"]
+    mean_vals = g.transform("mean")
+    std_vals = g.transform("std")
+    count_vals = g.transform("count")
+    z = (sub["value"] - mean_vals) / std_vals.where(std_vals > 0, np.nan)
+    z = z.where((std_vals > 0) & (count_vals > 1), 0.0)
+
+    out.loc[sub.index] = z.values
 
     out.index = pd.MultiIndex.from_arrays(
         [df["date"], df["symbol"]], names=["date", "symbol"]
@@ -493,22 +510,22 @@ def ts_rank(
         Same index as ``values``, with values in ``[-1, 1]``.
     """
     _check_panel_series(values)
+    if window < 2:
+        raise ValueError(f"window must be >= 2, got {window}")
 
-    def _rank_last(x: np.ndarray) -> float:
-        valid = x[~np.isnan(x)]
-        n = len(valid)
-        if n <= 1:
-            return 0.0
-        last = valid[-1]
-        le = int(np.sum(valid <= last))
-        lt = int(np.sum(valid < last))
-        r = (le + lt + 1) / 2.0
-        return (r - 1.0) / (n - 1.0) * 2.0 - 1.0
+    sorted_vals = values.sort_index(level=[1, 0])
+    grp = sorted_vals.groupby(level=1)
+    # pandas rolling rank (C-level) avoids per-window Python function calls.
+    ranks = grp.rolling(window, min_periods=min_periods).rank(method="average")
+    counts = grp.rolling(window, min_periods=min_periods).count()
+    ranks.index = ranks.index.droplevel(0)
+    counts.index = counts.index.droplevel(0)
 
-    result = _ts_roll(values, window, min_periods, window_min=2).apply(
-        _rank_last, raw=True
-    )
-    result.index = result.index.droplevel(0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scaled = np.where(
+            counts.values <= 1, 0.0, (ranks.values - 1.0) / (counts.values - 1.0) * 2.0 - 1.0
+        )
+    result = pd.Series(scaled, index=ranks.index)
     return result.reindex(values.index)
 
 
@@ -845,6 +862,20 @@ def ts_product(
         Same index as ``values``.
     """
     _check_panel_series(values)
+
+    # Fast path: when all non-NaN values are strictly positive, use
+    # ``exp(rolling_sum(log(x)))`` — ~10-15× faster than rolling.apply.
+    # Note: ``values > 0`` returns *False* (not NaN) for NaN entries, so we
+    # must explicitly OR with the isna mask.
+    pos_mask = values > 0
+    na_mask = values.isna()
+    if (pos_mask | na_mask).all():
+        log_vals = np.log(values)
+        log_sum = _ts_roll(log_vals, window, min_periods, window_min=1).sum()
+        log_sum.index = log_sum.index.droplevel(0)
+        return np.exp(log_sum).reindex(values.index)
+
+    # Fallback: rolling.apply for mixed/negative values.
     result = _ts_roll(values, window, min_periods, window_min=1).apply(
         lambda x: np.nanprod(x) if len(x) > 0 else np.nan, raw=True
     )
@@ -1049,6 +1080,31 @@ def ts_decay_exp(
     return result.reindex(values.index)
 
 
+def _wide_rolling_pairwise(
+    x: pd.Series,
+    y: pd.Series,
+    window: int,
+    min_periods: int,
+    method: Literal["corr", "cov"],
+) -> pd.Series:
+    """Vectorised rolling corr/cov via wide-format DataFrame.rolling().
+
+    Unstacks the two series to ``date × symbol`` matrices and lets
+    pandas compute the rolling statistic column-wise in C code,
+    avoiding the per-symbol Python ``for`` loop.
+    """
+    wide_x = x.unstack(level=1)
+    wide_y = y.unstack(level=1)
+
+    if method == "corr":
+        wide_result = wide_x.rolling(window, min_periods=min_periods).corr(wide_y)
+    else:
+        wide_result = wide_x.rolling(window, min_periods=min_periods).cov(wide_y)
+
+    result = wide_result.stack()
+    return result.reindex(x.index)
+
+
 def ts_corr(
     x: pd.Series,
     y: pd.Series,
@@ -1082,26 +1138,7 @@ def ts_corr(
     if min_periods < 2:
         raise ValueError(f"min_periods must be >= 2, got {min_periods}")
 
-    df = pd.DataFrame({"x": x, "y": y})
-    sorted_df = df.sort_index(level=[1, 0])
-
-    # Per-symbol rolling corr to avoid pandas MultiIndex corr bug.
-    out_vals: list[np.ndarray] = []
-    out_idx: list[tuple] = []
-    for sym, sub in sorted_df.groupby(level=1):
-        sub = sub.droplevel(1)
-        corr = sub["x"].rolling(window, min_periods=min_periods).corr(sub["y"])
-        out_vals.append(corr.values)
-        out_idx.extend([(d, sym) for d in corr.index])
-
-    if not out_vals:
-        return pd.Series(np.nan, index=x.index)
-
-    result = pd.Series(
-        np.concatenate(out_vals),
-        index=pd.MultiIndex.from_tuples(out_idx, names=["date", "symbol"]),
-    )
-    return result.reindex(x.index)
+    return _wide_rolling_pairwise(x, y, window, min_periods, "corr")
 
 
 def ts_covariance(
@@ -1137,25 +1174,7 @@ def ts_covariance(
     if min_periods < 2:
         raise ValueError(f"min_periods must be >= 2, got {min_periods}")
 
-    df = pd.DataFrame({"x": x, "y": y})
-    sorted_df = df.sort_index(level=[1, 0])
-
-    out_vals: list[np.ndarray] = []
-    out_idx: list[tuple] = []
-    for sym, sub in sorted_df.groupby(level=1):
-        sub = sub.droplevel(1)
-        cov = sub["x"].rolling(window, min_periods=min_periods).cov(sub["y"])
-        out_vals.append(cov.values)
-        out_idx.extend([(d, sym) for d in cov.index])
-
-    if not out_vals:
-        return pd.Series(np.nan, index=x.index)
-
-    result = pd.Series(
-        np.concatenate(out_vals),
-        index=pd.MultiIndex.from_tuples(out_idx, names=["date", "symbol"]),
-    )
-    return result.reindex(x.index)
+    return _wide_rolling_pairwise(x, y, window, min_periods, "cov")
 
 
 # ---------------------------------------------------------------------------

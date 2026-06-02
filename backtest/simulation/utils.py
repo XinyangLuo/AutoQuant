@@ -56,6 +56,38 @@ def round_lot_for_symbol(shares: float, symbol: str) -> int:
     return round_lot(shares, detect_board(symbol))
 
 
+def round_lot_for_symbol_vec(shares: pd.Series, symbols: pd.Series) -> pd.Series:
+    """Vectorised ``round_lot_for_symbol``.
+
+    Parameters
+    ----------
+    shares : pd.Series
+        Raw share counts (float, before rounding).
+    symbols : pd.Series
+        Stock codes aligned with *shares*.
+
+    Returns
+    -------
+    pd.Series
+        Rounded share counts (int), same index as *shares*.
+    """
+    is_kcb = symbols.str.startswith("688")
+    is_bj = symbols.str.startswith(("8", "4")) & symbols.str.endswith(".BJ")
+
+    result = pd.Series(0, index=shares.index, dtype=int)
+
+    kcb_mask = is_kcb & (shares >= 200)
+    result[kcb_mask] = shares[kcb_mask].astype(int)
+
+    bj_mask = is_bj & (shares >= 100) & ~kcb_mask
+    result[bj_mask] = shares[bj_mask].astype(int)
+
+    default_mask = ~is_kcb & ~is_bj & (shares >= 100)
+    result[default_mask] = (shares[default_mask] // 100 * 100).astype(int)
+
+    return result
+
+
 def cumulate_nav(daily_returns: pd.Series | pd.DataFrame) -> pd.Series | pd.DataFrame:
     """Cumulate daily returns into NAV, starting at 1.0.
 

@@ -11,7 +11,7 @@ from backtest.simulation.config import SimulationConfig
 from backtest.simulation.models import BacktestResult, DailySnapshot, Position, Trade
 from backtest.simulation.executor import OrderExecutor
 from backtest.simulation.dividends import DividendHandler
-from backtest.simulation.utils import round_lot_for_symbol
+from backtest.simulation.utils import round_lot_for_symbol, round_lot_for_symbol_vec
 
 
 @dataclass
@@ -426,30 +426,26 @@ class DetailedSimulator:
         """执行单日调仓。"""
         total_value = portfolio.total_value
 
-        # 计算目标持仓股数（只对有行情数据的股票）
-        target_shares: dict[str, int] = {}
-        for _, row in sig_df.iterrows():
-            symbol = row["symbol"]
-            weight = float(row["target_weight"])
-            if symbol not in available_symbols:
-                continue
-            bar = bar_by_symbol[symbol]
+        # 计算目标持仓股数（向量化，避免 iterrows）
+        price_col = "open" if self.config.price_type == "o2o" else "close"
+        price_map = {
+            s: float(bar[price_col])
+            for s, bar in bar_by_symbol.items()
+            if price_col in bar
+        }
 
-            # 确定成交价格（用于计算目标股数）
-            if self.config.price_type == "o2o":
-                trade_price = float(bar["open"])
-            else:
-                trade_price = float(bar["close"])
+        sig = sig_df[sig_df["symbol"].isin(available_symbols)].copy()
+        sig["trade_price"] = sig["symbol"].map(price_map)
+        sig = sig[sig["trade_price"].notna() & (sig["trade_price"] > 0)]
 
-            if trade_price <= 0:
-                continue
-
-            target_value = total_value * weight
-            raw_shares = target_value / trade_price
-            shares = round_lot_for_symbol(abs(raw_shares), symbol)
-            if shares == 0:
-                continue
-            target_shares[symbol] = shares if weight >= 0 else -shares
+        sig["target_value"] = total_value * sig["target_weight"]
+        sig["raw_shares"] = sig["target_value"].abs() / sig["trade_price"]
+        sig["shares"] = round_lot_for_symbol_vec(sig["raw_shares"], sig["symbol"])
+        sig = sig[sig["shares"] > 0]
+        sig["signed_shares"] = np.where(
+            sig["target_weight"] >= 0, sig["shares"], -sig["shares"]
+        )
+        target_shares = sig.set_index("symbol")["signed_shares"].to_dict()
 
         # 生成交易订单
         orders: list[tuple[str, Literal["buy", "sell", "short", "cover"], int]] = []
