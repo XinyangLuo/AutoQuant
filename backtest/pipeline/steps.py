@@ -433,9 +433,17 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
     """10-group quantile, Spearman corr(group_id, mean_return) > 0.7."""
     config = state.config
 
-    # Reuse eval_result from step3 if available (may be dict after JSON round-trip)
+    # Reuse eval_result from step3 if available.
+    # Backward-compat: old states may have eval_result as a raw dict.
     eval_result = state.eval_result
-    if eval_result is None or isinstance(eval_result, dict):
+    if isinstance(eval_result, dict):
+        try:
+            from backtest.factor.evaluation import EvaluationResult
+            eval_result = EvaluationResult.from_dict(eval_result)
+        except Exception:
+            eval_result = None
+
+    if eval_result is None:
         eval_result = evaluate(
             config.factor_id,
             config.start_date,

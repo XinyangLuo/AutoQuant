@@ -54,7 +54,25 @@ def check_dividend(db_row: pd.Series, api_df: pd.DataFrame) -> list[str]:
     if match.empty:
         return [f"No implemented dividend found for {db_row['symbol']} {db_row['end_date']}"]
 
-    api = match.iloc[0]
+    # Match by (ann_date, ex_date) to handle multiple dividends per end_date.
+    # Tushare may return NULL ex_date; use the same fallback chain as the fetcher.
+    match["ann_date"] = match["ann_date"].fillna(match["end_date"])
+    match["ex_date"] = (
+        match["ex_date"]
+        .fillna(match["pay_date"])
+        .fillna(match["ann_date"])
+    )
+    sub = match[
+        (match["ann_date"] == db_row["ann_date"]) &
+        (match["ex_date"] == db_row["ex_date"])
+    ]
+    if sub.empty:
+        return [
+            f"No API row matching ann_date={db_row['ann_date']} ex_date={db_row['ex_date']} "
+            f"for {db_row['symbol']} {db_row['end_date']}"
+        ]
+
+    api = sub.iloc[0]
     errors = []
 
     for field in ("cash_div", "cash_div_tax", "stk_div", "stk_bo_rate"):

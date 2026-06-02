@@ -43,9 +43,10 @@
 
 - **数据源**：Tushare `pro.dividend`（14 列）
 - **Schema**：`(symbol VARCHAR, end_date VARCHAR, ann_date VARCHAR, ex_date VARCHAR, record_date VARCHAR, pay_date VARCHAR, cash_div DOUBLE, cash_div_tax DOUBLE, stk_div DOUBLE, stk_bo_rate DOUBLE, div_proc VARCHAR)`
-- **主键**：`(symbol, end_date)`
+- **主键**：`(symbol, end_date, ann_date, ex_date)` — 同一报告期可能多次分红（如中期 + 末期、常规 + 特别股息），仅靠 `(symbol, end_date)` 会丢失数据
 - **入库过滤**：只保留 `div_proc = '实施'`
 - `ex_date`（除权除息日）是回测最关键日期：价格跳空、送转股生效
+- **NULL 兜底**：Tushare 对 0.08% 的老记录缺失 `ex_date` / `pay_date`，入库时用 `pay_date → ann_date → end_date` 链式回填，避免 PK 冲突同时保留事件
 - 预估总量 < 20 万行，事件型查询 `WHERE ex_date = ?`
 
 ### `index_daily`(宽基指数日行情)

@@ -23,9 +23,20 @@ def _clean_dividend(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
 
-    df = df[[c for c in DIVIDEND_COLUMNS if c in df.columns]]
-    return df.sort_values("ann_date").drop_duplicates(
-        subset=["symbol", "end_date"], keep="last"
+    df = df[[c for c in DIVIDEND_COLUMNS if c in df.columns]].copy()
+
+    # Fill missing dates for PK stability.  Tushare occasionally returns NULL
+    # ex_date / pay_date for older records; falling back preserves the event
+    # rather than silently dropping it.
+    df["ann_date"] = df["ann_date"].fillna(df["end_date"])
+    df["ex_date"] = df["ex_date"].fillna(df["pay_date"]).fillna(df["ann_date"])
+    df["pay_date"] = df["pay_date"].fillna(df["ex_date"]).fillna(df["ann_date"])
+
+    # De-duplicate on the 4-column PK.  Multiple dividends for the same
+    # reporting period (e.g. regular + special dividend) are preserved as
+    # long as ann_date or ex_date differs.
+    return df.drop_duplicates(
+        subset=["symbol", "end_date", "ann_date", "ex_date"], keep="last"
     )
 
 

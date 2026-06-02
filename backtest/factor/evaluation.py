@@ -186,10 +186,18 @@ def _group_returns(
     ret_col: str,
     n_groups: int = 10,
 ) -> pd.DataFrame:
-    """Compute mean future return per quantile group."""
+    """Compute mean future return per quantile group.
+
+    Uses ``rank(pct=True)`` + ``pd.cut`` instead of ``pd.qcut(..., duplicates='drop')``
+    to guarantee exactly ``n_groups`` buckets per date, avoiding group-count drift
+    when duplicate factor values cause ``qcut`` to drop bins.
+    """
     merged = merged[["date", "symbol", "value", ret_col]].dropna()
+    bins = np.linspace(0, 1, n_groups + 1)
     merged["group"] = merged.groupby("date")["value"].transform(
-        lambda x: pd.qcut(x, n_groups, labels=False, duplicates="drop")
+        lambda x: pd.cut(
+            x.rank(pct=True), bins=bins, labels=False, include_lowest=True
+        )
     )
 
     grouped = merged.groupby("group")[ret_col].agg(["mean", "std", "count"])
@@ -321,6 +329,69 @@ class EvaluationResult:
             "max_corr": abs(top[1]) if top else 0.0,
             "primary_horizon": primary_horizon,
         }
+
+    # ------------------------------------------------------------------
+    # Serialization helpers (for pipeline state resume)
+    # ------------------------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialize to dict, handling pandas objects."""
+        result: dict = {}
+        for k, v in self.__dict__.items():
+            if isinstance(v, pd.DataFrame):
+                result[k] = {"_df_": v.to_dict(orient="records")}
+            elif isinstance(v, pd.Series):
+                result[k] = {"_s_": v.to_dict()}
+            elif isinstance(v, dict):
+                result[k] = {
+                    str(hk): (
+                        {"_df_": hv.to_dict(orient="records")}
+                        if isinstance(hv, pd.DataFrame)
+                        else {"_s_": hv.to_dict()}
+                        if isinstance(hv, pd.Series)
+                        else hv
+                    )
+                    for hk, hv in v.items()
+                }
+            else:
+                result[k] = v
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "EvaluationResult":
+        """Deserialize from dict, reconstructing pandas objects.
+
+        JSON keys are always strings; integer horizon keys are restored
+        for all ``dict`` fields (ic_metrics, rank_ic_metrics, decay,
+        group_returns, ic_series, rank_ic_series).
+        """
+        _INT_KEY_FIELDS = {
+            "ic_metrics",
+            "rank_ic_metrics",
+            "decay",
+            "group_returns",
+            "ic_series",
+            "rank_ic_series",
+        }
+        kwargs: dict = {}
+        for k, v in data.items():
+            if isinstance(v, dict) and "_df_" in v:
+                kwargs[k] = pd.DataFrame(v["_df_"])
+            elif isinstance(v, dict) and "_s_" in v:
+                kwargs[k] = pd.Series(v["_s_"])
+            elif k in _INT_KEY_FIELDS and isinstance(v, dict):
+                kwargs[k] = {}
+                for hk, hv in v.items():
+                    hkey = int(hk) if str(hk).lstrip("-").isdigit() else hk
+                    if isinstance(hv, dict) and "_df_" in hv:
+                        kwargs[k][hkey] = pd.DataFrame(hv["_df_"])
+                    elif isinstance(hv, dict) and "_s_" in hv:
+                        kwargs[k][hkey] = pd.Series(hv["_s_"])
+                    else:
+                        kwargs[k][hkey] = hv
+            else:
+                kwargs[k] = v
+        return cls(**kwargs)
 
     def __repr__(self) -> str:
         return (

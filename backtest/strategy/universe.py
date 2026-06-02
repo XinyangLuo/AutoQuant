@@ -57,15 +57,21 @@ class UniverseFilter:
         # 2. New IPO filter
         if self.config.exclude_new_ipo_days and "list_date" in df.columns:
             df = df[df["list_date"].notna()]
-            # Count trading days from list_date to current date
-            # Use calendar days as a cheap proxy; precise implementation
-            # would query the trade calendar.
-            list_dt = pd.to_datetime(df["list_date"], format="%Y%m%d", errors="coerce")
-            current_dt = pd.Timestamp(date)
-            days_since_list = (current_dt - list_dt).dt.days
-            # Trading days ≈ calendar days * 0.7; add slack
-            min_calendar_days = int(self.config.exclude_new_ipo_days / 0.65)
-            df = df[days_since_list >= min_calendar_days]
+            # Compute exact trading days since listing using the trade calendar.
+            min_list_date = df["list_date"].min()
+            if pd.notna(min_list_date):
+                all_trade_dates = get_trade_dates(str(min_list_date), date)
+                date_to_idx = {d: i for i, d in enumerate(all_trade_dates)}
+                if date in date_to_idx:
+                    current_idx = date_to_idx[date]
+                    list_indices = df["list_date"].astype(str).map(date_to_idx)
+                    # Stocks whose list_date is not in the calendar (e.g. before
+                    # calendar start) get NaN — keep them (conservative).
+                    trading_days = current_idx - list_indices
+                    df = df[
+                        (trading_days >= self.config.exclude_new_ipo_days)
+                        | trading_days.isna()
+                    ]
 
         # 3. Board filter
         if not self.config.include_cyb:

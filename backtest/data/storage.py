@@ -237,7 +237,7 @@ CREATE TABLE IF NOT EXISTS dividends (
     stk_div      DOUBLE,
     stk_bo_rate  DOUBLE,
     div_proc     VARCHAR,
-    PRIMARY KEY (symbol, end_date)
+    PRIMARY KEY (symbol, end_date, ann_date, ex_date)
 )
 """
 
@@ -360,6 +360,7 @@ class MarketStorage:
     def _init_tables(self):
         self.conn.execute(DAILY_SCHEMA)
         self._drop_fundamental_tables_if_legacy_pk()
+        self._drop_dividends_if_legacy_pk()
         self.conn.execute(INCOME_SCHEMA)
         self.conn.execute(BALANCESHEET_SCHEMA)
         self.conn.execute(CASHFLOW_SCHEMA)
@@ -371,6 +372,28 @@ class MarketStorage:
         self._add_double_columns("market_daily", DAILY_COLUMNS[2:])
         for table in FUNDAMENTAL_TABLES:
             self._add_double_columns(table, _FUNDAMENTAL_COLS_MAP[table][len(FUNDAMENTAL_META):])
+
+    def _drop_dividends_if_legacy_pk(self):
+        """Drop legacy dividends table whose PK is only (symbol, end_date).
+
+        Required because DuckDB has no ``ALTER PRIMARY KEY`` — switching from
+        the 2-column PK to 4 columns needs a rebuild.
+        Callers must re-run backfill afterwards.
+        """
+        rows = self.conn.execute(
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = 'main' AND table_name = 'dividends'"
+        ).fetchall()
+        if not rows:
+            return  # CREATE TABLE below handles fresh DBs
+        info = self.conn.execute("PRAGMA table_info('dividends')").fetchall()
+        pk_cols = {r[1] for r in info if r[5]}  # col name where pk flag > 0
+        if len(pk_cols) == 2 and pk_cols == {"symbol", "end_date"}:
+            print(
+                "[storage] legacy PK on dividends (symbol, end_date); "
+                "dropping — re-run backfill to repopulate"
+            )
+            self.conn.execute("DROP TABLE dividends")
 
     def _drop_fundamental_tables_if_legacy_pk(self):
         """Drop legacy fundamental tables whose PK lacks ``report_type``.
@@ -1090,7 +1113,7 @@ class MarketStorage:
         self._upsert(
             df,
             table="dividends",
-            pk_cols=("symbol", "end_date"),
+            pk_cols=("symbol", "end_date", "ann_date", "ex_date"),
             schema_cols=DIVIDEND_COLUMNS,
         )
 

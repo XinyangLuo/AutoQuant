@@ -71,6 +71,18 @@ class PipelineState:
         step_results = {
             k: StepResult(**v) for k, v in step_results_raw.items()
         }
+        # Restore eval_result if present (EvaluationResult serialises via
+        # to_dict(); discard on deserialisation error so pipeline can fall
+        # back to re-running evaluate() in step4).
+        eval_result = None
+        er_raw = data.get("eval_result")
+        if isinstance(er_raw, dict):
+            try:
+                from backtest.factor.evaluation import EvaluationResult
+                eval_result = EvaluationResult.from_dict(er_raw)
+            except Exception:
+                pass  # fallback to None; step4 will re-run evaluate if needed
+
         # Discard legacy retry fields for backward compatibility
         # (not present in current serialized state; harmless if absent).
         return cls(
@@ -80,6 +92,7 @@ class PipelineState:
             status=data.get("status", "running"),
             current_step=data.get("current_step"),
             artifacts=data.get("artifacts", {}),
+            eval_result=eval_result,
         )
 
     # ------------------------------------------------------------------
