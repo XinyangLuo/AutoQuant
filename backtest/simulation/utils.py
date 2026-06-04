@@ -5,6 +5,26 @@ from typing import Literal
 import pandas as pd
 
 
+def validate_columns(df: pd.DataFrame, required: set[str], label: str = "DataFrame") -> None:
+    """检查 DataFrame 包含必要列，缺列直接报错。
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        待检查的 DataFrame。
+    required : set[str]
+        必须存在的列名集合。
+    label : str
+        数据来源标签，用于错误消息。
+    """
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"{label} 缺少必要列: {sorted(missing)}。"
+            f"需要: {sorted(required)}"
+        )
+
+
 def compute_adj_price(df: pd.DataFrame, price_type: Literal["o2o", "c2c"]) -> pd.Series:
     """Compute adjusted price based on price type.
 

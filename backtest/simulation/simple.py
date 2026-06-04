@@ -5,7 +5,7 @@ import numpy as np
 
 from backtest.simulation.config import SimulationConfig
 from backtest.simulation.models import BacktestResult
-from backtest.simulation.utils import compute_adj_price, cumulate_nav
+from backtest.simulation.utils import compute_adj_price, cumulate_nav, validate_columns
 
 
 class SimpleSimulator:
@@ -34,13 +34,16 @@ class SimpleSimulator:
             只有 nav_df，trades/snapshots 为空
         """
         # 1. 计算复权价格（按配置选择 o2o/c2c）
+        required = {"date", "symbol", "close", "adj_factor"}
+        validate_columns(market_data, required, label="market_data")
         df = market_data.copy()
         df["adj_price"] = compute_adj_price(df, self.config.price_type)
 
         # 2. 将数据 pivot 成 wide，计算前向收益。
         #    price_{T+1} / price_T - 1: T 日的值代表 T→T+1 这段周期的收益。
-        #    signals.date 是持仓生效日（已含 delay=1），T 日生效的 weight
-        #    应实现 T-1→T 的收益，因此 returns_wide 需 shift(1) 对齐。
+        #    signals.date 是持仓生效日（已含 delay=1）：T-1 日收盘后信号 →
+        #    T 日开盘建仓 → 实现 T→T+1 收益。weight 与 returns 直接对齐，
+        #    不再额外 shift（StrategyBase._apply_delay 已完成信号平移）。
         adj_price_wide = df.pivot(index="date", columns="symbol", values="adj_price")
         returns_wide = adj_price_wide.shift(-1) / adj_price_wide - 1.0
 
@@ -58,9 +61,9 @@ class SimpleSimulator:
         weight_wide = weight_wide.fillna(0)
 
         # 4. 组合日收益 = sum(weight * return)
-        #    returns_wide.shift(1): T 日生效的 weight 匹配 T-1→T 的收益。
+        #    weight 与 returns 直接对齐：T 日生效的 weight 匹配 T→T+1 收益。
         #    对缺失数据（停牌/退市），收益为 NaN，fillna(0) 后不影响组合。
-        daily_return = (weight_wide * returns_wide.shift(1).fillna(0)).sum(axis=1)
+        daily_return = (weight_wide * returns_wide.fillna(0)).sum(axis=1)
 
         # 5. 累积净值
         nav = cumulate_nav(daily_return)

@@ -11,7 +11,7 @@ from backtest.simulation.config import SimulationConfig
 from backtest.simulation.models import BacktestResult, DailySnapshot, Position, Trade
 from backtest.simulation.executor import OrderExecutor
 from backtest.simulation.dividends import DividendHandler
-from backtest.simulation.utils import round_lot_for_symbol, round_lot_for_symbol_vec
+from backtest.simulation.utils import round_lot_for_symbol, round_lot_for_symbol_vec, validate_columns
 
 
 @dataclass
@@ -181,6 +181,11 @@ class DetailedSimulator:
         BacktestResult
         """
         # 前置准备
+        required = {"date", "symbol", "close", "limit_up", "limit_down"}
+        if self.config.price_type == "o2o":
+            required |= {"open", "high", "low"}
+        validate_columns(market_data, required, label="market_data")
+
         signal_by_date = {
             d.strftime("%Y%m%d") if hasattr(d, "strftime") else str(d): g
             for d, g in signals.groupby("date")

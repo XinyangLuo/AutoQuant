@@ -296,29 +296,34 @@ def compute_trading_stats(
             out["total_stamp_duty"] = float(metrics_df["stamp_duty"].sum())
         if "transfer_fee" in metrics_df.columns:
             out["total_transfer_fee"] = float(metrics_df["transfer_fee"].sum())
+        # 从拆分项汇总 total_fees，同时阻止后续 trades fallback 触发
+        parts = [out[k] for k in ("total_commission", "total_stamp_duty", "total_transfer_fee")]
+        parts = [p for p in parts if not np.isnan(p)]
+        if parts:
+            out["total_fees"] = float(sum(parts))
+            if initial_cash > 0:
+                out["fees_pct_of_initial"] = out["total_fees"] / initial_cash
         if "turnover" in metrics_df.columns:
             avg_turn = float(metrics_df["turnover"].mean())
             out["avg_daily_turnover"] = avg_turn
             out["annual_turnover"] = avg_turn * _TRADING_DAYS
 
-    # Fallback: trades 中 commission 是总费用（含税费），仅在 metrics_df 缺失时使用
+    # Fallback: 从 trades 估算费用（SimpleSimulator 路径，无 metrics_df）
+    # 注意：Trade.commission 是总费用（佣金+印花税+过户费），不可拆分
     if trades is not None and not trades.empty:
         out["total_trades"] = int(len(trades))
-        if np.isnan(out["total_commission"]) and "commission" in trades.columns:
-            out["total_commission"] = float(trades["commission"].sum())
 
-    # Fallback stamp_duty if metrics_df missing but trades has it
-    if np.isnan(out["total_stamp_duty"]) and trades is not None and not trades.empty:
-        if {"direction", "amount"}.issubset(trades.columns):
+    # 仅当 metrics_df 未提供费用数据时，才从 trades fallback
+    if np.isnan(out["total_fees"]) and trades is not None and not trades.empty:
+        if "commission" in trades.columns:
+            # Trade.commission 是总费用，直接作为 total_fees
+            out["total_fees"] = float(trades["commission"].sum())
+            if initial_cash > 0:
+                out["fees_pct_of_initial"] = out["total_fees"] / initial_cash
+        # 尝试估算印花税（仅作参考，仅在未设置时写入，避免覆盖 metrics_df 准确值）
+        if np.isnan(out["total_stamp_duty"]) and {"direction", "amount"}.issubset(trades.columns):
             sells = trades[trades["direction"].isin(["sell", "short"])]
             out["total_stamp_duty"] = float(sells["amount"].sum() * 0.001)
-
-    parts = [out[k] for k in ("total_commission", "total_stamp_duty", "total_transfer_fee")]
-    parts = [p for p in parts if not np.isnan(p)]
-    if parts:
-        out["total_fees"] = float(sum(parts))
-        if initial_cash > 0:
-            out["fees_pct_of_initial"] = out["total_fees"] / initial_cash
 
     return out
 

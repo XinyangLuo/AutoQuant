@@ -238,8 +238,12 @@ class TestEdgeCases:
         })
         out = compute_trading_stats(trades, None, initial_cash=1e8)
         assert out["total_trades"] == 2
-        assert out["total_commission"] == pytest.approx(0.63, abs=1e-9)
-        # Fallback stamp-duty path picks up the single sell.
+        # Trade.commission 是总费用（含佣金+印花税+过户费），直接作为 total_fees
+        # total_commission 无法从总费用中拆分，保持 NaN
+        assert np.isnan(out["total_commission"])
+        assert out["total_fees"] == pytest.approx(0.63, abs=1e-9)
+        assert out["fees_pct_of_initial"] == pytest.approx(0.63 / 1e8, abs=1e-15)
+        # Fallback stamp-duty 仅作参考，不计入 total_fees
         assert out["total_stamp_duty"] == pytest.approx(1100.0 * 0.001, abs=1e-9)
 
     def test_evaluate_handles_single_day_nav(self, tmp_path):
