@@ -14,8 +14,7 @@
 
 > 这些不修，回测结果可能误导因子准入决策。
 
-- [x] **Fee 回退路径 double-count**：`evaluation/metrics.py:304-322`~~当 `metrics_df` 缺失（SimpleSimulator 路径）时，`total_commission` 已含 stamp_duty + transfer_fee，`total_fees` 又加一次 → 双倍计算。~~修复：`metrics_df` 块内立即从拆分项汇总 `total_fees`，trades fallback 不再覆盖已有值；恢复 `np.isnan(total_stamp_duty)` 守卫。
-- [x] **`DetailedSimulator` 输入校验**：`run()` 入口检查 `market_data` 包含必要列（`date/symbol/close/limit_up/limit_down`，o2o 加 `open/high/low`），缺列直接报错。校验逻辑提取到 `simulation/utils.py:validate_columns()`，`SimpleSimulator` 同步覆盖。
+（当前无阻塞项）
 
 ---
 
@@ -27,12 +26,6 @@
 
 - [ ] **OOS/IS 时间切分**：`PipelineConfig` 增加 `oos_ratio` / `oos_start` 参数，step3~step7 在 IS 上训练/筛选，OOS 上独立验证。要求 OOS IC 衰减 < 30%。
 - [ ] **多 universe 稳健性**：因子至少在 2 个 universe（全A / HS300 / CSI500）上通过 step3 ICIR gate。
-
-### 2.2 Agent 迭代质量 ✅ (2026-06-07)
-
-- [x] **Trace DAG 字段落地**（原 P1.A.1）：新增 `agents/trace.py` (`TraceRecord` + `TraceManager`)，`claude_cli.py run --run-dir` 自动追加 `parent_round_id` + `branch_id`；同时新增 `trace-append` CLI 子命令。
-- [x] **QuantFeedback 多层拆分**（原 P2.A.3）：`evaluator.py` 重构为 `ExecutionFeedback` / `EvaluationFeedback` / `HypothesisFeedback` 三层，`get_relevant_layer(failure_type)` 按需返回；`result.json` 同时输出 `layered` / `flat` / `relevant` 三种格式。
-- [x] **KB 自动积累**（原 P2.A.5）：新增 `agents/kb_update.py` (`KbUpdater`)，自动 upsert `hypothesis_index.jsonl`（`best_icir/best_sharpe` 取 max）、按 `signature` 去重更新 `anti_patterns.json`（`count++`）、按 `factor_id` 去重更新 `successful_patterns.json`、append `failed_attempts.jsonl`；新增 `kb-update` CLI 子命令。
 
 ### 2.3 性能优化
 
