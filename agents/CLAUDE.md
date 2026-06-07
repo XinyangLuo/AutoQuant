@@ -62,6 +62,16 @@ python -m agents.claude_cli schema --sources market_daily,income_q
 python -m agents.claude_cli run f_auto_001 \
     --factor-file results/<factor_id>/factor.py
 
+# 自动追加 trace（从 result.json 构建并写入 trace.jsonl）
+python -m agents.claude_cli trace-append --run-dir results/<run_id>/ \
+    --result results/<factor_id>/<strategy>/result.json \
+    --round 1 --category volume_reversal
+
+# 自动更新 KB（Pass / Fail 时调用）
+python -m agents.claude_cli kb-update \
+    --result results/<factor_id>/<strategy>/result.json \
+    --status pass
+
 # 帮助
 python -m agents.claude_cli --help
 ```
@@ -114,12 +124,24 @@ agents/
 
 ### `claude_cli.py` — CLI 入口
 
-两个子命令：
+四个子命令：
 
 - `schema --sources`：输出指定数据源在 `panel` 中的可用列名（JSON）
 - `run <factor_id> --run-dir --factor-file`：运行完整 step1~step10 流水线，输出 `result.json`（含自动计算的 HS300/CSI500/CSI1000 超额指标）
+  - `--run-dir` 模式下自动追加 `trace.jsonl`（需配合 `--round`/`--parent-round`/`--branch-id`）
+  - `--auto-kb-update` 自动更新 KB 文件
+  - `--feedback-format` 控制 feedback 输出：`flat` / `layered`（默认） / `relevant`
+- `trace-append --run-dir --result`：从 `result.json` 构建并追加 `trace.jsonl` 记录
+- `kb-update --result --status`：根据运行结果自动更新 KB 四文件
 
 通过的因子自动写入 `results/candidates/<factor_id>/`，等待人工 review 后 admit。
+
+### `trace.py` — Trace 管理
+
+`TraceManager` 管理单 run 目录下的 `trace.jsonl` 读写，支持：
+- `read_all()` / `get_next_round()` / `get_default_parent_round()`
+- `append(record)`：原子追加（tmp → replace）
+- `TraceRecord.from_result_json()`：从 `result.json` 深层路径提取 metrics（r² / max_existing_corr / residual_icir）
 
 ### `runner.py` — 流水线执行器
 
@@ -138,7 +160,24 @@ agents/
 
 ### `evaluator.py` — 评估器
 
-`AutoQuantFactorEvaluator` 汇总 experiment 中各 step 的 pass/fail 状态，生成结构化 `QuantFeedback`（decision / observation / suggestion / metrics / failed_step），供 Claude 分析。
+`AutoQuantFactorEvaluator` 汇总 experiment 中各 step 的 pass/fail 状态，生成结构化 `QuantFeedback`。
+
+**三层拆分**：
+- `ExecutionFeedback` — 代码/配置/覆盖度错误（`code_error`, `schema_error`, `coverage_fail`, `config_error`）
+- `EvaluationFeedback` — 统计/回测/评估指标（`icir_fail`, `backtest_fail`, `ridge_fail`, `residual_fail` 等）
+- `HypothesisFeedback` — 方向/构造/数据源元信息
+
+`get_relevant_layer(failure_type)` 按失败类型返回对应层，供 RC prompt 选择性注入，减少 token 消耗。
+
+### `kb_update.py` — KB 自动更新器
+
+### `kb_update.py` — KB 自动更新器
+
+`KbUpdater` 提供 Pass/Fail 后的自动 KB 更新：
+- `update_on_pass()` → upsert `hypothesis_index.jsonl` + 更新 `successful_patterns.json`
+- `update_on_fail()` → 条件更新 `anti_patterns.json`（`signature` 去重，`count++`）+ 追加 `failed_attempts.jsonl` + upsert `hypothesis_index.jsonl`
+
+所有写操作原子（tmp → replace），`hypothesis_index` 和 `successful_patterns` 按 `factor_id` 去重，`anti_patterns` 按 `signature` 去重。
 
 ### `config.py` — 配置
 

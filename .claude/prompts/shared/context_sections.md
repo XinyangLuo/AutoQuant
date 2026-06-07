@@ -70,6 +70,29 @@
 
 ---
 
+## Layered Feedback Injection (QuantFeedback 分层)
+
+`agents/evaluator.py` now emits `QuantFeedback` in three layers:
+`execution` / `evaluation` / `hypothesis`.
+
+When injecting **this round's result** into the RC prompt, use
+`result.json["feedback"]["relevant"]` instead of the full `result.json`.
+This contains only the layer matching `failure_type` plus top-level
+decision fields (`decision`, `observation`, `suggestion`, `passed_steps`,
+`failed_step`, `failure_reason`).
+
+| failure_type | Relevant layer | Fields injected |
+|---|---|---|
+| `code_error` / `schema_error` / `execution_error` / `coverage_fail` / `config_error` | **execution** | error, traceback, coverage_ratio, failed_step, failure_reason |
+| `neutralization_fail` / `icir_fail` / `monotonicity_fail` / `backtest_fail` / `ridge_fail` / `residual_fail` / `metrics_fail` | **evaluation** | annual_icir, pos_ratio, turnover, max_corr, monotonicity, simple/detailed sharpe/mdd/calmar, cost_drag, ridge_tier, ridge_r2, residual_annual_icir |
+| (pass / no failure) | **hypothesis** | category, data_sources |
+
+**例外**：当 `feedback_format=relevant` 被显式请求时，直接注入整个
+`result.json["feedback"]["relevant"]` 块。当 `feedback_format=layered`
+时，注入 `feedback.relevant`（优先）而非 `feedback.layered`。
+
+---
+
 ## Section Templates
 
 ### `# Current SOTA for Category: {category}`

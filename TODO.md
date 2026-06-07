@@ -28,11 +28,11 @@
 - [ ] **OOS/IS 时间切分**：`PipelineConfig` 增加 `oos_ratio` / `oos_start` 参数，step3~step7 在 IS 上训练/筛选，OOS 上独立验证。要求 OOS IC 衰减 < 30%。
 - [ ] **多 universe 稳健性**：因子至少在 2 个 universe（全A / HS300 / CSI500）上通过 step3 ICIR gate。
 
-### 2.2 Agent 迭代质量
+### 2.2 Agent 迭代质量 ✅ (2026-06-07)
 
-- [ ] **Trace DAG 字段落地**（原 P1.A.1）：`trace.jsonl` 实际写入 `parent_round_id` + `branch_id`（schema 已定义，写入逻辑未落地）。
-- [ ] **QuantFeedback 多层拆分**（原 P2.A.3）：将单层 `QuantFeedback` 拆为 `execution` / `evaluation` / `hypothesis` 三层，RC 按 failure_type 只看对应层。
-- [ ] **KB 自动积累**（原 P2.A.5）：Pass/Abandon 时自动更新 `hypothesis_index.jsonl`，HO 查重不再依赖手动维护。
+- [x] **Trace DAG 字段落地**（原 P1.A.1）：新增 `agents/trace.py` (`TraceRecord` + `TraceManager`)，`claude_cli.py run --run-dir` 自动追加 `parent_round_id` + `branch_id`；同时新增 `trace-append` CLI 子命令。
+- [x] **QuantFeedback 多层拆分**（原 P2.A.3）：`evaluator.py` 重构为 `ExecutionFeedback` / `EvaluationFeedback` / `HypothesisFeedback` 三层，`get_relevant_layer(failure_type)` 按需返回；`result.json` 同时输出 `layered` / `flat` / `relevant` 三种格式。
+- [x] **KB 自动积累**（原 P2.A.5）：新增 `agents/kb_update.py` (`KbUpdater`)，自动 upsert `hypothesis_index.jsonl`（`best_icir/best_sharpe` 取 max）、按 `signature` 去重更新 `anti_patterns.json`（`count++`）、按 `factor_id` 去重更新 `successful_patterns.json`、append `failed_attempts.jsonl`；新增 `kb-update` CLI 子命令。
 
 ### 2.3 性能优化
 

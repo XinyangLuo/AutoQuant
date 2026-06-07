@@ -23,8 +23,10 @@ from .config import AgentConfig
 from .evaluator import AutoQuantFactorEvaluator, QuantFeedback
 from .experiment import AutoQuantFactorExperiment
 from .helpers import validate_python_code, validate_transforms_imports, force_register_factor_id
+from .kb_update import KbUpdater
 from .runner import AutoQuantFactorRunner
 from .schema import COLUMN_ALIASES, get_panel_columns_for_data_sources
+from .trace import TraceManager, TraceRecord
 
 load_dotenv()
 
@@ -217,6 +219,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         tag_dir.mkdir(parents=True, exist_ok=True)
         result_path = tag_dir / "result.json"
 
+    # Build feedback output according to --feedback-format
+    feedback_payload: dict[str, Any] | None = None
+    if feedback is not None:
+        fmt = getattr(args, "feedback_format", "layered")
+        if fmt == "flat":
+            feedback_payload = feedback.to_flat_dict()
+        elif fmt == "relevant":
+            feedback_payload = feedback.get_relevant_layer(failure_type)
+        else:  # layered (default)
+            feedback_payload = {
+                "layered": feedback.to_layered_dict(),
+                "flat": feedback.to_flat_dict(),
+                "relevant": feedback.get_relevant_layer(failure_type),
+            }
+
     result = {
         "factor_id": factor_id,
         "status": status,
@@ -229,7 +246,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "run_dir": str(run_dir) if run_dir else str(result_path.parent),
         "thresholds": _read_pipeline_thresholds(),
         "metrics": feedback.metrics if feedback else {},
-        "feedback": feedback.to_dict() if feedback else None,
+        "feedback": feedback_payload,
         "experiment": experiment.to_dict(),
         "report_path": experiment.report_path or None,
     }
@@ -240,6 +257,33 @@ def cmd_run(args: argparse.Namespace) -> int:
     # visibility. In auto-layout mode the report is already at the right place.
     if run_dir:
         _copy_report_to_round(experiment.report_path, run_dir)
+
+    # Auto-trace: append trace record when --run-dir is specified
+    if run_dir and feedback is not None:
+        tm = TraceManager(run_dir)
+        arg_round = getattr(args, "round", None)
+        trace_record = TraceRecord.from_result_json(
+            result,
+            round_num=arg_round if arg_round is not None else tm.get_next_round(),
+            parent_round_id=getattr(args, "parent_round", None)
+            or tm.get_default_parent_round(),
+            branch_id=getattr(args, "branch_id", None) or "main",
+            category=getattr(args, "category", None) or experiment.category or "",
+            data_sources=(
+                (getattr(args, "data_sources", None) or "").split(",")
+                if getattr(args, "data_sources", None)
+                else []
+            ),
+        )
+        tm.append(trace_record)
+
+    # Auto-KB: update knowledge base when --auto-kb-update is enabled
+    if getattr(args, "auto_kb_update", False):
+        updater = KbUpdater()
+        if status == "pass":
+            updater.update_on_pass(experiment)
+        else:
+            updater.update_on_fail(experiment)
 
     if status == "pass":
         # Find report for candidates/
@@ -253,6 +297,91 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     print(json.dumps(_clean_json(result), ensure_ascii=False, indent=2, allow_nan=False))
     return 0 if status != "error" else 1
+
+
+def _safe_json_load(path: Path, label: str = "file") -> dict[str, Any] | None:
+    """Load JSON from path with graceful error handling."""
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"Error: {label} at {path} contains invalid JSON: {exc}", file=sys.stderr)
+        return None
+    except FileNotFoundError:
+        print(f"Error: {label} not found at {path}", file=sys.stderr)
+        return None
+
+
+def cmd_trace_append(args: argparse.Namespace) -> int:
+    """Append a trace record to trace.jsonl from a result.json file."""
+    run_dir = Path(args.run_dir)
+    result_path = Path(args.result)
+    result = _safe_json_load(result_path, "result")
+    if result is None:
+        return 1
+
+    rc_output = None
+    if args.rc_output:
+        rc_output = _safe_json_load(Path(args.rc_output), "rc-output")
+        if rc_output is None:
+            return 1
+
+    tried_params: dict[str, Any] = {}
+    if args.tried_params:
+        try:
+            tried_params = json.loads(args.tried_params)
+        except json.JSONDecodeError as exc:
+            print(f"Error: --tried-params is not valid JSON: {exc}", file=sys.stderr)
+            return 1
+
+    tm = TraceManager(run_dir)
+    round_num = args.round if args.round is not None else tm.get_next_round()
+    parent_round_id = (
+        args.parent_round if args.parent_round is not None else tm.get_default_parent_round()
+    )
+
+    trace_record = TraceRecord.from_result_json(
+        result,
+        round_num=round_num,
+        parent_round_id=parent_round_id,
+        branch_id=args.branch_id or "main",
+        rc_output=rc_output,
+        code_summary=args.code_summary or "",
+        tried_params=tried_params,
+        category=args.category or "",
+        data_sources=(args.data_sources or "").split(",") if args.data_sources else [],
+    )
+    tm.append(trace_record)
+    print(
+        json.dumps(
+            {"status": "ok", "trace_path": str(tm.trace_path), "round": round_num},
+            ensure_ascii=False,
+        )
+    )
+    return 0
+
+
+def cmd_kb_update(args: argparse.Namespace) -> int:
+    """Update knowledge base from a result.json file."""
+    result_path = Path(args.result)
+    result = _safe_json_load(result_path, "result")
+    if result is None:
+        return 1
+
+    experiment = AutoQuantFactorExperiment.from_dict(result.get("experiment", {}))
+    rc_output = None
+    if args.rc_output:
+        rc_output = _safe_json_load(Path(args.rc_output), "rc-output")
+        if rc_output is None:
+            return 1
+
+    updater = KbUpdater()
+    if args.status == "pass":
+        summary = updater.update_on_pass(experiment)
+    else:
+        summary = updater.update_on_fail(experiment, rc_output=rc_output)
+
+    print(json.dumps(summary.to_dict(), ensure_ascii=False, indent=2))
+    return 0
 
 
 def _copy_report_to_round(report_path: str, run_dir: Path) -> None:
@@ -367,7 +496,55 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--decay", type=int, help="Override decay for step5 strategy")
     run.add_argument("--universe", type=str, help="Override universe for step5 strategy")
     run.add_argument("--rebalance", type=str, help="Override rebalance for step5 strategy")
+
+    # Trace / iteration parameters (only meaningful with --run-dir)
+    run.add_argument("--round", type=int, help="Round number for trace (auto-inferred if omitted)")
+    run.add_argument("--parent-round", type=int, help="Parent round ID for DAG trace")
+    run.add_argument("--branch-id", type=str, default="main", help="Branch ID for DAG trace")
+    run.add_argument("--category", type=str, help="Factor category for trace/KB")
+    run.add_argument("--data-sources", type=str, help="Comma-separated data sources for trace/KB")
+    run.add_argument(
+        "--feedback-format", type=str, default="layered",
+        choices=["flat", "layered", "relevant"],
+        help="Feedback output format: flat (legacy), layered (default), or relevant (RC-optimized)",
+    )
+    run.add_argument(
+        "--auto-kb-update", action="store_true",
+        help="Automatically update KB after run completes",
+    )
     run.set_defaults(func=cmd_run)
+
+    # ------------------------------------------------------------------
+    # trace-append subcommand
+    # ------------------------------------------------------------------
+    trace_append = sub.add_parser(
+        "trace-append", help="Append a trace record from result.json to trace.jsonl"
+    )
+    trace_append.add_argument("--run-dir", required=True, help="Run directory containing trace.jsonl")
+    trace_append.add_argument("--result", required=True, help="Path to result.json")
+    trace_append.add_argument("--rc-output", help="Optional path to RC diagnosis JSON")
+    trace_append.add_argument("--round", type=int, help="Round number")
+    trace_append.add_argument("--parent-round", type=int, help="Parent round ID")
+    trace_append.add_argument("--branch-id", type=str, default="main", help="Branch ID")
+    trace_append.add_argument("--code-summary", type=str, default="", help="Short formula description")
+    trace_append.add_argument("--tried-params", type=str, help="JSON string of tried params")
+    trace_append.add_argument("--category", type=str, help="Factor category")
+    trace_append.add_argument("--data-sources", type=str, help="Comma-separated data sources")
+    trace_append.set_defaults(func=cmd_trace_append)
+
+    # ------------------------------------------------------------------
+    # kb-update subcommand
+    # ------------------------------------------------------------------
+    kb_update = sub.add_parser(
+        "kb-update", help="Update knowledge base from a result.json"
+    )
+    kb_update.add_argument("--result", required=True, help="Path to result.json")
+    kb_update.add_argument(
+        "--status", required=True, choices=["pass", "fail"],
+        help="Final status of the factor run",
+    )
+    kb_update.add_argument("--rc-output", help="Optional path to RC diagnosis JSON (for anti-pattern extraction)")
+    kb_update.set_defaults(func=cmd_kb_update)
 
     return parser
 

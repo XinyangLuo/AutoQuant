@@ -326,25 +326,21 @@ Append exactly one object per round:
 
 When loop ends with pass:
 
-1. **Update `successful_patterns.json`**：
-   - 读取当前文件
-   - 在 `category` key 下追加一条记录：
-   ```json
-   {
-     "factor_id": "{factor_id}",
-     "formula_pattern": "一句话描述公式结构",
-     "key_metrics": {"annual_icir": X.XX, "simple_sharpe": X.XX},
-     "why_it_works": "一句话解释经济学逻辑",
-     "admission_date": "{today}"
-   }
+1. **Auto-update KB**（替代手动文件操作）：
+   ```bash
+   conda activate AutoQuant && python -m agents.claude_cli kb-update \
+     --result results/<factor_id>/<strategy>/result.json \
+     --status pass
    ```
-   - 如果 category key 不存在则新建
+   该命令自动更新 `hypothesis_index.jsonl`（upsert）和 `successful_patterns.json`（按 category 追加，factor_id 去重）。
 
-2. **Append `failed_attempts.jsonl`**：
-   ```json
-   {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "pass", "best_icir": X.XX, "best_sharpe": X.XX, "code_summary": "公式+构造简述", "ts": "{ISO timestamp}"}
+2. **Auto-append trace**（若 run 时未使用 `--auto-kb-update`）：
+   ```bash
+   conda activate AutoQuant && python -m agents.claude_cli trace-append \
+     --run-dir results/<run_id>/ \
+     --result results/<factor_id>/<strategy>/result.json \
+     --round <N> --category <category> --code-summary "<summary>"
    ```
-   `code_summary` 来自 trace 最后一轮，**必须记录**——即使 pass 了，保留公式便于后续发现近似重复时快速识别。
 
 3. 因子已由 CLI 自动写入 `results/candidates/<factor_id>/`（含 `factor.py`、`pipeline_state.json`、`result.json`、`pipeline_report.md`）。
 
@@ -354,20 +350,26 @@ When loop ends with pass:
 
 When loop ends with abandon（RC 建议放弃或 max_rounds 耗尽）：
 
-1. **Update `anti_patterns.json`**（如果最后一轮 RC 输出了 `new_anti_pattern` 非 null）：
-   - 读取当前文件
-   - **字段转换**：RC 输出的 new_anti_pattern 有 4 字段（`pattern, category, signature, fix`）。追加到 KB 时需要补充 `count: 1` 和 `last_seen: "{today}"`
-   - **去重判断**：在 `anti_patterns.json[failure_type]` 数组中搜索，匹配条件为 **`signature` 完全相同**（exact string match）。如果匹配到已有条目 → 该条目的 `count += 1`，更新 `last_seen`；否则 append 新条目
-   - 如果 `failure_type` key 在 anti_patterns.json 中不存在 → 新建该 key 并初始化为包含此条目的数组
-
-2. **Append `failed_attempts.jsonl`**（**仅记录失败**，用于学习错误建模方案）：
-   ```json
-   {"factor_id": "{factor_id}", "run_id": "{run_id}", "category": "{category}", "data_sources": [...], "status": "fail", "best_icir": X.XX, "best_sharpe": X.XX, "failure_type": "...", "code_summary": "公式+构造简述", "why_failed": "根因一句话", "ts": "{ISO timestamp}"}
+1. **Auto-update KB**（含 conditional anti-pattern 更新）：
+   ```bash
+   conda activate AutoQuant && python -m agents.claude_cli kb-update \
+     --result results/<factor_id>/<strategy>/result.json \
+     --status fail \
+     --rc-output results/<run_id>/rc_diagnosis.json
    ```
-   - `code_summary`：来自 trace 最后一轮，失败后因子代码被清理，这是唯一保留的公式记录
-   - `why_failed`：从 RC 最后一轮 diagnosis 中提炼一句话根因（如「ICIR 优秀但波动过大导致 Sharpe 不达标」「barra_l3 切换暴露出行业聚类 0.44 超标」）
-   - `failure_type`：最终失败步骤（backtest_fail / icir_fail / ridge_fail 等）
-   - **不记录 `rounds`**：轮数多少不重要，重要的是为什么失败
+   该命令自动：
+   - 更新 `hypothesis_index.jsonl`（status=fail，upsert best_icir）
+   - 追加 `failed_attempts.jsonl`
+   - 若 RC 输出了 `new_anti_pattern`，按 `signature` exact match 去重更新 `anti_patterns.json`（count += 1）
+
+2. **Auto-append trace**：
+   ```bash
+   conda activate AutoQuant && python -m agents.claude_cli trace-append \
+     --run-dir results/<run_id>/ \
+     --result results/<factor_id>/<strategy>/result.json \
+     --rc-output results/<run_id>/rc_diagnosis.json \
+     --round <N> --category <category> --code-summary "<summary>"
+   ```
 
 3. 输出放弃报告：
    - 原始假设
