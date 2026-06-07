@@ -60,11 +60,15 @@ class UniverseFilter:
             # Compute exact trading days since listing using the trade calendar.
             min_list_date = df["list_date"].min()
             if pd.notna(min_list_date):
-                all_trade_dates = get_trade_dates(str(min_list_date), date)
+                min_list_date_str = pd.to_datetime(min_list_date).strftime("%Y%m%d")
+                all_trade_dates = get_trade_dates(min_list_date_str, date)
                 date_to_idx = {d: i for i, d in enumerate(all_trade_dates)}
                 if date in date_to_idx:
                     current_idx = date_to_idx[date]
-                    list_indices = df["list_date"].astype(str).map(date_to_idx)
+                    list_indices = (
+                        pd.to_datetime(df["list_date"]).dt.strftime("%Y%m%d")
+                        .map(date_to_idx)
+                    )
                     # Stocks whose list_date is not in the calendar (e.g. before
                     # calendar start) get NaN — keep them (conservative).
                     trading_days = current_idx - list_indices

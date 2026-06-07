@@ -121,6 +121,8 @@ Respond in strict JSON:
 ## config_error
 - fix_level="strategy_only"
 - Fix top_k/top_pct/decay/rebalance in config.yaml
+- **Fundamental factors** (using income_q/balancesheet_q/cashflow_q): default rebalance should be "1M" or "EOM". Quarterly financials provide no daily signal; high-frequency rebalancing only increases costs.
+- **Price/volume factors**: rebalance can be "1D", "5D", or "1W" depending on signal half-life.
 
 ## backtest_fail (most complex — tiered response)
 
