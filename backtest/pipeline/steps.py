@@ -278,13 +278,34 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
 
 
 def _max_industry_corr(merged: pd.DataFrame) -> float:
-    """Max abs Pearson corr between factor value and any industry dummy."""
+    """Max abs Pearson corr between factor value and any industry dummy.
+
+    Uses pre-encoded categorical codes + numpy boolean masks instead of
+    repeated ``pd.get_dummies`` per date.  Follows the same pattern as
+    :func:`backtest.factor.transforms.cs_ols_residualize`.
+    """
+    cat = merged["industry_code"].astype("category")
+    codes = cat.cat.codes.to_numpy()
+    vals = merged["value"].to_numpy(dtype=float)
+
     max_corr = 0.0
-    for date, group in merged.groupby("date"):
-        dummies = pd.get_dummies(group["industry_code"], prefix="ind")
-        for col in dummies.columns:
-            corr = _ic_series(group["value"], dummies[col])
-            max_corr = max(max_corr, abs(corr))
+    for _, idx in merged.groupby("date", sort=False).groups.items():
+        positions = np.asarray(idx, dtype=int)
+        day_vals = vals[positions]
+        valid = ~np.isnan(day_vals)
+        if valid.sum() < 2:
+            continue
+        day_codes = codes[positions]
+        present = np.unique(day_codes[valid])
+        if present.size <= 1:
+            continue
+        # Drop first category to avoid collinearity (consistent with cs_ols_residualize)
+        dummies = (day_codes[valid][:, None] == present[None, 1:]).astype(float)
+        v = day_vals[valid]
+        for j in range(dummies.shape[1]):
+            c = np.corrcoef(v, dummies[:, j])[0, 1]
+            if not np.isnan(c):
+                max_corr = max(max_corr, abs(c))
     return max_corr
 
 

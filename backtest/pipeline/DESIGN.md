@@ -200,7 +200,7 @@ python -m backtest.pipeline step5 f_001 \
 | Step | 名称 | 功能 | 淘汰标准 |
 |------|------|------|----------|
 | step1 | Coverage | 截面缺失率检查（95 分位数） | 量价 > 15%，财务 > 30%（config.yaml） |
-| step2 | Neutralization | 验证中性化有效性（size + industry） | size_corr ≥ 0.05 或 ind_corr ≥ 0.05。现有因子相关性仅计算不门控，推迟到 step8 |
+| step2 | Neutralization | 验证中性化有效性（size + industry） | size_corr ≥ 0.05 或 ind_corr ≥ 0.05。现有因子相关性仅计算不门控，推迟到 step8。`_max_industry_corr` 使用预编码行业哑变量 + numpy 掩码，避免逐日 `pd.get_dummies` |
 | step3 | ICIR | 离线 ICIR 门控 | 日频：|IC|≤0.01 或 ICIR≤1.0 或 t≤2.0 或 pos_ratio≤55%（任一 horizon 通过即可）；月频阈值见 config.yaml |
 | step4 | Monotonicity | 10 组单调性 | Spearman corr(group, mean_ret) ≤ 0.7 |
 | step5 | Strategy Config | 构建默认策略配置 | 无淘汰（总是通过） |

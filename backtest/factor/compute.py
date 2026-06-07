@@ -21,45 +21,6 @@ from backtest.factor.variants import (
 )
 
 
-# Non-event-driven fina factors build a per-(date, symbol) panel. Long
-# ranges blow up memory, so split the compute into calendar-year slices.
-_FINA_CHUNK_YEARS = 1
-
-
-def _compute_factor_chunked(
-    factor_id: str,
-    start_date: str,
-    end_date: str,
-    *,
-    market_storage: MarketStorage | None,
-    factor_storage: FactorStorage | None,
-) -> pd.DataFrame:
-    """Run compute_factor in calendar-year slices and concat."""
-    start_dt = datetime.strptime(start_date, "%Y%m%d")
-    end_dt = datetime.strptime(end_date, "%Y%m%d")
-
-    pieces: list[pd.DataFrame] = []
-    cur = start_dt
-    while cur <= end_dt:
-        chunk_end = datetime(cur.year + _FINA_CHUNK_YEARS - 1, 12, 31)
-        if chunk_end > end_dt:
-            chunk_end = end_dt
-        sub = compute_factor(
-            factor_id,
-            cur.strftime("%Y%m%d"),
-            chunk_end.strftime("%Y%m%d"),
-            market_storage=market_storage,
-            factor_storage=factor_storage,
-        )
-        if not sub.empty:
-            pieces.append(sub)
-        cur = datetime(chunk_end.year + 1, 1, 1)
-
-    if not pieces:
-        return pd.DataFrame(columns=["date", "symbol", "factor_id", "value"])
-    return pd.concat(pieces, ignore_index=True)
-
-
 def compute_factor(
     factor_id: str,
     start_date: str,
@@ -108,17 +69,6 @@ def compute_factor(
     # ``MarketStorage.get_fina_event_panel`` and skip the per-(date, symbol)
     # injection + chunking machinery entirely.
     event_driven = bool(params.get("event_driven", False))
-
-    if needs_fina and not needs_factor_store and not event_driven:
-        start_dt = datetime.strptime(start_date, "%Y%m%d")
-        end_dt = datetime.strptime(end_date, "%Y%m%d")
-        years_span = (end_dt - start_dt).days / 365.25
-        if years_span > _FINA_CHUNK_YEARS:
-            return _compute_factor_chunked(
-                factor_id, start_date, end_date,
-                market_storage=market_storage,
-                factor_storage=factor_storage,
-            )
 
     own_market = market_storage is None
     own_factor = factor_storage is None

@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 from tqdm import tqdm
@@ -83,6 +84,15 @@ def _get_earliest_start_date(stock_list: pd.DataFrame) -> str:
     return str(stock_list["list_date"].min())
 
 
+def _backfill_one(factor_id: str, factor_start: str, end_date: str) -> tuple[str, int, str | None]:
+    """Backfill a single factor in an isolated thread.  Returns (factor_id, rows, error)."""
+    try:
+        rows = backfill_factor(factor_id, factor_start, end_date)
+        return factor_id, rows, None
+    except Exception as exc:
+        return factor_id, 0, str(exc)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Backfill factor values into the work DB")
     parser.add_argument("factor_id", nargs="?", help="Factor ID to backfill (e.g. f_001)")
@@ -90,6 +100,9 @@ def main():
                         help="Backfill all pending (unadmitted, unrejected) factors")
     parser.add_argument("--test-days", type=int, default=None,
                         help="Only backfill the last N trade days (debugging)")
+    parser.add_argument("--workers", type=int, default=1,
+                        help="Number of parallel workers (default 1, serial). "
+                             "Each worker opens its own DB connections.")
     args = parser.parse_args()
 
     if not args.pending and not args.factor_id:
@@ -133,27 +146,47 @@ def main():
             print(f"WARNING: dependency cycle detected, "
                   f"falling back to original order: {e}")
 
+        # Collect resume info serially (requires a single storage handle).
+        backfill_tasks: list[tuple[str, str]] = []
         with FactorStorage() as factor_storage:
-            for factor_id in tqdm(factor_ids, desc="backfill"):
-                try:
-                    existing_max = factor_storage.get_max_date(factor_id)
-                    if existing_max and existing_max >= end_date:
-                        print(f"  {factor_id}: already up to date ({existing_max})")
-                        continue
+            for factor_id in factor_ids:
+                existing_max = factor_storage.get_max_date(factor_id)
+                if existing_max and existing_max >= end_date:
+                    print(f"  {factor_id}: already up to date ({existing_max})")
+                    continue
+                if existing_max:
+                    resume_dates = get_trade_dates(existing_max, end_date)
+                    factor_start = resume_dates[1] if len(resume_dates) > 1 else end_date
+                    print(f"  {factor_id}: resuming from {factor_start}")
+                else:
+                    factor_start = start_date
+                backfill_tasks.append((factor_id, factor_start))
 
-                    if existing_max:
-                        resume_dates = get_trade_dates(existing_max, end_date)
-                        factor_start = resume_dates[1] if len(resume_dates) > 1 else end_date
-                        print(f"  {factor_id}: resuming from {factor_start}")
+        if not backfill_tasks:
+            print("\nBackfill complete (all factors up to date).")
+            return
+
+        if args.workers > 1:
+            print(f"Backfilling with {args.workers} workers ...")
+            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+                futures = {
+                    executor.submit(_backfill_one, fid, fstart, end_date): fid
+                    for fid, fstart in backfill_tasks
+                }
+                for future in as_completed(futures):
+                    factor_id, rows, err = future.result()
+                    if err:
+                        print(f"  ERROR {factor_id}: {err}")
                     else:
-                        factor_start = start_date
-
+                        print(f"  {factor_id}: wrote {rows:,} rows")
+        else:
+            for factor_id, factor_start in tqdm(backfill_tasks, desc="backfill"):
+                try:
                     rows = backfill_factor(
                         factor_id,
                         factor_start,
                         end_date,
                         market_storage=market_storage,
-                        factor_storage=factor_storage,
                     )
                     print(f"  {factor_id}: wrote {rows:,} rows")
                 except Exception as exc:

@@ -253,6 +253,44 @@ class FactorStorage:
         """
         return self.conn.execute(sql, [date]).fetchdf()
 
+    def get_factors_wide(
+        self,
+        factor_ids: list[str],
+        start: str | None = None,
+        end: str | None = None,
+    ) -> pd.DataFrame:
+        """Return a wide panel ``[date, symbol, f_001, f_002, ...]`` for a date range.
+
+        Missing factors (not yet a column) are returned as all-NaN so that
+        callers can request a stable column set.  This avoids N round-trips
+        and client-side merges when reading many factors at once.
+        """
+        present = self._existing_columns()
+        selected: list[str] = []
+        for fid in factor_ids:
+            if fid in present:
+                selected.append(_quote_ident(fid))
+            else:
+                selected.append(f"CAST(NULL AS DOUBLE) AS {_quote_ident(fid)}")
+        cols_sql = ", ".join(selected) if selected else ""
+
+        conditions: list[str] = []
+        params: list = []
+        if start:
+            conditions.append("date >= strptime(?, '%Y%m%d')::DATE")
+            params.append(start)
+        if end:
+            conditions.append("date <= strptime(?, '%Y%m%d')::DATE")
+            params.append(end)
+        where_clause = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        sql = f"""
+            SELECT date, symbol{(", " + cols_sql) if cols_sql else ""}
+            FROM {FACTORS_TABLE}{where_clause}
+            ORDER BY date, symbol
+        """
+        return self.conn.execute(sql, params).fetchdf()
+
     def get_factors_long(
         self,
         factor_ids: list[str] | None = None,

@@ -203,11 +203,17 @@ def z_score(
         Same index as ``values``, with time-series z-scored values.
     """
     _check_panel_series(values)
-    roller = _ts_roll(values, window, min_periods, window_min=2, min_periods_min=2)
-    stats = roller.agg(["mean", "std"])
-    stats.index = stats.index.droplevel(0)
+    if window < 2:
+        raise ValueError(f"window must be >= 2, got {window}")
+    if min_periods is None:
+        min_periods = _default_min_periods(window, lower_bound=2)
+    if min_periods < 2:
+        raise ValueError(f"min_periods must be >= 2, got {min_periods}")
 
     sorted_vals = values.sort_index(level=[1, 0])
+    stats = sorted_vals.groupby(level=1).rolling(window, min_periods=min_periods).agg(["mean", "std"])
+    stats.index = stats.index.droplevel(0)
+
     z = (sorted_vals - stats["mean"]) / stats["std"].where(stats["std"] > 0, np.nan)
     return z.reindex(values.index)
 
@@ -961,11 +967,17 @@ def ts_ir(
         Same index as ``values``.
     """
     _check_panel_series(values)
-    roller = _ts_roll(values, window, min_periods, window_min=2)
-    stats = roller.agg(["mean", "std"])
-    stats.index = stats.index.droplevel(0)
+    if window < 2:
+        raise ValueError(f"window must be >= 2, got {window}")
+    if min_periods is None:
+        min_periods = _default_min_periods(window, lower_bound=2)
+    if min_periods < 2:
+        raise ValueError(f"min_periods must be >= 2, got {min_periods}")
 
     sorted_vals = values.sort_index(level=[1, 0])
+    stats = sorted_vals.groupby(level=1).rolling(window, min_periods=min_periods).agg(["mean", "std"])
+    stats.index = stats.index.droplevel(0)
+
     ir = stats["mean"] / stats["std"].where(stats["std"] > 0, np.nan)
     return ir.reindex(values.index)
 
@@ -1201,14 +1213,16 @@ def cs_zscore(values: pd.Series) -> pd.Series:
     """
     _check_panel_series(values)
 
-    def _one(s: pd.Series) -> pd.Series:
-        mean = s.mean()
-        std = s.std()
-        if std == 0 or pd.isna(std) or s.notna().sum() <= 1:
-            return s.where(s.isna(), 0.0)
-        return (s - mean) / std
+    g = values.groupby(level=0)
+    mean_vals = g.transform("mean")
+    std_vals = g.transform("std")
+    count_vals = g.transform("count")
 
-    return _parallel_cs_apply(values, _one)
+    z = (values - mean_vals) / std_vals.where(std_vals > 0, np.nan)
+    # Degenerate dates: std==0, std is NaN, or count <= 1 → map non-NaN to 0
+    degenerate = (std_vals <= 0) | std_vals.isna() | (count_vals <= 1)
+    z = z.where(~degenerate | values.isna(), 0.0)
+    return z
 
 
 def cs_demean(values: pd.Series) -> pd.Series:
@@ -1299,18 +1313,15 @@ def cs_mad_winsorize(values: pd.Series, *, k: float = 3.0) -> pd.Series:
     if k <= 0:
         raise ValueError(f"k must be > 0, got {k}")
 
-    def _one(s: pd.Series) -> pd.Series:
-        valid = s.dropna()
-        if len(valid) < 2:
-            return s
-        med = valid.median()
-        mad = (valid - med).abs().median()
-        if mad == 0 or pd.isna(mad):
-            return s
-        delta = k * 1.4826 * mad
-        return s.clip(lower=med - delta, upper=med + delta)
+    g = values.groupby(level=0)
+    med = g.transform(lambda x: x.median())
+    mad = (values - med).abs().groupby(level=0).transform(lambda x: x.median())
+    count = g.transform("count")
 
-    return _parallel_cs_apply(values, _one)
+    delta = k * 1.4826 * mad
+    mask = (count >= 2) & (mad > 0) & mad.notna()
+    clipped = values.clip(lower=med - delta, upper=med + delta)
+    return values.where(~mask, clipped)
 
 
 def industry_median_fill(

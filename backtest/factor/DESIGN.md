@@ -149,6 +149,12 @@ ind_neutral = industry_neutralize(raw_series, industry_panel)
 cap_neutral = cap_neutralize(raw_series, cap_panel, cap_field='circ_mv', quantiles=5)
 ```
 
+#### 向量化实现策略
+
+所有 `cs_*` 截面算子优先使用 `groupby.transform` + numpy 而非 `groupby.apply` + Python 函数调用：`cs_zscore` 和 `cs_mad_winsorize` 通过 `groupby(level=0).transform("mean"/"std"/lambda)` 在 C 级循环中完成每日计算，避免 per-date Python 开销。`cap_neutralize` 是这一模式的范例。
+
+时序算子 `z_score` / `ts_ir` 共享 `_ts_roll` 的排序结果，避免对同一份数据重复 `sort_index(level=[1, 0])`。
+
 ### 双库存储
 
 ```
@@ -188,6 +194,9 @@ python -m backtest.factor.backfill f_001 --test-days 60
 
 # 所有 pending 因子（未 admit、未 reject）批量回填到 work
 python -m backtest.factor.backfill --pending
+
+# 并行回填（多线程，每个 worker 独立连接）
+python -m backtest.factor.backfill --pending --workers 4
 ```
 
 ### 2. 离线评测（读 work + library）
@@ -290,7 +299,11 @@ result = evaluate("f_001", "20210101", "20241231", ret_type="open")
 print(result.summary())
 print(result.threshold_metrics(20))
 
-# 5. 看完回测人工决定后
+# 5. 批量读多因子宽表（替代多次 get_factor + merge）
+with FactorLibrary() as lib:
+    wide = lib.get_factors_wide(["f_001", "f_002"], start="20210101", end="20241231")
+
+# 6. 看完回测人工决定后
 admit("f_001", notes="Sharpe 1.45")
 # 或
 reject("f_001", notes="RankICIR 偏低")

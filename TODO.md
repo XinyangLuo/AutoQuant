@@ -27,16 +27,6 @@
 - [ ] **OOS/IS 时间切分**：`PipelineConfig` 增加 `oos_ratio` / `oos_start` 参数，step3~step7 在 IS 上训练/筛选，OOS 上独立验证。要求 OOS IC 衰减 < 30%。
 - [ ] **多 universe 稳健性**：因子至少在 2 个 universe（全A / HS300 / CSI500）上通过 step3 ICIR gate。
 
-### 2.3 性能优化
-
-> 按预估加速比排序。
-
-- [ ] **`pipeline/steps.py` `step2` `_max_industry_corr`**：逐日 `pd.get_dummies` → 5–10×。预计算行业哑变量复用。
-- [ ] **`factor/compute.py` chunk 嵌套冗余**：外层 1 年 chunk + SQL 内层 6 月 chunk 重复切分 → 1.5–2×。合并为一层。
-- [ ] **backfill 多因子并行**：`ProcessPoolExecutor` 并行回填多个 factor_id。
-- [ ] **`FactorStorage.get_factors_wide`**：单次 SQL `UNION ALL` 出多列宽表，替代多次查询 + 客户端 merge。
-- [ ] **Transforms 向量化**：`z_score`/`ts_ir` 去重复 sort，`cs_mad_winsorize`/`cs_zscore` 从 `groupby.apply` → `groupby.transform` + numpy。
-
 ### 2.4 测试覆盖
 
 - [ ] **Pipeline 集成测试**：step1~step10 顺序调用 + state JSON 累积验证，确保门控逻辑不退化。

@@ -219,19 +219,18 @@ def ridge_r2_check(
                 f"range {start}~{end}. Backfill first."
             )
 
-        wide_parts: list[pd.DataFrame] = []
+        reg_df = library.get_factors_wide(list(regressors), start=start, end=end)
+        if reg_df.empty:
+            raise LibraryNotBootstrappedError(
+                "No regressor data retrieved from the factor library."
+            )
+        # Verify every requested regressor has at least some non-null data
         for reg_id in regressors:
-            sub = library.get_factor(reg_id, start=start, end=end)
-            if sub.empty:
+            if reg_id not in reg_df.columns or reg_df[reg_id].notna().sum() == 0:
                 raise LibraryNotBootstrappedError(
                     f"Regressor {reg_id} is missing from the factor library. "
                     f"Admit it first, or exclude it from the regressor set."
                 )
-            wide_parts.append(sub.rename(columns={"value": reg_id}))
-
-        reg_df = wide_parts[0]
-        for sub in wide_parts[1:]:
-            reg_df = reg_df.merge(sub, on=["date", "symbol"], how="outer")
 
         # Per-date Ridge — one pass produces both residuals (for step9 reuse)
         # and per-date R² distribution stats.
