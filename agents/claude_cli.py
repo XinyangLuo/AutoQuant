@@ -259,7 +259,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         _copy_report_to_round(experiment.report_path, run_dir)
 
     # Auto-trace: append trace record when --run-dir is specified
-    if run_dir and feedback is not None:
+    # (trace is written even when runner.run() raised, so the iteration loop
+    # can read the error signature from trace.jsonl on the next round.)
+    if run_dir:
         tm = TraceManager(run_dir)
         arg_round = getattr(args, "round", None)
         trace_record = TraceRecord.from_result_json(
@@ -283,7 +285,18 @@ def cmd_run(args: argparse.Namespace) -> int:
         if status == "pass":
             updater.update_on_pass(experiment)
         else:
-            updater.update_on_fail(experiment)
+            # Build a lightweight rc_output proxy from feedback so that
+            # anti-patterns are persisted even when cmd_run is invoked
+            # directly (without an external RC subagent).
+            rc_proxy: dict[str, Any] | None = None
+            if feedback:
+                rc_proxy = {
+                    "failure_type": failure_type,
+                    "diagnosis": feedback.observation or "",
+                    "fix_strategy": feedback.suggestion or "",
+                    "fix_level": "factor" if feedback.failed_step in ("step1", "step2", "step3") else "strategy_only",
+                }
+            updater.update_on_fail(experiment, rc_output=rc_proxy)
 
     if status == "pass":
         # Find report for candidates/

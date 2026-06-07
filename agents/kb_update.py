@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -138,12 +139,12 @@ class KbUpdater:
             old_icir = old.get("best_icir")
             old_sharpe = old.get("best_sharpe")
             new_icir = (
-                max(old_icir, current_icir)
+                max(float(old_icir), float(current_icir))
                 if old_icir is not None and current_icir is not None
                 else (old_icir if old_icir is not None else current_icir)
             )
             new_sharpe = (
-                max(old_sharpe, current_sharpe)
+                max(float(old_sharpe), float(current_sharpe))
                 if old_sharpe is not None and current_sharpe is not None
                 else (old_sharpe if old_sharpe is not None else current_sharpe)
             )
@@ -391,14 +392,12 @@ class KbUpdater:
     def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
         line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
         tmp = _unique_tmp(path)
-        # If file exists, copy existing content first
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as src, open(tmp, "w", encoding="utf-8") as dst:
-                dst.write(src.read())
-                dst.write(line)
-        else:
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(line)
+        with open(tmp, "w", encoding="utf-8") as dst:
+            if path.exists():
+                # Stream-copy instead of loading the whole file into memory.
+                with open(path, "r", encoding="utf-8") as src:
+                    shutil.copyfileobj(src, dst)
+            dst.write(line)
         os.replace(str(tmp), str(path))
 
     @staticmethod

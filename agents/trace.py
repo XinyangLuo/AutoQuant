@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -237,12 +238,10 @@ class TraceManager:
         payload = record.to_dict() if isinstance(record, TraceRecord) else dict(record)
         line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
         tmp = _unique_tmp(self.trace_path)
-        # Copy existing content if file already exists, then append new line
-        if self.trace_path.exists():
-            with open(self.trace_path, "r", encoding="utf-8") as src, open(tmp, "w", encoding="utf-8") as dst:
-                dst.write(src.read())
-                dst.write(line)
-        else:
-            with open(tmp, "w", encoding="utf-8") as f:
-                f.write(line)
+        with open(tmp, "w", encoding="utf-8") as dst:
+            if self.trace_path.exists():
+                # Stream-copy instead of loading the whole file into memory.
+                with open(self.trace_path, "r", encoding="utf-8") as src:
+                    shutil.copyfileobj(src, dst)
+            dst.write(line)
         os.replace(str(tmp), str(self.trace_path))

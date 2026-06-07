@@ -57,7 +57,7 @@ def force_register_factor_id(code: str, factor_id: str) -> str:
     tree = ast.parse(code)
     modified = False
 
-    for node in ast.walk(tree):
+    for node in list(ast.walk(tree)):
         if not isinstance(node, ast.FunctionDef):
             continue
         for i, dec in enumerate(node.decorator_list):
@@ -85,7 +85,7 @@ def force_register_factor_id(code: str, factor_id: str) -> str:
             break
 
     if not modified:
-        for node in ast.walk(tree):
+        for node in list(ast.walk(tree)):
             if isinstance(node, ast.FunctionDef):
                 node.decorator_list.insert(
                     0,

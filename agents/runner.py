@@ -108,12 +108,26 @@ class AutoQuantFactorRunner:
             if from_step == 1:
                 self._register_factor(experiment)
                 self._backfill_factor(experiment)
-            elif not self._factor_data_exists(experiment.factor_id):
-                raise RuntimeError(
-                    f"Factor {experiment.factor_id} has no data in the work DB. "
-                    f"Cannot resume from step {from_step} — run with --from-step 1 first "
-                    f"to register and backfill the factor."
-                )
+            elif from_step > 1:
+                if not self._factor_data_exists(experiment.factor_id):
+                    raise RuntimeError(
+                        f"Factor {experiment.factor_id} has no data in the work DB. "
+                        f"Cannot resume from step {from_step} — run with --from-step 1 first "
+                        f"to register and backfill the factor."
+                    )
+                # Guard against stale code: if the user changed the factor formula
+                # but kept the same factor_id, old values in the work DB would be
+                # silently reused.  Compare the on-disk code with the submitted code.
+                if experiment.factor_code:
+                    expected_path = self.generated_dir / experiment.factor_id / "factor.py"
+                    if expected_path.exists():
+                        disk_code = expected_path.read_text(encoding="utf-8")
+                        if disk_code.strip() != experiment.factor_code.strip():
+                            raise RuntimeError(
+                                f"Factor code on disk ({expected_path}) does not match "
+                                f"the submitted code. Run with --from-step 1 to re-register "
+                                f"the factor."
+                            )
 
             # Phase B: canonical step1~step10 (shared with manual CLI)
             ret_type = get_section_or("open", "pipeline", "ret_type")
@@ -213,8 +227,13 @@ class AutoQuantFactorRunner:
         try:
             spec.loader.exec_module(module)
         except Exception:
-            sys.modules.pop(mod_name, None)
-            unregister(experiment.factor_id)
+            # Clean up gently — if unregister() also raises we must not
+            # mask the original exec_module exception.
+            try:
+                sys.modules.pop(mod_name, None)
+                unregister(experiment.factor_id)
+            except Exception:
+                pass
             raise
 
         sync_registry()

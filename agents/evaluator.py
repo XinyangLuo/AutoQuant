@@ -239,7 +239,9 @@ class QuantFeedback:
         This is the preferred format for injecting into the Result Critic
         prompt — only the relevant layer is sent, reducing token usage.
         """
-        layer_name = self._LAYER_MAP.get(failure_type or "", "evaluation")
+        # Default to "hypothesis" for passes (failure_type is None) so that
+        # downstream consumers get metadata rather than backtest metrics.
+        layer_name = self._LAYER_MAP.get(failure_type or "", "hypothesis")
         layer_obj = getattr(self, layer_name)
         result: dict[str, Any] = {
             "decision": self.decision,
