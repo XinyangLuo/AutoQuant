@@ -265,11 +265,11 @@ CREATE TABLE IF NOT EXISTS index_daily (
 
 包一层 `pro.index_daily(ts_code, start_date, end_date)`，列重命名 `trade_date→date / ts_code→symbol / vol→volume`，date 转 `datetime.date`。
 
-### `backtest/data/backfill_indices.py`（新，模仿 `backfill_daily_basic.py`）
+### `backtest/data/backfill/indices.py`（模仿 `backfill_daily_basic.py`）
 
 - 默认指数：`["000300.SH", "000905.SH", "000852.SH", "000001.SH", "399006.SZ"]`
 - 对每个 symbol：`get_max_index_date()` → 从下一交易日开始 fetch → `insert_index_daily()`
-- CLI：`python -m backtest.data.backfill_indices [--symbols A,B]`（日期范围由脚本内部根据已有数据自动决定）
+- CLI：`python -m backtest.data.backfill.indices [--symbols A,B]`（日期范围由脚本内部根据已有数据自动决定）
 
 ### `evaluation.benchmark.load_benchmark(code, start, end)`
 

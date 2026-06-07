@@ -2,9 +2,9 @@
 """Backfill benchmark indices' daily OHLCV into market.duckdb / index_daily.
 
 Usage:
-    python -m backtest.data.backfill_indices                          # default indices
-    python -m backtest.data.backfill_indices --symbols 000300.SH,000905.SH
-    python -m backtest.data.backfill_indices --start 20100101         # force-refresh from a date
+    python -m backtest.data.backfill.indices                          # default indices
+    python -m backtest.data.backfill.indices --symbols 000300.SH,000905.SH
+    python -m backtest.data.backfill.indices --start 20100101         # force-refresh from a date
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def backfill_indices(symbols: list[str], start_override: str | None = None) -> N
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="python -m backtest.data.backfill_indices",
+        prog="python -m backtest.data.backfill.indices",
         description="Backfill index_daily table from Tushare pro.index_daily.",
     )
     parser.add_argument(

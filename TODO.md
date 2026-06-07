@@ -37,12 +37,7 @@
 
 ### 2.5 文档 & 工程
 
-- [ ] `backtest/strategy/DESIGN.md`：补充 `selection.py`、`decay`、`RiskConfig`/`BacktestConfig`
-- [ ] `backtest/simulation/DESIGN.md`：补充 `decile.py`
-- [ ] `backtest/evaluation/metrics.py` docstring：`CLAUDE.md` → `DESIGN.md`
-- [ ] `backtest/strategy/neutralize.py`：已标记 deprecated，确认无调用后删除
-- [ ] `backtest/data/backfill_indices.py`：benchmark 报错信息仍引用旧路径
-- [ ] `pyproject.toml` 落地 + `environment.yml` 补全缺失依赖
+（当前无待办项）
 
 ---
 

@@ -1,7 +1,7 @@
 """Benchmark index loading and comparison metrics.
 
 The benchmark series is sourced from ``MarketStorage.get_index_bars()`` —
-backed by the ``index_daily`` table that ``backtest/data/backfill_indices.py``
+backed by the ``index_daily`` table that ``backtest/data/backfill/indices.py``
 populates from Tushare's ``pro.index_daily`` endpoint.
 """
 
@@ -48,7 +48,7 @@ def load_benchmark(
     if df is None or df.empty:
         raise ValueError(
             f"No index data found for {code} in [{start}, {end}]. "
-            f"Run `python -m backtest.data.backfill_indices --symbols {code}` first."
+            f"Run `python -m backtest.data.backfill.indices --symbols {code}` first."
         )
 
     df = df.sort_values("date")

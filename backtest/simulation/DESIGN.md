@@ -13,10 +13,11 @@
 ```
 backtest/simulation/
 ├── __init__.py         # 导出公共 API
-├── models.py           # Trade, Position, DailySnapshot, BacktestResult
+├── models.py           # Trade, Position, DailySnapshot, BacktestResult, DecileBacktestResult
 ├── config.py           # SimulationConfig
 ├── simple.py           # SimpleSimulator
 ├── detailed.py         # DetailedSimulator
+├── decile.py           # DecileSimulator + plot_decile_backtest
 ├── executor.py         # OrderExecutor（涨跌停、停牌、手续费）
 ├── dividends.py        # DividendHandler（分红送转）
 └── utils.py            # 板块识别、交易单位取整、停牌检测
@@ -71,6 +72,12 @@ signals: pd.DataFrame
 - **印花税**：仅卖出/short，rate=0.001
 - **过户费**：双向，rate=0.00002
 
+## 关键设计原则
+
+- **信号即真相**：策略产出的 `signals.date` 列是引擎的唯一输入。哪天没有行，引擎就不调仓。引擎不感知 `rebalance_freq`——日频/周频/月频对引擎逻辑完全一致。
+- **Prior-day NAV 计算**：rebalance 前先以上一日收盘市值确定仓位 size，rebalance 完成后再用当日收盘更新市值。该逻辑在所有频率下均成立。
+- **双轨并行**：`SimpleSimulator` 用于因子研究/参数扫描（快），`DetailedSimulator` 用于策略实盘前验证（真），`DecileSimulator` 用于因子单调性分析（分层）。
+
 ## 类设计
 
 ### SimulationConfig
@@ -124,6 +131,28 @@ class DividendHandler:
     # pay_date: 现金分红增加现金
 ```
 
+### DecileSimulator
+
+```python
+class DecileSimulator:
+    def run(self, factor_df, market_data) -> DecileBacktestResult
+    # 向量化：每日按因子值分 10 组 → 每组等权 → 组内 adj_price 计算日收益 → cumprod 得 NAV
+    # delay=1 内置：T 日因子 → T+1 日开盘/收盘交易 → T+2 日收益
+    # 同时计算 long-short 组合（最大 decile - 最小 decile）和单调性得分（Spearman）
+```
+
+输入 `factor_df: [date, symbol, value]`；`market_data: [date, symbol, close, open, adj_factor]`。
+
+`DecileBacktestResult` 包含：
+- `nav_df`: `[date, d0_nav, ..., d9_nav, ls_nav]`
+- `decile_metrics`: 每组 `compute_single_nav_metrics()` 结果
+- `ls_metrics`: long-short 组合指标
+- `monotonicity_score`: 年化收益与 decile 排名的 Spearman 相关系数
+
+`plot_decile_backtest(result, output_path)` 绘制 2-panel 图：
+- 上：10 条 decile NAV 曲线（log 轴，RdYlGn 色板，D1/D10 加粗）
+- 下：long-short NAV + 单调性得分标题
+
 ### BacktestResult
 
 ```python
@@ -173,35 +202,7 @@ result.save("results/<factor_id>/<variant>/<tag>/detailed/")
 ## TODO
 
 - [ ] T+1 交割制度（当前假设当日可完成全部调仓）
-- [ ] Benchmark 支持（数据模块需先支持指数行情）
+- [x] Benchmark 支持（`index_daily` 表 + `backtest.data.backfill.indices` 已落地）
 - [ ] 详细评测（归因、分层等）留给 analysis 模块
 
 ---
-
-# P0 实施计划
-
-## P0-3: 交易日历表（simulation 模块部分）
-
-### 结论：**引擎无需改动**
-
-`detailed.py:194-277` 已按"信号即真相"驱动：
-
-```python
-dates = sorted(set(bar_by_date.keys()))   # 遍历所有交易日
-for date_str in dates:
-    sig_df = signal_by_date.get(date_str)
-    if sig_df is not None:                # 仅当当天有信号时调仓
-        _rebalance(...)
-```
-
-策略层把 `rebalance_freq='1M'` 转换为「仅在每月首个交易日有 target_weight 行」的 signals DataFrame，引擎自动只在那些日期触发 `_rebalance`，其余交易日只跑分红 + 净值更新。SimpleSimulator 同理。
-
-### 契约（文档化即可，无代码变更）
-- **策略产出的 signals.date 列**是真相：哪天没行就不调仓
-- **引擎不感知 rebalance_freq**：无论日频/周频/月频，引擎逻辑完全一致
-- 7d13ad8 commit 修过的 prior-day NAV 计算（rebalance 前用上一日收盘市值定 size，rebalance 后再用今日收盘更新）在所有频率下都成立
-
-### 完成标准
-- [ ] 跑一个 `freq='1M'` 的回测，确认 `trades.parquet` 仅在每月首个交易日有行
-- [ ] 同因子同 universe，对比 `freq='1D'` vs `freq='1M'`，确认换手率显著下降（应该 ~1/20）
-- [ ] 把上述「契约」一段并入正文「关键设计原则」节，删除本 P0 节

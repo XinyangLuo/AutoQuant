@@ -3,7 +3,7 @@
 This module is the single source of truth for all numeric backtest metrics in
 the project.  ``BacktestResult.summary()`` delegates here.
 
-All formulas are documented in ``backtest/evaluation/CLAUDE.md``.
+All formulas are documented in ``backtest/evaluation/DESIGN.md``.
 """
 
 from __future__ import annotations

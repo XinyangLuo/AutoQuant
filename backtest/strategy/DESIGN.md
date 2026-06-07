@@ -12,14 +12,14 @@
 backtest/strategy/
 ├── __init__.py              # 导出核心 API
 ├── config.py                # 策略配置定义、YAML/JSON 加载与验证
-├── base.py                  # 抽象策略基类 StrategyBase
+├── base.py                  # 抽象策略基类 StrategyBase + decay / delay / 日频展开
 ├── universe.py              # Universe 筛选器
+├── selection.py             # 选股方式（topk / long_short / decile）
 ├── weight.py                # 权重分配器
-├── neutralize.py            # 中性化（已 deprecated，下沉到因子层）
 ├── signals.py               # 信号格式化（策略输出 → 引擎输入）
 ├── strategies/
 │   ├── __init__.py
-│   ├── single_factor.py     # 单因子策略：topK / long-short / 分层
+│   ├── single_factor.py     # 单因子策略
 │   └── multi_factor.py      # 多因子组合策略
 ```
 
@@ -57,8 +57,22 @@ selection:
 weighting:
   method: "equal"               # equal / market_cap / factor_value
 
-# `neutralize` 配置项已 deprecated：中性化由因子层完成，
-# 策略层不感知。旧 yaml 仍可解析，字段不生效。
+risk:
+  max_industry_deviation: null  # 行业偏离上限（预留，引擎层暂不强制）
+  max_single_stock_weight: null # 单票权重上限（预留）
+  turnover_penalty: 0.0         # 换手惩罚系数（预留）
+
+backtest:
+  start_date: "20160101"
+  end_date: "20251231"
+  benchmark: "000300.SH"
+
+# Decay: 因子值线性衰减平滑，降低组合换手。
+# None = 使用原始因子值（默认）。
+decay: null
+
+# `neutralize` 配置项已删除：中性化由因子层完成，
+# 策略层不感知。旧 yaml 中的 neutralize 字段不再解析。
 ```
 
 Python 加载：
@@ -115,7 +129,60 @@ signals = strategy.run("20200101", "20241231")
 
 - 后处理算子（`cs_mad_winsorize` / `industry_median_fill` / `cs_zscore` / `cs_ols_residualize`）见 `backtest/factor/transforms.py`
 - variant 标签见 `backtest/factor/variants.py`：`none` / `barra_l3` / `barra_ind_size`，默认 `barra_ind_size`
-- `strategy/neutralize.py` 与 `strategy/config.py:NeutralizeConfig` 已 deprecated，仅保留兼容旧 yaml，不再实际生效
+- `strategy/neutralize.py` 与 `strategy/config.py:NeutralizeConfig` 已删除，不再存在
+
+### 选股器（`selection.py`）
+
+`build_signals()` 是选股的核心编排函数，按 `SelectionConfig.method` 分派：
+
+| method | 行为 |
+|---|---|
+| `topk` | 取因子排序前 `top_k` / 前 `top_pct` 比例，等权或加权做多 |
+| `long_short` | 前 `top_k` / `top_pct` 做多 + 后 `bottom_k` / `bottom_pct` 做空，各归一化到 0.5 |
+| `decile` | 分 10 组等权；`decile_group` 为 `None` 时返回全部 10 组（用于单调性分析），否则只返回指定组 |
+
+`_resolve_count(k, pct, n)` 把互斥的 `k`/`pct` 配置解析为具体数量，优先用 `k`，否则 `int(n * pct)`，边界钳制在 `[1, n]`。
+
+### Decay 平滑
+
+`StrategyConfig.decay` 控制因子值的线性衰减平滑：
+
+```python
+decay(x, n) = (x[t] * n + x[t-1] * (n-1) + ... + x[t-n+1] * 1)
+              / (n + (n-1) + ... + 1)
+```
+
+- 由 `StrategyBase._apply_decay()` 在 `run()` 内部、信号生成前执行
+- 对 `factor_panel` 中的每个因子列按 `symbol` group 后做 rolling 加权平均
+- 效果：降低因子值短期抖动 → 降低组合换手率 → 减少交易成本
+- `decay=None`（默认）表示不做平滑，使用原始因子值
+- `validate()` 保证 `decay >= 1` 或 `None`
+
+### 配置 Dataclass 速查
+
+```python
+# config.py
+@dataclass
+class RiskConfig:
+    max_industry_deviation: float | None = None   # 行业偏离上限（预留）
+    max_single_stock_weight: float | None = None  # 单票权重上限（预留）
+    turnover_penalty: float = 0.0                  # 换手惩罚系数（预留）
+
+@dataclass
+class BacktestConfig:
+    start_date: str = "20160101"
+    end_date: str = "20251231"
+    benchmark: str | None = "000300.SH"
+
+@dataclass
+class StrategyConfig:
+    ...
+    risk: RiskConfig = field(default_factory=RiskConfig)
+    backtest: BacktestConfig = field(default_factory=BacktestConfig)
+    decay: int | None = None
+```
+
+`RiskConfig` 和 `BacktestConfig` 当前 mostly reserved：参数已落进配置体系，但策略层和引擎层尚未强制执行（如行业偏离、单票上限、换手惩罚）。这属于 roadmap 中的风控增强项。
 
 ### 再平衡频率
 

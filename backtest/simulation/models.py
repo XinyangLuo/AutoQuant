@@ -160,7 +160,7 @@ class BacktestResult:
             except Exception as exc:  # noqa: BLE001
                 warnings.warn(
                     f"Failed to load benchmark {code} ({alias}): {exc}. "
-                    f"Run `python -m backtest.data.backfill_indices --symbols {code}` to backfill.",
+                    f"Run `python -m backtest.data.backfill.indices --symbols {code}` to backfill.",
                     stacklevel=2,
                 )
 
