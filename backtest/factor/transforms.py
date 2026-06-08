@@ -39,9 +39,16 @@ import pandas as pd
 
 MIN_VALID_RATIO: float = 0.7
 
+def _default_cs_num_threads() -> int:
+    """Bounded default for per-date cross-sectional parallelism."""
+    return max(1, min(4, os.cpu_count() or 1))
+
+
 # Number of threads for parallel per-date cross-sectional ops.
-# 0 or 1 = serial (default). Set via env var AQ_CS_NUM_THREADS.
-_AQ_CS_NUM_THREADS = int(os.environ.get("AQ_CS_NUM_THREADS", "0"))
+# Default is a small auto value; set AQ_CS_NUM_THREADS=0 or 1 for serial.
+_AQ_CS_NUM_THREADS = int(
+    os.environ.get("AQ_CS_NUM_THREADS", str(_default_cs_num_threads()))
+)
 
 
 def _default_min_periods(window: int, *, lower_bound: int = 1) -> int:

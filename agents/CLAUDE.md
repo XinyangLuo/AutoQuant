@@ -92,7 +92,7 @@ agents/
 ├── schema.py                 # 数据 schema 查询（列名、别名映射）
 ├── helpers.py                # 工具函数（代码校验、@register 注入）
 ├── FACTOR_CODE_GUIDE.md      # LLM 因子代码参考手册
-├── knowledge_base/           # Agent 知识库（跨 run 持久化，git 追踪）
+├── knowledge_base/           # Agent 知识库（跨 run 本地持久化，gitignore）
 │   ├── anti_patterns.json    #   失败模式 → 修复建议
 │   ├── successful_patterns.json  #   成功模式 → SOTA 基准
 │   └── failed_attempts.jsonl #   失败实验索引（append-only）

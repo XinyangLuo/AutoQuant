@@ -15,13 +15,15 @@ Daily incremental refresh of *already-admitted* factors lives in
 
 Usage:
     python -m backtest.factor.backfill f_001                   # single factor
-    python -m backtest.factor.backfill --pending               # all pending factors
+    python -m backtest.factor.backfill --pending               # all pending factors, auto workers
+    python -m backtest.factor.backfill --pending --workers 1   # force serial
     python -m backtest.factor.backfill f_001 --test-days 60    # last 60 trade days only
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
@@ -84,6 +86,27 @@ def _get_earliest_start_date(stock_list: pd.DataFrame) -> str:
     return str(stock_list["list_date"].min())
 
 
+def _default_workers() -> int:
+    """Bounded default for independent-factor backfill workers."""
+    return max(1, min(4, os.cpu_count() or 1))
+
+
+def _has_intra_request_dependencies(factor_ids: list[str], registry: dict) -> bool:
+    """Return True when requested factors depend on each other.
+
+    Parallel backfill is safe for independent factors. If a requested residual
+    factor depends on another requested factor, preserve topological order by
+    running serially.
+    """
+    requested = set(factor_ids)
+    for fid in factor_ids:
+        meta = registry.get(fid, {})
+        deps = meta.get("depends_on")
+        if isinstance(deps, list) and any(dep in requested for dep in deps):
+            return True
+    return False
+
+
 def _backfill_one(factor_id: str, factor_start: str, end_date: str) -> tuple[str, int, str | None]:
     """Backfill a single factor in an isolated thread.  Returns (factor_id, rows, error)."""
     try:
@@ -100,10 +123,15 @@ def main():
                         help="Backfill all pending (unadmitted, unrejected) factors")
     parser.add_argument("--test-days", type=int, default=None,
                         help="Only backfill the last N trade days (debugging)")
-    parser.add_argument("--workers", type=int, default=1,
-                        help="Number of parallel workers (default 1, serial). "
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Number of parallel workers (default: auto, bounded by 4). "
+                             "Use --workers 1 to force serial execution. "
                              "Each worker opens its own DB connections.")
     args = parser.parse_args()
+    if args.workers is None:
+        args.workers = _default_workers()
+    if args.workers < 1:
+        parser.error("--workers must be >= 1")
 
     if not args.pending and not args.factor_id:
         parser.error("Specify a factor_id or --pending")
@@ -166,9 +194,14 @@ def main():
             print("\nBackfill complete (all factors up to date).")
             return
 
-        if args.workers > 1:
-            print(f"Backfilling with {args.workers} workers ...")
-            with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        effective_workers = min(args.workers, len(backfill_tasks))
+        if effective_workers > 1 and _has_intra_request_dependencies(factor_ids, registry):
+            print("  Dependency edges detected within requested factors; using serial backfill.")
+            effective_workers = 1
+
+        if effective_workers > 1:
+            print(f"Backfilling with {effective_workers} workers ...")
+            with ThreadPoolExecutor(max_workers=effective_workers) as executor:
                 futures = {
                     executor.submit(_backfill_one, fid, fstart, end_date): fid
                     for fid, fstart in backfill_tasks

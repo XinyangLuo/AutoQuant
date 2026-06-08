@@ -505,7 +505,7 @@ ST (Special Treatment) and *ST stocks trade under different rules: ±5% price li
 
 The `is_st` column is a boolean: `True` = ST or *ST.
 
-ST 剔除由 `strategy.universe.exclude_st: true`（config.yaml）在策略层处理。**因子代码不需要手动屏蔽**，pipeline 的去极值/中性化/截面排名步骤已考虑缺失值传播。
+ST 剔除由 `strategy.universe.exclude_st: true`（config.yaml）在策略层处理。**因子代码不需要手动屏蔽**，pipeline 的去极值/中性化/标准化以及策略选股步骤已考虑缺失值传播。
 
 ### 5.10 New IPO Stocks (Listing Date)
 

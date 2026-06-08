@@ -107,7 +107,7 @@ AutoQuant/
 │   ├── helpers.py           # 代码校验 / @register 注入
 │   ├── FACTOR_CODE_GUIDE.md # LLM 因子代码参考手册
 │   ├── CLAUDE.md            # Agent 系统总览
-│   ├── knowledge_base/      # 跨 run 知识库（git 追踪）
+│   ├── knowledge_base/      # 跨 run 本地知识库（gitignore）
 │   └── pdf_hypotheses/      # PDF→hypothesis 中间产物（gitignore）
 ├── tests/                   # pytest 套件
 ├── trading/                 # 交易模块骨架（待 fill）

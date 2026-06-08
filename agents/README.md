@@ -360,7 +360,7 @@ agents/
 ├── helpers.py                  # 工具函数（代码校验、@register 注入）
 ├── kb_query.py                 # KB 分层查询脚本（新增）
 ├── FACTOR_CODE_GUIDE.md        # LLM 因子代码参考手册
-├── knowledge_base/             # 跨 run 知识库（git 追踪）
+├── knowledge_base/             # 跨 run 本地知识库（gitignore）
 │   ├── anti_patterns.json
 │   ├── successful_patterns.json
 │   ├── failed_attempts.jsonl

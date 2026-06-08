@@ -115,6 +115,8 @@ ranked = rank(raw_series)              # 升序，最大值 → 1
 ranked_desc = rank(raw_series, ascending=False)  # 降序，最大值 → 0
 ```
 
+截面算子默认启用小规模并行（`AQ_CS_NUM_THREADS` 默认 `min(4, cpu_count)`）；如需排查性能/确定性问题，可设置 `AQ_CS_NUM_THREADS=0` 或 `1` 强制串行。
+
 #### 时序算子
 
 | 算子 | 功能 | 输出范围 | 参数 |
@@ -193,10 +195,14 @@ python -m backtest.factor.backfill f_001
 python -m backtest.factor.backfill f_001 --test-days 60
 
 # 所有 pending 因子（未 admit、未 reject）批量回填到 work
+# 默认启用 auto workers（上限 4）；若请求因子之间存在依赖会自动降级串行
 python -m backtest.factor.backfill --pending
 
-# 并行回填（多线程，每个 worker 独立连接）
+# 手动指定并行度；每个 worker 独立连接
 python -m backtest.factor.backfill --pending --workers 4
+
+# 强制串行（排查 DuckDB 锁/资源问题时使用）
+python -m backtest.factor.backfill --pending --workers 1
 ```
 
 ### 2. 离线评测（读 work + library）
