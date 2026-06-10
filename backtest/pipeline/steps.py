@@ -989,6 +989,7 @@ def run_pipeline(
     ret_type: str | None = None,
     benchmark: str | None = None,
     from_step: int = 1,
+    to_step: int | None = None,
     skip_mark_rejected: bool = False,
     # Strategy kwargs forwarded to step5_build_strategy
     top_k: int | None = None,
@@ -1007,6 +1008,11 @@ def run_pipeline(
     ----------
     from_step : int
         1-based step index to start from (default 1 = step1).
+    to_step : int | None
+        1-based step index to stop at (inclusive).  If None, run through
+        step10.  ``to_step=6`` is used by the agent ``--quick`` mode to
+        skip detailed backtest / ridge / residual checks while still
+        producing a report for the steps that did run.
     skip_mark_rejected : bool
         If True, do not call ``mark_rejected()`` on failure.  The agent
         runner sets this to True because it manages rejection differently
@@ -1020,6 +1026,12 @@ def run_pipeline(
     # is loaded from a prior run (per-step CLI), not with a fresh state.
     if not 1 <= from_step <= 10:
         raise ValueError(f"from_step must be 1-10, got {from_step}")
+    if to_step is not None and not 1 <= to_step <= 10:
+        raise ValueError(f"to_step must be 1-10 or None, got {to_step}")
+    if to_step is not None and to_step < from_step:
+        raise ValueError(
+            f"to_step ({to_step}) must be >= from_step ({from_step})"
+        )
     strategy_kwargs = {
         k: v for k, v in (("top_k", top_k), ("top_pct", top_pct),
                            ("decay", decay), ("universe", universe),
@@ -1057,6 +1069,11 @@ def run_pipeline(
         state = PipelineState.load(state_path)
         # Update config with any new overrides (e.g. changed start/end dates).
         state.config = config
+        # Force-discard downstream results/artifacts so that config/strategy
+        # changes actually take effect.  Without this, resuming from step5
+        # with new top_k/decay/rebalance would silently keep the old step5
+        # metrics and report path in the state file.
+        state.clear_from_step(f"step{from_step}")
         if from_step > 5:
             # When resuming from step6+, step5 may have been skipped.
             # Warn if strategy kwargs were provided but step5 won't be re-run.
@@ -1070,6 +1087,8 @@ def run_pipeline(
         step_idx = int(step_name[4:])
         if step_idx < from_step:
             continue
+        if to_step is not None and step_idx > to_step:
+            break
         if state.is_rejected():
             break
         if step_name == "step5":
@@ -1079,7 +1098,9 @@ def run_pipeline(
             state = step_fn(state)
         state.save(config.state_path())
 
-    # Always generate a diagnostic report
+    # Always generate a diagnostic report for the steps that ran.  In quick
+    # mode (to_step < 10) this still produces a valid pipeline_report.md,
+    # just with the later sections omitted.
     from backtest.pipeline._report import generate_pipeline_report
 
     report_path = generate_pipeline_report(state)
@@ -1099,6 +1120,12 @@ def run_pipeline(
             notes=f"Pipeline rejected at {last_step}: {reason}",
         )
         state.status = "rejected"
+        state.save(config.state_path())
+    elif to_step is not None and not state.is_rejected():
+        # Quick / partial run: not all admission gates were executed, so
+        # mark the state explicitly so consumers know this is not a full
+        # rejection and can promote to a full run if metrics look good.
+        state.status = "quick_pass"
         state.save(config.state_path())
 
     return state

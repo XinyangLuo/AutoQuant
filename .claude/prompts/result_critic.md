@@ -117,6 +117,7 @@ Respond in strict JSON:
 - fix_level="factor", factor_change="formula"
 - Add secondary filtering or change construction (e.g., only take extreme quantiles)
 - Try: rank(signal) * rank(confirming_signal) to sharpen monotonicity
+- **若 decile 回测显示中间某组（如 group8）表现最强，而非极端 top/bottom 组**：在因子公式中加入非线性分组提取函数（如 Gaussian bump 围绕该分位 rank、sigmoid 门控、或幂函数凸化），将信号值聚焦到表现最强的 bucket，从而提升单调性和 long-only 提取效率。不要仅依赖线性排名或原始值。
 
 ## config_error
 - fix_level="strategy_only"
@@ -139,6 +140,7 @@ Respond in strict JSON:
   1. **变换算子**: 差值→比率、线性→对数、原始值→排名
   2. **归一化**: 除以波动率/市值/行业均值
   3. **组合增强**: 与已有强因子（from KB）做加权组合
+  4. **非线性分组提取**: 若 decile 回测中某中间/上高分位组（如 group8）表现最强，而极端 top 组被噪声稀释，可在因子中加入非线性 bump/sigmoid/power 函数，将信号聚焦到该最优 bucket。这既能增强单调性，也能改善 long-only 回测的夏普和回撤。
 
 ### Tier 3: Sharpe < threshold*0.7 OR ICIR also fails
 - fix_level="factor", factor_change="params"

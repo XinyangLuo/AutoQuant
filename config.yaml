@@ -10,7 +10,7 @@ thresholds:
 
   # 因子评估参考阈值（admission 人工审核用）
   admission:
-    min_rankicir: 0.25
+    min_rankicir: 0.5
     min_ic_positive_ratio: 0.52
     max_turnover: 0.50
     max_corr: 0.85

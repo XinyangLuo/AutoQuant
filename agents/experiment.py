@@ -47,7 +47,7 @@ class AutoQuantFactorExperiment:
     error: str | None = None
 
     # Status tracking
-    status: Literal["pending", "running", "passed", "rejected", "candidate"] = "pending"
+    status: Literal["pending", "running", "passed", "rejected", "candidate", "quick_pass"] = "pending"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "experiment_id", self.factor_id)

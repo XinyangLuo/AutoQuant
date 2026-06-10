@@ -66,7 +66,7 @@ def _clean_json(value: Any) -> Any:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp = path.with_suffix(f"{path.suffix}.tmp{os.getpid()}")
     tmp.write_text(
         json.dumps(_clean_json(data), ensure_ascii=False, indent=2, allow_nan=False),
         encoding="utf-8",
@@ -155,6 +155,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     tb: str | None = None
     factor_file_path: Path | None = None
 
+    # --quick is a convenience alias for --to-step 6 (simple backtest only).
+    to_step = 6 if getattr(args, "quick", False) and args.to_step is None else args.to_step
+
     try:
         code, factor_file_path = _read_factor_code(
             factor_id,
@@ -180,6 +183,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 experiment = runner.run(
                     experiment,
                     from_step=args.from_step,
+                    to_step=to_step,
                     top_k=args.top_k,
                     top_pct=args.top_pct,
                     decay=args.decay,
@@ -194,7 +198,12 @@ def cmd_run(args: argparse.Namespace) -> int:
                 if not args.keep_work_db:
                     runner.cleanup_work_db(factor_id)
             else:
-                if feedback is not None and not feedback.decision and not args.keep_work_db:
+                if (
+                    feedback is not None
+                    and not feedback.decision
+                    and experiment.status != "quick_pass"
+                    and not args.keep_work_db
+                ):
                     runner.cleanup_work_db(factor_id)
 
     except Exception as exc:
@@ -208,6 +217,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         status = "error"
     elif experiment.status == "candidate":
         status = "pass"
+    elif experiment.status == "quick_pass":
+        status = "quick_pass"
+        failure_type = None  # partial run is not a real failure
     else:
         status = "fail"
 
@@ -397,6 +409,125 @@ def cmd_kb_update(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """Run a parallel strategy-parameter sweep for a single factor.
+
+    The base factor is computed once (step1-4); each parameter combo is then
+    given a cloned factor ID and evaluated in a separate process so that
+    pipeline state and artifacts do not conflict.
+    """
+    from .sweep import run_sweep
+
+    factor_id = args.factor_id
+    factor_file = Path(args.factor_file) if args.factor_file else None
+    if factor_file is None:
+        print("Error: --factor-file is required for sweep", file=sys.stderr)
+        return 1
+
+    generated_dir = Path(args.generated_dir)
+    results_root = Path(args.results_root)
+
+    def _parse_comma_ints(value: str | None) -> list[int]:
+        if not value:
+            return []
+        return [int(x.strip()) for x in value.split(",") if x.strip()]
+
+    def _parse_comma_strs(value: str | None) -> list[str]:
+        if not value:
+            return []
+        return [x.strip() for x in value.split(",") if x.strip()]
+
+    top_ks = _parse_comma_ints(args.top_k)
+    decays = _parse_comma_ints(args.decay)
+    rebalances = _parse_comma_strs(args.rebalance)
+
+    if not top_ks or not rebalances:
+        print(
+            "Error: --top-k and --rebalance must each provide "
+            "at least one comma-separated value.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not decays:
+        decays = [0]
+        print(
+            "Error: --top-k, --decay, and --rebalance must each provide "
+            "at least one comma-separated value.",
+            file=sys.stderr,
+        )
+        return 1
+
+    to_step = None if args.full else 6
+
+    try:
+        results = run_sweep(
+            factor_id=factor_id,
+            factor_file=factor_file,
+            generated_dir=generated_dir,
+            results_root=results_root,
+            top_ks=top_ks,
+            decays=decays,
+            rebalances=rebalances,
+            to_step=to_step,
+            workers=args.workers,
+        )
+    except Exception as exc:
+        print(f"Error: sweep failed: {exc}", file=sys.stderr)
+        traceback.print_exc()
+        return 1
+
+    # Summary table
+    print(f"\nSweep complete: {len(results)} combinations")
+    print("")
+    header = f"{'top_k':>6} {'decay':>6} {'rebalance':>10} {'status':>12} {'sharpe':>8} {'ann_ret':>9} {'mdd':>9} {'calmar':>8} {'result_path'}"
+    print(header)
+    print("-" * len(header))
+    best: dict[str, Any] | None = None
+    best_score = float("-inf")
+    for r in sorted(results, key=lambda x: (x["params"]["top_k"], x["params"]["decay"], x["params"]["rebalance"])):
+        p = r["params"]
+        m = r.get("metrics", {})
+        sharpe = m.get("simple_sharpe")
+        ann_ret = m.get("simple_annual_return")
+        mdd = m.get("simple_mdd")
+        calmar = m.get("simple_calmar")
+        print(
+            f"{p['top_k']:>6} {p['decay']:>6} {p['rebalance']:>10} {r['status']:>12} "
+            f"{_fmt_metric(sharpe):>8} {_fmt_metric(ann_ret):>9} {_fmt_metric(mdd):>9} "
+            f"{_fmt_metric(calmar):>8} {r.get('result_path') or ''}"
+        )
+        score = calmar if calmar is not None else (sharpe or 0)
+        if not math.isnan(score) and score > best_score and r["status"] in ("pass", "quick_pass"):
+            best_score = score
+            best = r
+
+    print("")
+    if best:
+        print(
+            f"Best combo (by calmar>sharpe): top_k={best['params']['top_k']} "
+            f"decay={best['params']['decay']} rebalance={best['params']['rebalance']} "
+            f"→ {best['result_path']}"
+        )
+    else:
+        print("No passing or quick-pass combinations found.")
+
+    # Emit machine-readable summary next to the base factor results.
+    summary_path = results_root / factor_id / "sweep_summary.json"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(summary_path, {"factor_id": factor_id, "results": results})
+    print(f"Summary written to {summary_path}")
+    return 0
+
+
+def _fmt_metric(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    if isinstance(value, float) and not math.isfinite(value):
+        return "n/a"
+    return f"{value:.3f}"
+
+
 def _copy_report_to_round(report_path: str, run_dir: Path) -> None:
     """Copy pipeline report from results/<fid>/<tag>/ to the round directory.
 
@@ -501,8 +632,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep failed factor values in the pending factor DB for inspection",
     )
     run.add_argument(
-        "--from-step", type=int, default=1, choices=range(1, 6),
-        help="Start pipeline from this step (1-5). Use >1 to skip register+backfill.",
+        "--from-step", type=int, default=1, choices=range(1, 11),
+        help="Start pipeline from this step (1-10). Use >1 to skip register+backfill.",
+    )
+    run.add_argument(
+        "--to-step", type=int, default=None, choices=range(1, 11),
+        help="Stop pipeline after this step (1-10). Use 6 for quick mode: only run through simple backtest.",
+    )
+    run.add_argument(
+        "--quick", action="store_true",
+        help="Quick mode: stop after step6 (simple backtest). Equivalent to --to-step 6.",
     )
     run.add_argument("--top-k", type=int, help="Override top_k for step5 strategy")
     run.add_argument("--top-pct", type=float, help="Override top_pct for step5 strategy")
@@ -558,6 +697,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kb_update.add_argument("--rc-output", help="Optional path to RC diagnosis JSON (for anti-pattern extraction)")
     kb_update.set_defaults(func=cmd_kb_update)
+
+    # ------------------------------------------------------------------
+    # sweep subcommand
+    # ------------------------------------------------------------------
+    sweep = sub.add_parser(
+        "sweep", help="Parallel strategy-parameter sweep for one factor"
+    )
+    sweep.add_argument("factor_id", help="Factor id to sweep, e.g. f_auto_run001_001")
+    sweep.add_argument("--factor-file", required=True, help="Path to the factor code file")
+    sweep.add_argument(
+        "--generated-dir", default="alphas/exp/agent",
+        help="Directory where generated factor modules live",
+    )
+    sweep.add_argument(
+        "--results-root", default="results",
+        help="Root directory for pipeline results",
+    )
+    sweep.add_argument(
+        "--top-k", required=True,
+        help="Comma-separated top_k values, e.g. 100,200",
+    )
+    sweep.add_argument(
+        "--decay", default="",
+        help="Comma-separated decay values, e.g. 5,10,15. Omit for fundamental-factor sweeps.",
+    )
+    sweep.add_argument(
+        "--rebalance", required=True,
+        help="Comma-separated rebalance frequencies, e.g. 1D,5D",
+    )
+    sweep.add_argument(
+        "--full", action="store_true",
+        help="Run full pipeline (step5-10) for each combo; default is quick mode (step5-6)",
+    )
+    sweep.add_argument(
+        "--workers", type=int, default=4,
+        help="Number of parallel workers (default 4)",
+    )
+    sweep.set_defaults(func=cmd_sweep)
 
     return parser
 

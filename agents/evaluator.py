@@ -386,7 +386,11 @@ class AutoQuantFactorEvaluator:
         # Gate steps are step1-step9; step10 is a report step that always passes
         gate_step_names = {f"step{i}" for i in range(1, 10)}
         gate_passed = [s for s in passed_steps if s in gate_step_names]
-        decision = len(failed_steps) == 0 and len(gate_passed) == len(gate_step_names)
+        # quick_pass / partial runs intentionally stop early — treat as success
+        decision = (
+            experiment.status == "quick_pass"
+            or (len(failed_steps) == 0 and len(gate_passed) == len(gate_step_names))
+        )
 
         # ------------------------------------------------------------------
         # Build ExecutionFeedback

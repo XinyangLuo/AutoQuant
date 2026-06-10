@@ -64,8 +64,8 @@ class AutoQuantFactorRunner:
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
             self._close_storages()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[runner] warning: failed to close storages: {exc}", file=sys.stderr)
         return False
 
     def _close_storages(self) -> None:
@@ -94,6 +94,7 @@ class AutoQuantFactorRunner:
         self,
         experiment: AutoQuantFactorExperiment,
         from_step: int = 1,
+        to_step: int | None = None,
         top_k: int | None = None,
         top_pct: float | None = None,
         decay: int | None = None,
@@ -140,6 +141,7 @@ class AutoQuantFactorRunner:
                 ret_type=ret_type,
                 benchmark=self.benchmark,
                 from_step=from_step,
+                to_step=to_step,
                 top_k=top_k,
                 top_pct=top_pct,
                 decay=decay,
@@ -176,6 +178,8 @@ class AutoQuantFactorRunner:
 
             if state.status == "ready_for_review":
                 experiment.status = "candidate"
+            elif state.status == "quick_pass":
+                experiment.status = "quick_pass"
             elif state.is_rejected():
                 experiment.status = "rejected"
                 last_step = state.last_step()

@@ -123,6 +123,33 @@ class TestPipelineState:
         state.record("step1", StepResult(passed=True))
         assert state.get_result("step1").passed is True
 
+    def test_clear_from_step(self):
+        cfg = PipelineConfig(
+            factor_id="f_001",
+            start_date="20200101",
+            end_date="20241231",
+        )
+        state = PipelineState(factor_id="f_001", config=cfg)
+        state.record("step1", StepResult(passed=True))
+        state.record("step2", StepResult(passed=True))
+        state.record("step3", StepResult(passed=True))
+        state.record("step4", StepResult(passed=True))
+        state.record("step5", StepResult(passed=True, metrics={"top_k": 100}))
+        state.record("step6", StepResult(passed=False, reason="mdd"))
+        state.artifacts["strategy_config"] = "old.json"
+        state.artifacts["report"] = "old/report.md"
+        state.status = "rejected"
+
+        state.clear_from_step("step5")
+
+        assert "step5" not in state.step_results
+        assert "step6" not in state.step_results
+        assert "step1" in state.step_results
+        assert "step2" in state.step_results
+        assert "strategy_config" not in state.artifacts
+        assert "report" not in state.artifacts
+        assert state.status == "running"
+
 
 # ---------------------------------------------------------------------------
 # Helper function tests

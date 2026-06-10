@@ -109,21 +109,22 @@ class FactorStorage:
     column on first sight.
     """
 
-    def __init__(self, db_path: Path | str | None = None):
+    def __init__(self, db_path: Path | str | None = None, *, read_only: bool = False):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         if db_path is None:
             _migrate_legacy_work_db()
             self.db_path = FACTORS_WORK_DB_PATH
         else:
             self.db_path = Path(db_path)
-        self.conn = duckdb.connect(str(self.db_path))
-        self.conn.execute(f"""
-            CREATE TABLE IF NOT EXISTS {FACTORS_TABLE} (
-                date    DATE,
-                symbol  VARCHAR,
-                PRIMARY KEY (date, symbol)
-            )
-        """)
+        self.conn = duckdb.connect(str(self.db_path), read_only=read_only)
+        if not read_only:
+            self.conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS {FACTORS_TABLE} (
+                    date    DATE,
+                    symbol  VARCHAR,
+                    PRIMARY KEY (date, symbol)
+                )
+            """)
         self._cols_cache: set[str] | None = None
 
     def __enter__(self):
