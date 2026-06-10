@@ -78,7 +78,7 @@ class StrategyBase(ABC):
 
         try:
             if factor_storage is None:
-                factor_storage = FactorStorage()
+                factor_storage = FactorStorage(read_only=True)
             if market_storage is None:
                 market_storage = MarketStorage(read_only=True)
 

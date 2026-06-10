@@ -72,7 +72,7 @@ def _load_factor_and_returns(
     prior :func:`_load_market_data` call), they are reused instead of
     re-querying the database.
     """
-    with FactorStorage() as fs:
+    with FactorStorage(read_only=True) as fs:
         factor_df = fs.get_factor(factor_id, start, end)
 
     if factor_df.empty:

@@ -434,6 +434,26 @@ def step3_icir_check(state: PipelineState) -> PipelineState:
         )
     state.artifacts["eval_result"] = str(eval_path)
 
+    # Generate IC time series plots now while data is in memory.
+    # Report only references these — never re-runs evaluate().
+    try:
+        from backtest.factor.evaluation import plot_evaluation
+
+        plots_dir = eval_dir / "plots"
+        plots_dir.mkdir(parents=True, exist_ok=True)
+
+        for h in (1, 5, 20):
+            if h in eval_result.ic_series:
+                plot_evaluation(eval_result, horizon=h,
+                                output_path=str(plots_dir / f"ic_ts_h{h}.png"))
+
+        # IC decay overview (from all_ic_metrics, no extra evaluate())
+        _gen_ic_decay_plot(all_ic, plots_dir)
+
+        state.artifacts["eval_plots_dir"] = str(plots_dir)
+    except Exception:
+        pass  # plot failure is non-fatal
+
     if passed_any:
         return _pass(state, "step3", metrics)
 
@@ -479,7 +499,7 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
             ret_type=config.ret_type,
             corr_top_k=0,
             exclude_limit_up=True,
-            run_decile_backtest=False,
+            run_decile_backtest=True,
         )
 
     primary_h = config.icir_check_horizons[0]
@@ -513,6 +533,40 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
     }
 
     if passed:
+        # Generate decile backtest plot while eval data is in memory.
+        # step3 evaluatates without decile; step4 fills the gap.
+        try:
+            if getattr(eval_result, "decile_result", None) is None:
+                decile_eval = evaluate(
+                    config.factor_id,
+                    config.start_date,
+                    config.end_date,
+                    horizons=[20],
+                    ret_type=config.ret_type,
+                    corr_top_k=0,
+                    exclude_limit_up=True,
+                    run_decile_backtest=True,
+                )
+                eval_result.decile_result = decile_eval.decile_result
+
+            if eval_result.decile_result is not None:
+                from backtest.simulation.decile import plot_decile_backtest
+                eval_dir = Path(config.results_root) / config.factor_id / "factor_eval"
+                decile_png = eval_dir / "decile_backtest" / f"{config.factor_id}_decile.png"
+                decile_png.parent.mkdir(parents=True, exist_ok=True)
+                plot_decile_backtest(eval_result.decile_result, str(decile_png))
+                state.eval_result = eval_result
+        except Exception:
+            pass  # plot failure is non-fatal
+
+        # Generate group returns bar chart from step4 metrics.
+        try:
+            _gen_group_returns_plot(metrics.get("group_mean_returns", {}),
+                                    Path(config.results_root) / config.factor_id
+                                    / "factor_eval" / "plots")
+        except Exception:
+            pass
+
         return _pass(state, "step4", metrics)
 
     return _reject(
@@ -592,18 +646,11 @@ def step5_build_strategy(
     cfg_dir = Path(config.results_root) / config.factor_id
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = cfg_dir / "strategy_config.json"
-    artifact: dict = {
-        "name": strategy_config.name,
-        "rebalance_freq": strategy_config.rebalance_freq,
-        "decay": strategy_config.decay,
-        "universe": _universe,
-    }
-    if _top_k is not None:
-        artifact["top_k"] = _top_k
-    else:
-        artifact["top_pct"] = _top_pct
+    # Save the full StrategyConfig dict so step7 can restore it in a later
+    # process.  The old minimal-metadata format was incompatible with
+    # StrategyConfig.from_dict (universe as string vs dict).
     with cfg_path.open("w", encoding="utf-8") as f:
-        json.dump(artifact, f, ensure_ascii=False, indent=2, default=str)
+        json.dump(strategy_config.to_dict(), f, ensure_ascii=False, indent=2, default=str)
     state.artifacts["strategy_config"] = str(cfg_path)
 
     metrics: dict = {
@@ -690,6 +737,14 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
     if signals.empty:
         return _reject(state, "step6", "Strategy produced no signals.")
 
+    # Persist signals so step7 can resume in a later process.
+    tag = _build_tag(state)
+    signals_dir = Path(config.results_root) / config.factor_id / tag
+    signals_dir.mkdir(parents=True, exist_ok=True)
+    signals_path = signals_dir / "signals.parquet"
+    signals.to_parquet(signals_path, index=False)
+    state.artifacts["signals"] = str(signals_path)
+
     market_data = _load_market_data(config, signals)
     sim_cfg = _load_simulation_config(overrides=config.simulation_overrides)
     sim = SimpleSimulator(sim_cfg)
@@ -706,6 +761,22 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
 def step7_detailed_backtest(state: PipelineState) -> PipelineState:
     """Event-driven detailed backtest with threshold gates."""
     config = state.config
+
+    # Restore strategy_config and signals from persisted artifacts when
+    # resuming from step7 in a different process (e.g. sweep validate-top-n).
+    if isinstance(state.strategy_config, dict):
+        state.strategy_config = StrategyConfig.from_dict(state.strategy_config)
+    elif state.strategy_config is None:
+        cfg_path = state.artifacts.get("strategy_config")
+        if cfg_path and Path(cfg_path).exists():
+            with Path(cfg_path).open("r", encoding="utf-8") as f:
+                state.strategy_config = StrategyConfig.from_dict(json.load(f))
+
+    if state.signals is None:
+        signals_path = state.artifacts.get("signals")
+        if signals_path and Path(signals_path).exists():
+            state.signals = pd.read_parquet(signals_path)
+            state.signals["date"] = pd.to_datetime(state.signals["date"])
 
     if state.strategy_config is None or state.signals is None:
         return _reject(state, "step7", "No strategy/signals. Run step5-6 first.")
@@ -835,6 +906,7 @@ def _backtest_gate(
             stacklevel=2,
         )
     if all(checks.values()):
+        _gen_backtest_nav_plot(state, sub_dir, out_dir)
         return _pass(state, step, metrics)
 
     violations = []
@@ -864,6 +936,173 @@ def _build_tag(state: PipelineState) -> str:
     from backtest.pipeline._report import _build_tag as _bt
 
     return _bt(state)
+
+
+def _gen_group_returns_plot(group_rets: dict, plots_dir: Path) -> None:
+    """Generate group-returns bar chart from step4 monotonicity metrics."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        if not group_rets:
+            return
+        groups = sorted(int(g) for g in group_rets)
+        values = [group_rets.get(str(g), group_rets.get(g, 0)) for g in groups]
+        if not groups:
+            return
+
+        fig, ax = plt.subplots(figsize=(14, 5))
+        colors = ["#d73027" if v < 0 else "#4575b4" for v in values]
+        ax.bar(groups, values, color=colors, alpha=0.85)
+        ax.axhline(0, color="gray", linewidth=0.8)
+        ax.set_xlabel("分位组")
+        ax.set_ylabel("平均前瞻收益")
+        ax.set_title("各分位组平均收益（h=1）")
+        ax.set_xticks(groups)
+        ax.grid(True, alpha=0.3, axis="y")
+        fig.tight_layout()
+        plots_dir.mkdir(parents=True, exist_ok=True)
+        fig.savefig(plots_dir / "eval_group_returns.png", dpi=120, bbox_inches="tight")
+        plt.close(fig)
+    except Exception:
+        pass
+
+
+def _gen_ic_decay_plot(all_ic: dict, plots_dir: Path) -> None:
+    """Generate IC decay overview chart from pre-computed IC metrics."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        horizons = sorted(int(h) if isinstance(h, int) else int(h) for h in all_ic)
+
+        def _get(h, key):
+            ic = all_ic.get(h, {}) or all_ic.get(str(h), {})
+            return ic.get(key, np.nan)
+
+        ic_means = [_get(h, "ic_mean") for h in horizons]
+        ic_stds = [_get(h, "ic_std") for h in horizons]
+        ic_icirs = [_get(h, "icir") for h in horizons]
+        ric_means = [_get(h, "rank_ic_mean") for h in horizons]
+        has_rankic = any(not np.isnan(v) for v in ric_means)
+
+        n_cols = 4 if has_rankic else 2
+        fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5))
+        if n_cols == 2:
+            axes = [axes, None, None, None]
+
+        ax1, ax2, ax3, ax4 = axes[0], axes[1], axes[2], axes[3]
+        ax1.errorbar(horizons, ic_means, yerr=ic_stds, marker="o",
+                     color="steelblue", capsize=4, linewidth=1.5)
+        ax1.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax1.set_xlabel("预测周期（天）")
+        ax1.set_ylabel("IC")
+        ax1.set_title("IC 均值 ± 标准差（Pearson）")
+        ax1.grid(True, alpha=0.3)
+        ax2.bar(horizons, ic_icirs, color="darkorange", alpha=0.8)
+        ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+        ax2.set_xlabel("预测周期（天）")
+        ax2.set_ylabel("ICIR")
+        ax2.set_title("ICIR（Pearson）")
+        ax2.grid(True, alpha=0.3, axis="y")
+
+        if has_rankic:
+            ric_stds = [_get(h, "rank_ic_std") for h in horizons]
+            ric_icirs = [_get(h, "rank_icir") for h in horizons]
+            ax3.errorbar(horizons, ric_means, yerr=ric_stds, marker="o",
+                         color="seagreen", capsize=4, linewidth=1.5)
+            ax3.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+            ax3.set_xlabel("预测周期（天）")
+            ax3.set_ylabel("RankIC")
+            ax3.set_title("RankIC 均值 ± 标准差（Spearman）")
+            ax3.grid(True, alpha=0.3)
+            ax4.bar(horizons, ric_icirs, color="mediumpurple", alpha=0.8)
+            ax4.axhline(0, color="gray", linestyle="--", linewidth=0.8)
+            ax4.set_xlabel("预测周期（天）")
+            ax4.set_ylabel("RankICIR")
+            ax4.set_title("RankICIR（Spearman）")
+            ax4.grid(True, alpha=0.3, axis="y")
+
+        fig.tight_layout()
+        fig.savefig(plots_dir / "eval_ic_decay.png", dpi=120, bbox_inches="tight")
+        plt.close(fig)
+    except Exception:
+        pass
+
+
+def _gen_backtest_nav_plot(
+    state: PipelineState, sub_dir: str, out_dir: Path,
+) -> None:
+    """Generate NAV + drawdown chart after backtest results are saved.
+
+    Called from ``_backtest_gate`` so the plot is ready when the report runs.
+    The report just references the file — no data reload needed.
+    """
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        nav_path = out_dir / "nav.parquet"
+        if not nav_path.exists():
+            return
+
+        nav_df = pd.read_parquet(nav_path)
+        if nav_df.empty or "nav" not in nav_df.columns:
+            return
+
+        nav_df["date"] = pd.to_datetime(nav_df["date"])
+        nav_series = nav_df.set_index("date")["nav"].astype(float)
+        nav_norm = nav_series / nav_series.iloc[0]
+        drawdown = nav_series / nav_series.expanding().max() - 1.0
+
+        title_map = {"simple": "简单回测", "detailed": "详细回测"}
+        title = title_map.get(sub_dir, sub_dir)
+
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 7))
+        ax1.plot(nav_norm.index, nav_norm.values, color="steelblue",
+                 linewidth=1.4, label="策略")
+        # Overlay benchmark if available
+        bench_code = getattr(state.config, "benchmark", None)
+        if bench_code:
+            try:
+                from backtest.evaluation.benchmark import align_benchmark, load_benchmark
+                bench_nav = load_benchmark(
+                    bench_code,
+                    start=nav_df["date"].min().strftime("%Y%m%d"),
+                    end=nav_df["date"].max().strftime("%Y%m%d"),
+                )
+                bench_aligned = align_benchmark(nav_df, bench_nav)
+                ax1.plot(bench_aligned.index, bench_aligned.values,
+                         color="darkorange", linewidth=1.2,
+                         label=f"基准 ({bench_code})")
+            except Exception:
+                pass
+        ax1.legend(loc="upper left")
+        ax1.axhline(1.0, color="black", linewidth=0.5, alpha=0.5)
+        ret_type = state.config.ret_type
+        ret_label = "o2o" if ret_type == "open" else "c2c"
+        ax1.set_ylabel("净值")
+        ax1.set_title(f"{title} — 净值曲线 ({ret_label})")
+        ax1.grid(True, alpha=0.3)
+
+        ax2.fill_between(drawdown.index, drawdown.values, 0,
+                         color="red", alpha=0.3)
+        ax2.plot(drawdown.index, drawdown.values, color="red", linewidth=1.0)
+        ax2.set_ylabel("回撤")
+        ax2.set_xlabel("日期")
+        ax2.set_title(f"{title} — 回撤曲线 ({ret_label})")
+        ax2.grid(True, alpha=0.3)
+
+        fig.tight_layout()
+        out_png = out_dir / f"nav_{sub_dir}.png"
+        fig.savefig(out_png, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+    except Exception:
+        pass  # plot failure is non-fatal
 
 
 
@@ -1043,6 +1282,7 @@ def run_pipeline(
     benchmark: str | None = None,
     from_step: int = 1,
     to_step: int | None = None,
+    skip_report: bool = False,
     skip_mark_rejected: bool = False,
     # Strategy kwargs forwarded to step5_build_strategy
     top_k: int | None = None,
@@ -1145,11 +1385,13 @@ def run_pipeline(
         if to_step is not None and step_idx >= to_step:
             break
 
-    # Always generate a diagnostic report
-    from backtest.pipeline._report import generate_pipeline_report
+    # Generate a diagnostic report unless the caller explicitly skips it
+    # (e.g. quick sweep workers that only need numeric metrics).
+    if not skip_report:
+        from backtest.pipeline._report import generate_pipeline_report
 
-    report_path = generate_pipeline_report(state)
-    state.artifacts["report"] = str(report_path)
+        report_path = generate_pipeline_report(state)
+        state.artifacts["report"] = str(report_path)
 
     if state.is_rejected() and not skip_mark_rejected:
         from backtest.factor.admission import mark_rejected

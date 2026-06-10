@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
 
 from backtest.factor.admission import reject
 from backtest.factor.storage import FactorStorage
@@ -19,7 +18,7 @@ def cleanup_on_rejection(state: PipelineState) -> None:
     3. Mark the factor as rejected in the registry.
     """
     factor_id = state.factor_id
-    results_dir = Path(state.config.results_root) / factor_id
+    results_dir = state.config.results_dir()
 
     # 1. Drop from work DB first (so file deletion is the last destructive step)
     try:

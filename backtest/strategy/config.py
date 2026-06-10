@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -124,9 +124,20 @@ class StrategyConfig:
     # None = no decay (use raw factor values).
     decay: int | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a JSON-friendly dict compatible with ``from_dict``."""
+        return asdict(self)
+
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> StrategyConfig:
-        """Build StrategyConfig from a nested dict (YAML/JSON parsed)."""
+        """Build StrategyConfig from YAML/JSON or ``to_dict`` output.
+
+        Historical config files store strategy metadata under a nested
+        ``strategy`` block, while persisted pipeline state stores dataclass
+        fields directly (``strategy_type``, ``rebalance_freq``, ``delay``).
+        Support both shapes so pipeline resume can restore full strategy state.
+        """
+        strategy_block = d.get("strategy", {})
         universe = UniverseConfig(**d.get("universe", {}))
         factors = [FactorConfig(**f) for f in d.get("factors", [])]
         selection = SelectionConfig(**d.get("selection", {}))
@@ -136,9 +147,15 @@ class StrategyConfig:
 
         return cls(
             name=d.get("name", "default"),
-            strategy_type=d.get("strategy", {}).get("type", "single_factor_topk"),
-            rebalance_freq=d.get("strategy", {}).get("rebalance_freq", "1D"),
-            delay=d.get("strategy", {}).get("delay", 1),
+            strategy_type=d.get(
+                "strategy_type",
+                strategy_block.get("type", "single_factor_topk"),
+            ),
+            rebalance_freq=d.get(
+                "rebalance_freq",
+                strategy_block.get("rebalance_freq", "1D"),
+            ),
+            delay=d.get("delay", strategy_block.get("delay", 1)),
             universe=universe,
             factors=factors,
             combine_method=d.get("combine_method", "zscore_equal"),

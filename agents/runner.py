@@ -107,6 +107,7 @@ class AutoQuantFactorRunner:
         decay: int | None = None,
         universe: str | None = None,
         rebalance: str | None = None,
+        skip_report: bool | None = None,
     ) -> AutoQuantFactorExperiment:
         experiment.status = "running"
 
@@ -163,6 +164,7 @@ class AutoQuantFactorRunner:
                 decay=decay,
                 universe=universe,
                 rebalance=rebalance,
+                skip_report=bool(skip_report) if skip_report is not None else False,
                 skip_mark_rejected=True,
             )
 

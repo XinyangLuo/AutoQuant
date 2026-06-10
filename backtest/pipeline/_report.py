@@ -103,7 +103,7 @@ def _step_label(step_key: str) -> str:
 def generate_pipeline_report(state: PipelineState) -> Path:
     config = state.config
     tag = _build_tag(state)
-    tag_dir = Path(config.results_root) / config.factor_id / tag
+    tag_dir = config.results_dir() / tag
     tag_dir.mkdir(parents=True, exist_ok=True)
     plots_dir = tag_dir / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
@@ -315,20 +315,25 @@ def _render_step3(state: PipelineState, plots_dir: Path) -> list[str]:
                 )
             lines.append("")
 
-    # IC decay overview
-    p = _plot_ic_decay(all_ic, plots_dir)
-    if p:
-        lines.append(f"![IC 衰减图](plots/{p.name})")
+    # IC decay — generated during step3, copy into report
+    _copy_eval_plot(state, "eval_ic_decay.png", plots_dir)
+    if (plots_dir / "eval_ic_decay.png").exists():
+        lines.append("![IC 衰减图](plots/eval_ic_decay.png)")
         lines.append("")
 
-    # IC time series per major horizon — single evaluate() call, plot from cache
-    _plot_ic_time_series_multi(state, plots_dir)
-    for h in [1, 5, 20]:
-        p = plots_dir / f"eval_ic_ts_h{h}.png"
-        if p.exists():
-            lines.append(f"![IC 时序图 (h={h})](plots/{p.name})")
-            lines.append("")
-
+    # IC time series — generated during step3 in factor_eval/plots/.
+    # Copy into the report plots dir so markdown references stay local.
+    eval_plots = state.artifacts.get("eval_plots_dir")
+    if eval_plots:
+        import shutil
+        src_dir = Path(eval_plots)
+        for h in [1, 5, 20]:
+            src = src_dir / f"ic_ts_h{h}.png"
+            if src.exists():
+                dst = plots_dir / src.name
+                shutil.copy2(src, dst)
+                lines.append(f"![IC 时序图 (h={h})](plots/{src.name})")
+                lines.append("")
     return lines
 
 
@@ -343,9 +348,9 @@ def _render_step4(state: PipelineState, plots_dir: Path) -> list[str]:
     lines.append("")
     group_rets = result.metrics.get("group_mean_returns", {})
     if group_rets:
-        p = _plot_group_returns(group_rets, plots_dir)
-        if p:
-            lines.append(f"![分组收益图](plots/{p.name})")
+        _copy_eval_plot(state, "eval_group_returns.png", plots_dir)
+        if (plots_dir / "eval_group_returns.png").exists():
+            lines.append("![分组收益图](plots/eval_group_returns.png)")
             lines.append("")
 
     # 十档分层回测（动态净值）
@@ -367,9 +372,12 @@ def _render_step6(state: PipelineState, plots_dir: Path) -> list[str]:
 
     lines = _bt_metrics_table(result.metrics)
     lines.append("")
-    _plot_backtest_nav(state, tag="simple", plots_dir=plots_dir)
-    lines.append("![简单回测净值曲线](plots/bt_simple_nav.png)")
-    lines.append("")
+    # NAV plot was generated during step6 by _backtest_gate.
+    # Copy it into the report plots dir if available.
+    _copy_bt_nav_plot(state, "simple", plots_dir)
+    if (plots_dir / "nav_simple.png").exists():
+        lines.append("![简单回测净值曲线](plots/nav_simple.png)")
+        lines.append("")
     return lines
 
 
@@ -380,9 +388,10 @@ def _render_step7(state: PipelineState, plots_dir: Path) -> list[str]:
 
     lines = _bt_metrics_table(result.metrics)
     lines.append("")
-    _plot_backtest_nav(state, tag="detailed", plots_dir=plots_dir)
-    lines.append("![详细回测净值曲线](plots/bt_detailed_nav.png)")
-    lines.append("")
+    _copy_bt_nav_plot(state, "detailed", plots_dir)
+    if (plots_dir / "nav_detailed.png").exists():
+        lines.append("![详细回测净值曲线](plots/nav_detailed.png)")
+        lines.append("")
 
     p = _plot_evaluation_report(state, plots_dir)
     if p:
@@ -505,35 +514,37 @@ def _render_step10(state: PipelineState, plots_dir: Path) -> list[str]:
 
 
 def _decile_content(state: PipelineState, plots_dir: Path) -> list[str]:
-    """十档分层回测（嵌入 step4 单调性）。"""
+    """十档分层回测（嵌入 step4 单调性）。
+
+    Uses ``state.eval_result.decile_result`` populated by step3 — does not
+    re-run ``evaluate()``.
+    """
     lines = ["### 十档分层回测", ""]
 
     try:
-        from backtest.factor.evaluation import evaluate
-        from backtest.simulation.decile import plot_decile_backtest
+        import shutil
 
-        config = state.config
-        decile_png = Path(config.results_root) / config.factor_id / "decile_backtest" / f"{config.factor_id}_decile.png"
+        eval_result = state.eval_result
+        if eval_result is None:
+            lines.append("*无评估结果。*")
+            lines.append("")
+            return lines
 
-        result = evaluate(
-            config.factor_id, config.start_date, config.end_date,
-            horizons=[20], ret_type=config.ret_type,
-            corr_top_k=0, exclude_limit_up=True, run_decile_backtest=True,
-        )
-        dr = result.decile_result
+        dr = getattr(eval_result, "decile_result", None)
         if dr is None:
             lines.append("*无结果。*")
             lines.append("")
             return lines
 
-        if not decile_png.exists():
-            decile_png.parent.mkdir(parents=True, exist_ok=True)
-            plot_decile_backtest(dr, str(decile_png))
-
-        dst = plots_dir / "decile_backtest.png"
-        dst.write_bytes(decile_png.read_bytes())
-        lines.append(f"![十档分层回测](plots/{dst.name})")
-        lines.append("")
+        # Decile plot was generated during step3; copy into report plots dir.
+        config = state.config
+        factor_eval = Path(config.results_root) / config.factor_id / "factor_eval"
+        decile_png = factor_eval / "decile_backtest" / f"{config.factor_id}_decile.png"
+        if decile_png.exists():
+            dst = plots_dir / "decile_backtest.png"
+            shutil.copy2(decile_png, dst)
+            lines.append(f"![十档分层回测](plots/{dst.name})")
+            lines.append("")
 
         ls = dr.ls_metrics
         lines.append(f"- **单调性**：{_fmt(dr.monotonicity_score, 'f4')}")
@@ -546,109 +557,6 @@ def _decile_content(state: PipelineState, plots_dir: Path) -> list[str]:
         lines.append("")
 
     return lines
-
-
-# ===========================================================================
-# 图表生成
-# ===========================================================================
-
-
-def _plot_ic_decay(all_ic: dict, plots_dir: Path) -> Path | None:
-    horizons = sorted(int(h) for h in all_ic)
-
-    def _get(h: int, key: str):
-        return (all_ic.get(h, {}) or all_ic.get(str(h), {})).get(key, np.nan)
-
-    ic_means = [_get(h, "ic_mean") for h in horizons]
-    ic_stds = [_get(h, "ic_std") for h in horizons]
-    ic_icirs = [_get(h, "icir") for h in horizons]
-    ric_means = [_get(h, "rank_ic_mean") for h in horizons]
-    ric_stds = [_get(h, "rank_ic_std") for h in horizons]
-    ric_icirs = [_get(h, "rank_icir") for h in horizons]
-    has_rankic = any(not np.isnan(v) for v in ric_means)
-
-    n_cols = 4 if has_rankic else 2
-    fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 5))
-    if n_cols == 2:
-        axes = [axes, None, None, None]  # type: ignore[assignment]
-
-    ax1, ax2, ax3, ax4 = axes[0], axes[1], axes[2], axes[3]
-
-    # Pearson IC
-    ax1.errorbar(horizons, ic_means, yerr=ic_stds, marker="o", color="steelblue", capsize=4, linewidth=1.5)
-    ax1.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-    ax1.set_xlabel("预测周期（天）")
-    ax1.set_ylabel("IC")
-    ax1.set_title("IC 均值 ± 标准差（Pearson）")
-    ax1.grid(True, alpha=0.3)
-    ax2.bar(horizons, ic_icirs, color="darkorange", alpha=0.8)
-    ax2.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-    ax2.set_xlabel("预测周期（天）")
-    ax2.set_ylabel("ICIR")
-    ax2.set_title("ICIR（Pearson）")
-    ax2.grid(True, alpha=0.3, axis="y")
-
-    # RankIC (Spearman) — if available
-    if has_rankic:
-        ax3.errorbar(horizons, ric_means, yerr=ric_stds, marker="o", color="seagreen", capsize=4, linewidth=1.5)
-        ax3.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-        ax3.set_xlabel("预测周期（天）")
-        ax3.set_ylabel("RankIC")
-        ax3.set_title("RankIC 均值 ± 标准差（Spearman）")
-        ax3.grid(True, alpha=0.3)
-        ax4.bar(horizons, ric_icirs, color="mediumpurple", alpha=0.8)
-        ax4.axhline(0, color="gray", linestyle="--", linewidth=0.8)
-        ax4.set_xlabel("预测周期（天）")
-        ax4.set_ylabel("RankICIR")
-        ax4.set_title("RankICIR（Spearman）")
-        ax4.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    out = plots_dir / "eval_ic_decay.png"
-    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
-    plt.close(fig)
-    return out
-
-
-def _plot_ic_time_series_multi(state: PipelineState, plots_dir: Path) -> None:
-    """Generate IC time series plots for h=1,5,20 in one evaluate() call."""
-    config = state.config
-    try:
-        from backtest.factor.evaluation import evaluate, plot_evaluation
-
-        result = evaluate(
-            config.factor_id, config.start_date, config.end_date,
-            horizons=[1, 5, 20], ret_type=config.ret_type,
-            corr_top_k=0, exclude_limit_up=True, run_decile_backtest=False,
-        )
-        for h in [1, 5, 20]:
-            if h in result.ic_series:
-                out = plots_dir / f"eval_ic_ts_h{h}.png"
-                plot_evaluation(result, horizon=h, output_path=str(out))
-    except Exception:
-        warnings.warn(
-            f"Failed to generate IC time series plots for {config.factor_id}: "
-            f"{traceback.format_exc()}",
-            stacklevel=2,
-        )
-
-
-def _plot_group_returns(group_rets: dict, plots_dir: Path) -> Path | None:
-    groups = sorted(int(g) for g in group_rets)
-    values = [group_rets[str(g)] if str(g) in group_rets else group_rets.get(g, 0) for g in groups]
-    fig, ax = plt.subplots(figsize=_FIGSIZE_WIDE)
-    colors = ["#d73027" if v < 0 else "#4575b4" for v in values]
-    ax.bar(groups, values, color=colors, alpha=0.85)
-    ax.axhline(0, color="gray", linewidth=0.8)
-    ax.set_xlabel("分位组")
-    ax.set_ylabel("平均前瞻收益")
-    ax.set_title("各分位组平均收益（h=1）")
-    ax.set_xticks(groups)
-    ax.grid(True, alpha=0.3, axis="y")
-    fig.tight_layout()
-    out = plots_dir / "eval_group_returns.png"
-    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
-    plt.close(fig)
-    return out
 
 
 def _bt_metrics_table(metrics: dict) -> list[str]:
@@ -707,94 +615,28 @@ def _bt_metrics_table(metrics: dict) -> list[str]:
     return lines
 
 
-def _plot_backtest_nav(state: PipelineState, *, tag: str, plots_dir: Path) -> None:
+def _copy_eval_plot(state: PipelineState, filename: str, plots_dir: Path) -> None:
+    """Copy a pre-generated eval plot from factor_eval/plots/ to the report dir."""
+    import shutil
+    eval_plots = state.artifacts.get("eval_plots_dir")
+    if eval_plots:
+        src = Path(eval_plots) / filename
+        if src.exists():
+            shutil.copy2(src, plots_dir / filename)
+
+
+def _copy_bt_nav_plot(state: PipelineState, tag: str, plots_dir: Path) -> None:
+    """Copy the pre-generated backtest nav plot from the backtest output dir.
+
+    The actual plot is generated during step6/step7 by
+    ``_gen_backtest_nav_plot`` — the report only copies it.
+    """
+    import shutil
     art_key = f"{tag}_bt"
     bt_dir = state.artifacts.get(art_key)
-    nav_path = Path(bt_dir) / "nav.parquet" if bt_dir else None
-    if nav_path is None or not nav_path.exists():
-        _plot_backtest_summary_card(state, tag, plots_dir)
-        return
-    nav_df = pd.read_parquet(nav_path)
-    if nav_df.empty or "nav" not in nav_df.columns:
-        _plot_backtest_summary_card(state, tag, plots_dir)
-        return
-    nav_df["date"] = pd.to_datetime(nav_df["date"])
-    nav_series = nav_df.set_index("date")["nav"].astype(float)
-    nav_norm = nav_series / nav_series.iloc[0]
-    drawdown = nav_series / nav_series.expanding().max() - 1.0
-    title_map = {"simple": "简单回测", "detailed": "详细回测"}
-    title = title_map.get(tag, tag)
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 7))
-    ax1.plot(nav_norm.index, nav_norm.values, color="steelblue", linewidth=1.4, label="策略")
-    # Overlay benchmark if available
-    bench_code = getattr(state.config, "benchmark", None)
-    if bench_code:
-        try:
-            bench_nav = load_benchmark(
-                bench_code,
-                start=nav_df["date"].min().strftime("%Y%m%d"),
-                end=nav_df["date"].max().strftime("%Y%m%d"),
-            )
-            bench_aligned = align_benchmark(nav_df, bench_nav)
-            ax1.plot(
-                bench_aligned.index,
-                bench_aligned.values,
-                color="darkorange",
-                linewidth=1.2,
-                label=f"基准 ({bench_code})",
-            )
-        except Exception:
-            warnings.warn(
-                f"Failed to overlay benchmark ({bench_code}) on {tag} NAV chart: "
-                f"{traceback.format_exc()}",
-                stacklevel=2,
-            )
-    ax1.legend(loc="upper left")
-    ax1.axhline(1.0, color="black", linewidth=0.5, alpha=0.5)
-    ret_type = state.config.ret_type
-    ret_label = "o2o" if ret_type == "open" else "c2c"
-    ax1.set_ylabel("净值")
-    ax1.set_title(f"{title} — 净值曲线 ({ret_label})")
-    ax1.grid(True, alpha=0.3)
-    ax2.fill_between(drawdown.index, drawdown.values, 0, color="red", alpha=0.3)
-    ax2.plot(drawdown.index, drawdown.values, color="red", linewidth=1.0)
-    ax2.set_ylabel("回撤")
-    ax2.set_xlabel("日期")
-    ax2.set_title(f"{title} — 回撤曲线 ({ret_label})")
-    ax2.grid(True, alpha=0.3)
-    fig.tight_layout()
-    out = plots_dir / f"bt_{tag}_nav.png"
-    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _plot_backtest_summary_card(state: PipelineState, tag: str, plots_dir: Path) -> None:
-    step_key = "step6" if tag == "simple" else "step7"
-    step = state.step_results.get(step_key)
-    metrics = step.metrics if step else {}
-    title_map = {"simple": "简单回测", "detailed": "详细回测"}
-    title = title_map.get(tag, tag)
-    fig, ax = plt.subplots(figsize=_FIGSIZE_WIDE)
-    card_lines = []
-    for label, key, kind in [
-        ("年化收益", "annual_return", "pct"),
-        ("Sharpe", "sharpe", "f3"),
-        ("最大回撤", "max_drawdown", "pct"),
-        ("Calmar", "calmar", "f3"),
-        ("年化换手", "annual_turnover", "f2"),
-    ]:
-        val = metrics.get(key)
-        if val is not None and not (isinstance(val, float) and np.isnan(val)):
-            card_lines.append(f"{label}: {_fmt(val, kind)}")
-    ax.axis("off")
-    ax.text(0.5, 0.5, "\n".join(card_lines), ha="center", va="center",
-            transform=ax.transAxes, fontsize=14, fontfamily="monospace",
-            bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.3))
-    ax.set_title(f"{title} 摘要", fontsize=13, fontweight="bold")
-    fig.tight_layout()
-    out = plots_dir / f"bt_{tag}_nav.png"
-    fig.savefig(out, dpi=_DPI, bbox_inches="tight")
-    plt.close(fig)
+    src = Path(bt_dir) / f"nav_{tag}.png" if bt_dir else None
+    if src and src.exists():
+        shutil.copy2(src, plots_dir / f"nav_{tag}.png")
 
 
 def _plot_evaluation_report(state: PipelineState, plots_dir: Path) -> Path | None:

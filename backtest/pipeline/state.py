@@ -170,29 +170,38 @@ class PipelineState:
         start_idx = order.index(step)
         for s in order[start_idx:]:
             self.step_results.pop(s, None)
-        # Artifacts keyed by step tag or report path are also stale once
-        # the corresponding steps are re-run.  Remove only the artifact
-        # entries that depend on downstream steps; leave eval_result etc.
-        stale_artifact_keys = {
-            "strategy_config", "simple_bt", "detailed_bt",
-            "ridge", "residual_icir", "report",
+        # Preserve step5/6 artifacts when resuming from step7 so detailed
+        # backtest can restore strategy config and signals without rerunning
+        # simple backtest.
+        stale_by_start_idx = {
+            4: {"strategy_config"},
+            5: {"signals", "simple_bt"},
+            6: {"detailed_bt"},
+            7: {"ridge"},
+            8: {"residual_icir"},
+            9: set(),
         }
+        stale_artifact_keys: set[str] = {"report"}
+        for producer_idx, keys in stale_by_start_idx.items():
+            if start_idx <= producer_idx:
+                stale_artifact_keys.update(keys)
         for key in stale_artifact_keys:
             self.artifacts.pop(key, None)
+
         # Non-serialized cached objects that depend on cleared steps must
         # also be wiped so that downstream steps don't reuse stale data.
-        if start_idx < 3:
+        if start_idx <= 2:
             self.eval_result = None
-        if start_idx < 4:
+        if start_idx <= 4:
             self.strategy_config = None
+        if start_idx <= 5:
             self.signals = None
-        if start_idx < 6:
             self.simple_bt_metrics = None
-        if start_idx < 7:
+        if start_idx <= 6:
             self.detailed_bt_metrics = None
-        if start_idx < 8:
+        if start_idx <= 7:
             self.ridge_result = None
-        if start_idx < 9:
+        if start_idx <= 8:
             self.residual_icir_result = None
         # Reset status so downstream steps can proceed.
         if self.status in ("rejected", "ready_for_review", "quick_pass"):

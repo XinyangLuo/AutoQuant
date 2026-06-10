@@ -200,9 +200,9 @@ def ridge_r2_check(
     own_lib = library is None
     try:
         if factor_storage is None:
-            factor_storage = FactorStorage()
+            factor_storage = FactorStorage(read_only=True)
         if library is None:
-            library = FactorLibrary()
+            library = FactorLibrary(read_only=True)
 
         if regressors is None:
             regressors = tuple(_get_all_regressor_ids(factor_id, library))
@@ -562,9 +562,9 @@ def residual_icir_check(
     own_lib = library is None
     try:
         if factor_storage is None:
-            factor_storage = FactorStorage()
+            factor_storage = FactorStorage(read_only=True)
         if library is None:
-            library = FactorLibrary()
+            library = FactorLibrary(read_only=True)
 
         candidate = factor_storage.get_factor(factor_id, start=start, end=end)
         if candidate.empty:

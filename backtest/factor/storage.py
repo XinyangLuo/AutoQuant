@@ -409,9 +409,11 @@ class FactorLibrary(FactorStorage):
       library is append-only.
     """
 
-    def __init__(self, db_path: Path | str | None = None):
-        super().__init__(db_path=Path(db_path) if db_path is not None
-                                 else FACTOR_LIBRARY_DB_PATH)
+    def __init__(self, db_path: Path | str | None = None, *, read_only: bool = False):
+        super().__init__(
+            db_path=Path(db_path) if db_path is not None else FACTOR_LIBRARY_DB_PATH,
+            read_only=read_only,
+        )
 
     def insert_factors(self, df: pd.DataFrame, *, allow_unadmitted: bool = False):
         """UPSERT factor values into the library DB.

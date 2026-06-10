@@ -58,7 +58,7 @@ find agents/pdf_hypotheses -name "*.md" -type f | sort
 - 每轮必须 append 一行 JSON 到 `trace.jsonl`。
 - 每轮开始前必须读取 `trace.jsonl`（如果存在），避免重复错误和重复参数。
 - 代码错误和 schema 错误必须同方向修复，不得直接换新因子假设。
-- 失败诊断：**启动 Result Critic subagent（Agent tool）**，由其读取 result.json + trace.jsonl + KB，输出结构化诊断 JSON。父进程根据 RC 输出决定 repair / abandon / 换方向。
+- 失败诊断：先执行 **Pre-RC Strategy Sweep Fast Path**（强因子仅策略回测失败时直接 sweep）；不满足 fast path 时再启动 Result Critic subagent（Agent tool），由其读取 result.json + trace.jsonl + KB，输出结构化诊断 JSON。父进程根据 RC 输出决定 repair / abandon / 换方向。
 - **绝对不能更改阈值（thresholds）来让因子 admit**。阈值是项目级的质量标准，降低阈值等同于自欺欺人。如果因子达不到阈值，只能改进因子或策略参数，不能改阈值。
 
 ## Knowledge Base
@@ -99,6 +99,15 @@ results/
       result.json
     <strategy2>/                            ← 不同参数的策略变体
       ...
+    sweep_runs/                             ← sweep 参数扫描，每个组合直接一个目录
+      <strategy>/
+        pipeline_state.json
+        strategy_config.json
+        signals.parquet
+        simple/
+        detailed/                           ← 若 --validate-top-n/full 触发
+        pipeline_report.md
+        result.json
   candidates/                               ← 已通过 pipeline 等待人工决策的因子
     <factor_id>/
       factor.py
@@ -111,6 +120,7 @@ results/
 - `factor.py` 和 `factor_eval/` / `decile_backtest/` 仅在 `factor_change="formula"` 的轮次更新。`factor_change="params"` 的轮次**也必须重建** factor_eval / decile_backtest（因为窗口/horizon/variant 变化导致因子值完全不同）。只有 `strategy_only` 的轮次**不重建**这些目录，只新增策略变体目录。
 - 策略变体目录按 `{top_k}_{rebalance}_d{decay}` 命名（如 `top100_1d_d5`），由 pipeline 自动生成。
 - `result.json` 与 `pipeline_report.md` 放在同一策略变体目录下。
+- `sweep` 组合目录必须是 `results/<factor_id>/sweep_runs/<strategy>/`，不得再嵌套 `<factor_id>/<strategy>`。
 
 ## Per-round Procedure
 
@@ -193,12 +203,16 @@ For each round:
    ```
    Pipeline 自动将产物写入 `results/<factor_id>/factor_eval/`、`results/<factor_id>/decile_backtest/` 以及默认策略变体目录下。
 
-   **strategy_only 或 factor_change="params"**（仅策略变化）：
+   **strategy_only**（仅策略变化）：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --factor-file results/<run_id>/factor.py
+     --factor-file results/<run_id>/factor.py \
+     --from-step 5 \
+     --top-k 200 --decay 10 --rebalance 5D
    ```
-   > factor_eval/ / decile_backtest/ 结果不变，不重复生成。新的策略参数会产生一个新的策略变体目录（如 `top200_1d_d10`）。
+   > factor_eval/ / decile_backtest/ 结果不变，不重复生成。`--from-step 5` 会复用已回填因子值与 step1~4 结果，只重建策略配置与后续回测。新的策略参数会产生一个新的策略变体目录（如 `top200_5d_d10`）。
+
+   **factor_change="params"**（窗口/horizon/variant 等因子值变化）：仍需从 step1 重新运行，因为因子值已改变。
 
    **Quick 模式（默认用于 strategy-only 参数扫描）**：
    当因子公式已锁定、只需要比较策略参数时，使用 `--quick`（等价于 `--to-step 6`）跳过 detailed backtest / Ridge / residual，只跑到 simple backtest。这会快很多，且仍然生成包含 step1-6 的 `result.json` 和 `pipeline_report.md`。
@@ -210,7 +224,7 @@ For each round:
    ```
 
    **并行 strategy sweep（参数网格扫描，默认 quick 模式）**：
-   当 RC 建议尝试多个 `top_k/decay/rebalance` 组合时，不要逐个 `run`，直接用 `sweep`。系统会先把 base 因子算到 step4，然后为每个参数组合克隆一个独立 factor_id 并行跑 step5-6，最后输出对比表。
+   当强因子只卡在策略参数提取，或 RC 明确建议尝试多个 `top_k/decay/rebalance` 组合时，不要逐个 `run`，直接用 `sweep`。系统会先把 base 因子算到 step4，然后用**同一个真实 factor_id** 为每个参数组合隔离运行 step5-6；不会创建 `alphas/exp/agent/<factor_id>_sw_*` clone 因子目录，也不会复制临时因子列。
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli sweep <factor_id> \
      --factor-file results/<run_id>/factor.py \
@@ -219,8 +233,9 @@ For each round:
      --rebalance 1D,5D \
      --workers 4
    ```
-   - 默认 `--quick`（只跑 step5-6）。若某个组合看起来很好，再单独 `run` 做完整 pipeline。
-   - 想直接跑完整 pipeline 对比，加 `--full`。
+   - 默认 quick 模式（只跑 step5-6）。若某个组合看起来很好，再做 full 验证。
+   - 想直接跑完整 pipeline 对比，加 `--full`（对所有组合跑 step5-10）。
+   - 想先 quick sweep、再只对最优 N 个组合从 detailed 回测继续 full 验证，加 `--validate-top-n N`；它会复用 quick sweep 保存的 strategy/signals，从 step7 开始，避免重复 simple backtest。
    - Sweep 结束后会打印最佳组合（按 Calmar > Sharpe），并把完整表格写到 `results/<factor_id>/sweep_summary.json`。
 
    **Sweep 参数设计（按因子类型区分）**：
@@ -236,11 +251,12 @@ For each round:
    **Sweep 后的标准 workflow**：
    1. 公式确定后先跑一次 `--quick` 确认 simple metrics 有信号；
    2. 用 `sweep` 扫 `top_k × decay × rebalance`（默认 quick，按因子类型选 grid）；
-   3. 从 summary 挑 1-2 个最优组合，**并行**跑完整 pipeline（`run` 不带 `--quick`，或用 `sweep --full` 只跑最优组合）确认 detailed / ridge / residual；
-   4. 只有完整 run `pass` 才进 `candidates/`。
+   3. 优先用 `sweep --validate-top-n 1` 或 `--validate-top-n 2` 对最优组合从 step7 继续 full 验证，确认 detailed / ridge / residual；
+   4. 如需手动 fallback，用 `run --from-step 5 --top-k ... --decay ... --rebalance ...`，不要从 step1 重跑；
+   5. 只有完整 run `pass` 才进 `candidates/`。
 
 7. Read `result.json`（位于 `results/<factor_id>/<strategy>/result.json`）。
-   - 如果用了 `sweep`，每个组合的 `result.json` 在 `results/<clone_id>/<tag>/result.json`，同时 `results/<factor_id>/sweep_summary.json` 汇总全部结果。
+   - 如果用了 `sweep`，每个组合的 `result.json` 路径以 `results/<factor_id>/sweep_summary.json` 中的 `result_path` / `full_result_path` 为准；sweep 不会创建 clone factor_id。
    - `result.json.report_path` 指向 pipeline 诊断报告。
    
 8. **If `result.json.status == "pass"`**：
@@ -249,7 +265,30 @@ For each round:
    - End loop. Summarize factor id, path, core formula, key metrics, and candidates directory.
    - Do not automatically admit. To admit: `python -m backtest.factor.admission admit <factor_id>`
 
-9. **If `result.json.status != "pass"`**：启动 Result Critic subagent 诊断。
+9. **Pre-RC Strategy Sweep Fast Path**：在启动 RC 前先判断是否属于“强因子但策略参数提取失败”。
+
+   若同时满足：
+   - `result.json.failure_type == "backtest_fail"`；
+   - failed step 是 step6（simple backtest），且 step1~step5 passed；
+   - `annual_icir`、`monotonicity` 已通过阈值，且 simple Sharpe 为正 / 接近阈值（例如 ≥ 阈值 70%）或 ICIR 极强（例如 annual_icir ≥ 3）；
+   - 没有 code/schema/execution 错误；
+   - 因子公式未计划修改；
+
+   则**不要启动 RC**，直接运行 strategy sweep：
+   ```bash
+   conda activate AutoQuant && python -m agents.claude_cli sweep <factor_id> \
+     --factor-file results/<run_id>/factor.py \
+     --top-k 100,200 \
+     --decay 5,10,15 \
+     --rebalance 1D,5D \
+     --workers 4 \
+     --validate-top-n 1
+   ```
+   - 量价因子默认 sweep 空间固定为 `top_k=100,200`、`decay=5,10,15`、`rebalance=1D,5D`；除非用户明确要求，不额外扩到 50/300 或 1W，避免无谓组合膨胀。
+   - 如果 sweep 有 full `pass`，进入 Pass 收尾。
+   - 如果 sweep 无 quick_pass/pass，或 full 验证仍失败，再进入 RC，并把 `sweep_summary.json` 注入 prompt。
+
+10. **If `result.json.status != "pass"` 且不满足 Pre-RC fast path**：启动 Result Critic subagent 诊断。
 
    **条件注入：父进程组装 RC Prompt**
 
@@ -295,18 +334,17 @@ For each round:
 
    **完整 Diagnosis JSON Schema** 见 `.claude/prompts/shared/output_formats.md`。
 
-10. **Parse RC output**：尝试 JSON.parse RC 返回文本。
+11. **Parse RC output**：尝试 JSON.parse RC 返回文本。
     - 如果解析失败（如 RC 输出了 markdown 代码块包裹）→ 尝试提取第一个 `{...}` 块重新解析
     - 如果仍失败 → 使用 fallback 诊断：`{"failure_type": "{from result.json}", "diagnosis": "RC output parse error", "fix_level": "factor", "factor_params": {}, "strategy_params": {}, "same_direction": true, "recommend_abandon": false, "new_anti_pattern": null}`
     - 追加一行到 `trace.jsonl`（将 RC 输出的字段合并进去，见 Trace JSONL Schema）
 
-11. 根据 RC subagent 返回的诊断 JSON：
+12. 根据 RC subagent 返回的诊断 JSON：
 
     **RC 职责边界**：RC 的核心任务是诊断**因子构造**问题（公式、窗口、算子组合、方向、数据列选择）。当失败原因是策略参数空间问题时，RC 只需指出"这是策略参数问题，建议 sweep"，**不要**让 RC 输出具体的 top_k/decay/rebalance 数值组合——那是 sweep 的工作，RC 逐个猜参数效率低且浪费 token。
 
     具体规则：
-    - **fix_level="strategy_only" 且已连续出现 ≥2 次**：不再按 RC 的 `strategy_params` 逐个跑，直接启动 `sweep` 扫 grid。RC 的诊断只用于确认"公式方向正确，瓶颈在参数提取"。
-    - **fix_level="strategy_only" 且是第一次出现**：可以按 RC 建议跑一次，但如果仍然失败，下一轮必须进 sweep。
+    - **fix_level="strategy_only"**：不要按 RC 的 `strategy_params` 逐个单点跑，直接启动 `sweep` 扫 grid。RC 的诊断只用于确认"公式方向正确，瓶颈在参数提取"；参数组合选择交给 sweep。
     - **fix_level="factor"**：按 RC 建议修改因子代码（窗口、horizon、variant、公式结构），这才是 RC 的主战场。
     - **fix_level="both"**：先改因子代码，然后启动 sweep 验证策略参数，不要手调单个参数。
 
@@ -317,8 +355,7 @@ For each round:
     - 如果 `same_direction == true` 且 `recommend_abandon != true` 且 `round < max_rounds`：
       - **fix_level="factor" + factor_change="params"**：以 RC 的 `factor_params` 为指导修改因子代码（窗口/horizon/variant），进入下一轮。
       - **fix_level="factor" + factor_change="formula"**：按 RC 的 `fix_strategy` 中的**公式改进方向**重构因子代码（变换算子/归一化/组合增强），进入下一轮。
-      - **fix_level="strategy_only"（第一次）**：只更新 `config.yaml`（用 `strategy_params` 中的 decay/rebalance/top_k），**因子代码不变**，进入下一轮。
-      - **fix_level="strategy_only"（第二次及以上）**：**跳过单点修复，直接启动 sweep**。用 `sweep` 并行扫 grid，从结果中选最优 1-2 个再跑 full pipeline。
+      - **fix_level="strategy_only"**：因子代码不变，不做单点手调；直接启动 `sweep --validate-top-n 1` 扫 grid，并对最优组合从 step7 继续 full 验证。
       - **fix_level="both"**：两个都改。factor_change 遵循与 fix_level="factor" 相同的规则（params 或 formula），FC 修改 factor.py 后启动 sweep 验证策略参数。
       - **fix_level="retry"**：什么都不改，原样重试。
 

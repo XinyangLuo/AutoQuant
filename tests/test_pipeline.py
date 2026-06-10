@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import backtest.pipeline.steps as pipeline_steps
 from backtest.pipeline.config import PipelineConfig, StepThresholds
 from backtest.pipeline.state import PipelineState, StepResult
 from backtest.factor.evaluation import _ic_series, _rank_ic_series
@@ -149,6 +150,150 @@ class TestPipelineState:
         assert "strategy_config" not in state.artifacts
         assert "report" not in state.artifacts
         assert state.status == "running"
+
+    def test_save_load_restores_strategy_config(self):
+        from backtest.strategy.config import (
+            BacktestConfig,
+            FactorConfig,
+            SelectionConfig,
+            StrategyConfig,
+        )
+
+        cfg = PipelineConfig(
+            factor_id="f_001",
+            start_date="20200101",
+            end_date="20241231",
+        )
+        state = PipelineState(factor_id="f_001", config=cfg)
+        state.strategy_config = StrategyConfig(
+            name="test_strategy",
+            rebalance_freq="5D",
+            factors=[FactorConfig(id="f_001", direction="desc")],
+            selection=SelectionConfig(method="topk", top_k=50),
+            backtest=BacktestConfig(start_date="20200101", end_date="20241231"),
+            decay=10,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "state.json"
+            state.save(path)
+            loaded = PipelineState.load(path)
+
+        assert loaded.strategy_config is not None
+        assert loaded.strategy_config.name == "test_strategy"
+        assert loaded.strategy_config.selection.top_k == 50
+        assert loaded.strategy_config.rebalance_freq == "5D"
+        assert loaded.strategy_config.decay == 10
+
+    def test_clear_from_step_removes_signals_artifact(self):
+        cfg = PipelineConfig(
+            factor_id="f_001",
+            start_date="20200101",
+            end_date="20241231",
+        )
+        state = PipelineState(factor_id="f_001", config=cfg)
+        for i in range(1, 7):
+            state.record(f"step{i}", StepResult(passed=True))
+        state.artifacts["signals"] = "old_signals.parquet"
+        state.artifacts["strategy_config"] = "old_strategy.json"
+
+        state.clear_from_step("step6")
+
+        assert "signals" not in state.artifacts
+        assert state.artifacts["strategy_config"] == "old_strategy.json"
+        assert "step5" in state.step_results
+        assert "step6" not in state.step_results
+
+    def test_clear_from_step7_preserves_strategy_and_signals_artifacts(self):
+        cfg = PipelineConfig(
+            factor_id="f_001",
+            start_date="20200101",
+            end_date="20241231",
+        )
+        state = PipelineState(factor_id="f_001", config=cfg)
+        for i in range(1, 8):
+            state.record(f"step{i}", StepResult(passed=True))
+        state.artifacts["strategy_config"] = "strategy.json"
+        state.artifacts["signals"] = "signals.parquet"
+        state.artifacts["simple_bt"] = "simple"
+        state.artifacts["detailed_bt"] = "detailed"
+        state.artifacts["report"] = "old/report.md"
+
+        state.clear_from_step("step7")
+
+        assert "step6" in state.step_results
+        assert "step7" not in state.step_results
+        assert state.artifacts["strategy_config"] == "strategy.json"
+        assert state.artifacts["signals"] == "signals.parquet"
+        assert state.artifacts["simple_bt"] == "simple"
+        assert "detailed_bt" not in state.artifacts
+        assert "report" not in state.artifacts
+
+    def test_step7_restores_strategy_and_signals_from_artifacts(self, tmp_path, monkeypatch):
+        from backtest.strategy.config import (
+            BacktestConfig,
+            FactorConfig,
+            SelectionConfig,
+            StrategyConfig,
+        )
+
+        cfg = PipelineConfig(
+            factor_id="f_001",
+            start_date="20200101",
+            end_date="20240131",
+            results_root=str(tmp_path / "results"),
+        )
+        state = PipelineState(factor_id="f_001", config=cfg)
+        strategy = StrategyConfig(
+            name="test_strategy",
+            rebalance_freq="1D",
+            factors=[FactorConfig(id="f_001", direction="desc")],
+            selection=SelectionConfig(method="topk", top_k=1),
+            backtest=BacktestConfig(start_date="20200101", end_date="20240131"),
+            decay=5,
+        )
+        strategy_path = tmp_path / "strategy_config.json"
+        strategy_path.write_text(json.dumps(strategy.to_dict()), encoding="utf-8")
+        signals_path = tmp_path / "signals.parquet"
+        pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2024-01-02"]),
+                "symbol": ["000001.SZ"],
+                "target_weight": [1.0],
+            }
+        ).to_parquet(signals_path, index=False)
+        state.artifacts["strategy_config"] = str(strategy_path)
+        state.artifacts["signals"] = str(signals_path)
+
+        class DummyDetailedSimulator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run(self, signals, market_data, dividends):
+                assert not signals.empty
+                return object()
+
+        def fake_backtest_gate(state, result, step, sub_dir, threshold_map):
+            assert state.strategy_config is not None
+            assert state.signals is not None
+            state.record("step7", StepResult(passed=True, metrics={"sharpe": 1.0}))
+            return state
+
+        monkeypatch.setattr(pipeline_steps, "DetailedSimulator", DummyDetailedSimulator)
+        monkeypatch.setattr(
+            pipeline_steps,
+            "_load_market_data",
+            lambda config, signals, with_dividends=False: (pd.DataFrame(), pd.DataFrame()),
+        )
+        monkeypatch.setattr(pipeline_steps, "_backtest_gate", fake_backtest_gate)
+
+        result = pipeline_steps.step7_detailed_backtest(state)
+
+        assert result.step_results["step7"].passed is True
+        assert result.strategy_config is not None
+        assert result.strategy_config.selection.top_k == 1
+        assert result.signals is not None
+        assert result.signals["date"].dtype.kind == "M"
 
 
 # ---------------------------------------------------------------------------
