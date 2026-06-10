@@ -172,36 +172,38 @@ class PipelineState:
             self.step_results.pop(s, None)
         # Preserve step5/6 artifacts when resuming from step7 so detailed
         # backtest can restore strategy config and signals without rerunning
-        # simple backtest.
-        stale_by_start_idx = {
-            4: {"strategy_config"},
-            5: {"signals", "simple_bt"},
-            6: {"detailed_bt"},
-            7: {"ridge"},
-            8: {"residual_icir"},
-            9: set(),
+        # simple backtest.  Keys are step names so the mapping stays correct
+        # when new steps are inserted into the order list.
+        stale_by_step = {
+            "step5": {"strategy_config"},
+            "step6": {"signals", "simple_bt"},
+            "step7": {"detailed_bt"},
+            "step8": {"ridge"},
+            "step9": {"residual_icir"},
+            "step10": set(),
         }
         stale_artifact_keys: set[str] = {"report"}
-        for producer_idx, keys in stale_by_start_idx.items():
-            if start_idx <= producer_idx:
+        for step_name, keys in stale_by_step.items():
+            if start_idx <= order.index(step_name):
                 stale_artifact_keys.update(keys)
         for key in stale_artifact_keys:
             self.artifacts.pop(key, None)
 
         # Non-serialized cached objects that depend on cleared steps must
         # also be wiped so that downstream steps don't reuse stale data.
-        if start_idx <= 2:
+        _o = order.index
+        if start_idx <= _o("step3"):
             self.eval_result = None
-        if start_idx <= 4:
+        if start_idx <= _o("step5"):
             self.strategy_config = None
-        if start_idx <= 5:
+        if start_idx <= _o("step6"):
             self.signals = None
             self.simple_bt_metrics = None
-        if start_idx <= 6:
+        if start_idx <= _o("step7"):
             self.detailed_bt_metrics = None
-        if start_idx <= 7:
+        if start_idx <= _o("step8"):
             self.ridge_result = None
-        if start_idx <= 8:
+        if start_idx <= _o("step9"):
             self.residual_icir_result = None
         # Reset status so downstream steps can proceed.
         if self.status in ("rejected", "ready_for_review", "quick_pass"):

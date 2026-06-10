@@ -336,7 +336,7 @@ def step3_icir_check(state: PipelineState) -> PipelineState:
         ret_type=config.ret_type,
         corr_top_k=0,
         exclude_limit_up=True,
-        run_decile_backtest=False,
+        run_decile_backtest=True,
     )
     state.eval_result = eval_result
 
@@ -533,8 +533,9 @@ def step4_monotonicity_check(state: PipelineState) -> PipelineState:
     }
 
     if passed:
-        # Generate decile backtest plot while eval data is in memory.
-        # step3 evaluatates without decile; step4 fills the gap.
+        # Generate decile backtest plot.  step3 already computes
+        # decile_result (run_decile_backtest=True); the fallback
+        # evaluate() below only fires when step4 runs standalone.
         try:
             if getattr(eval_result, "decile_result", None) is None:
                 decile_eval = evaluate(
@@ -906,7 +907,7 @@ def _backtest_gate(
             stacklevel=2,
         )
     if all(checks.values()):
-        _gen_backtest_nav_plot(state, sub_dir, out_dir)
+        _gen_backtest_nav_plot(state, sub_dir, out_dir, result.nav_df)
         return _pass(state, step, metrics)
 
     violations = []
@@ -1035,25 +1036,22 @@ def _gen_ic_decay_plot(all_ic: dict, plots_dir: Path) -> None:
 
 def _gen_backtest_nav_plot(
     state: PipelineState, sub_dir: str, out_dir: Path,
+    nav_df: "pd.DataFrame",
 ) -> None:
-    """Generate NAV + drawdown chart after backtest results are saved.
+    """Generate NAV + drawdown chart from in-memory backtest result.
 
-    Called from ``_backtest_gate`` so the plot is ready when the report runs.
-    The report just references the file — no data reload needed.
+    Uses the caller's live ``nav_df`` directly rather than re-reading the
+    just-written ``nav.parquet`` from disk.
     """
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        nav_path = out_dir / "nav.parquet"
-        if not nav_path.exists():
+        if nav_df is None or nav_df.empty or "nav" not in nav_df.columns:
             return
 
-        nav_df = pd.read_parquet(nav_path)
-        if nav_df.empty or "nav" not in nav_df.columns:
-            return
-
+        nav_df = nav_df.copy()
         nav_df["date"] = pd.to_datetime(nav_df["date"])
         nav_series = nav_df.set_index("date")["nav"].astype(float)
         nav_norm = nav_series / nav_series.iloc[0]

@@ -99,15 +99,7 @@ results/
       result.json
     <strategy2>/                            ← 不同参数的策略变体
       ...
-    sweep_runs/                             ← sweep 参数扫描，每个组合直接一个目录
       <strategy>/
-        pipeline_state.json
-        strategy_config.json
-        signals.parquet
-        simple/
-        detailed/                           ← 若 --validate-top-n/full 触发
-        pipeline_report.md
-        result.json
   candidates/                               ← 已通过 pipeline 等待人工决策的因子
     <factor_id>/
       factor.py
@@ -223,36 +215,28 @@ For each round:
      --quick
    ```
 
-   **并行 strategy sweep（参数网格扫描，默认 quick 模式）**：
-   当强因子只卡在策略参数提取，或 RC 明确建议尝试多个 `top_k/decay/rebalance` 组合时，不要逐个 `run`，直接用 `sweep`。系统会先把 base 因子算到 step4，然后用**同一个真实 factor_id** 为每个参数组合隔离运行 step5-6；不会创建 `alphas/exp/agent/<factor_id>_sw_*` clone 因子目录，也不会复制临时因子列。
+   **两级 sweep（universe → strategy 参数网格）**：
+   当强因子只卡在策略参数提取，或 RC 明确建议尝试多个参数组合时，不要逐个 `run`，直接用 `sweep`。系统先跑 base 因子 step1~4（统一 IC/单调性），然后**按 universe 串行、策略 combo 并行**扫参数网格。使用真实 factor_id，不创建 clone 目录。
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli sweep <factor_id> \
      --factor-file results/<run_id>/factor.py \
-     --top-k 100,200 \
-     --decay 5,10,15 \
-     --rebalance 1D,5D \
      --workers 4
    ```
-   - 默认 quick 模式（只跑 step5-6）。若某个组合看起来很好，再做 full 验证。
-   - 想直接跑完整 pipeline 对比，加 `--full`（对所有组合跑 step5-10）。
-   - 想先 quick sweep、再只对最优 N 个组合从 detailed 回测继续 full 验证，加 `--validate-top-n N`；它会复用 quick sweep 保存的 strategy/signals，从 step7 开始，避免重复 simple backtest。
-   - Sweep 结束后会打印最佳组合（按 Calmar > Sharpe），并把完整表格写到 `results/<factor_id>/sweep_summary.json`。
-
-   **Sweep 参数设计（按因子类型区分）**：
-
-   | 因子类型 | rebalance | decay | top_k 范围 | 说明 |
-   |----------|-----------|-------|-----------|------|
-   | 量价/技术因子 | 1D, 5D | 3~15 | 50~300 | 信号日频更新，用 decay 平滑 |
-   | 基本面/财务因子 | 1M, 3M | **不扫** | 50~200 | 数据季度更新，decay 无意义，用长换仓周期 |
-
-   - 量价因子 sweep 示例：`--rebalance 1D,5D --decay 5,10,15 --top-k 100,200`
-   - 基本面因子 sweep 示例：`--rebalance 1M,3M --top-k 100,200`（不加 `--decay`）
+   - **Universe 维度**：默认覆盖 hs300 / csi500 / csi1000 / csi2000 四大宽基指数。串行执行避免 DB 争用。
+   - **策略维度**：固定 `top_pct=10%`，按因子类型自动选 decay × rebalance 网格：
+     - 量价/技术因子：`decay=5,10,15 × rebalance=1D,5D`（6 combo）
+     - 基本面/财务因子：`decay=5 × rebalance=1M,3M`（2 combo）
+   - **默认跑 step5~7**（含 detailed backtest），相当于旧版 `--full`。全过则直接进 candidates/ 对应 universe 目录。
+   - `--validate-top-n N`（默认 1）：每个 universe 保留 top N combo 的 full result。
+   - `--to-step 6`：退化为 quick 模式（只到 simple backtest）。
+   - `--universes hs300=000300.SH,csi500=000905.SH`：自定义 universe 集合。
+   - 结果写到 `results/<factor_id>/<universe>/<strategy_tag>/`，汇总到 `results/<factor_id>/cross_universe.json`。
 
    **Sweep 后的标准 workflow**：
    1. 公式确定后先跑一次 `--quick` 确认 simple metrics 有信号；
-   2. 用 `sweep` 扫 `top_k × decay × rebalance`（默认 quick，按因子类型选 grid）；
-   3. 优先用 `sweep --validate-top-n 1` 或 `--validate-top-n 2` 对最优组合从 step7 继续 full 验证，确认 detailed / ridge / residual；
-   4. 如需手动 fallback，用 `run --from-step 5 --top-k ... --decay ... --rebalance ...`，不要从 step1 重跑；
+   2. 直接 `sweep --workers 4` 扫全量 universe × strategy 网格；
+   3. Sweep 已内置 `--validate-top-n 1`，每条 universe 的最优 combo 自动跑完 step7 detailed；
+   4. 如需手动测试单个参数组合，用 `run --from-step 5 --top-k ... --decay ... --rebalance ...`，不要从 step1 重跑；
    5. 只有完整 run `pass` 才进 `candidates/`。
 
 7. Read `result.json`（位于 `results/<factor_id>/<strategy>/result.json`）。
@@ -274,19 +258,15 @@ For each round:
    - 没有 code/schema/execution 错误；
    - 因子公式未计划修改；
 
-   则**不要启动 RC**，直接运行 strategy sweep：
+   则**不要启动 RC**，直接运行两级 universe × strategy sweep：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli sweep <factor_id> \
      --factor-file results/<run_id>/factor.py \
-     --top-k 100,200 \
-     --decay 5,10,15 \
-     --rebalance 1D,5D \
-     --workers 4 \
-     --validate-top-n 1
+     --workers 4
    ```
-   - 量价因子默认 sweep 空间固定为 `top_k=100,200`、`decay=5,10,15`、`rebalance=1D,5D`；除非用户明确要求，不额外扩到 50/300 或 1W，避免无谓组合膨胀。
-   - 如果 sweep 有 full `pass`，进入 Pass 收尾。
-   - 如果 sweep 无 quick_pass/pass，或 full 验证仍失败，再进入 RC，并把 `sweep_summary.json` 注入 prompt。
+   - 默认覆盖 hs300/csi500/csi1000/csi2000 四大宽基 + 自动按因子类型选 decay/rebalance 网格（量价：5,10,15 × 1D,5D；基本面：5 × 1M,3M），不再手动传 `--top-k/--decay/--rebalance`。
+   - 如果任一 universe 有 full `pass`，进入 Pass 收尾。
+   - 如果全部 universe 无 pass，或 full 验证仍失败，再进入 RC，并把 `cross_universe.json` 注入 prompt。
 
 10. **If `result.json.status != "pass"` 且不满足 Pre-RC fast path**：启动 Result Critic subagent 诊断。
 
@@ -355,7 +335,7 @@ For each round:
     - 如果 `same_direction == true` 且 `recommend_abandon != true` 且 `round < max_rounds`：
       - **fix_level="factor" + factor_change="params"**：以 RC 的 `factor_params` 为指导修改因子代码（窗口/horizon/variant），进入下一轮。
       - **fix_level="factor" + factor_change="formula"**：按 RC 的 `fix_strategy` 中的**公式改进方向**重构因子代码（变换算子/归一化/组合增强），进入下一轮。
-      - **fix_level="strategy_only"**：因子代码不变，不做单点手调；直接启动 `sweep --validate-top-n 1` 扫 grid，并对最优组合从 step7 继续 full 验证。
+      - **fix_level="strategy_only"**：因子代码不变，不做单点手调；直接启动 `sweep`（两级 universe × strategy 自动网格），系统自动按因子类型选 combo 并在每条 universe 内 validate-top-n。
       - **fix_level="both"**：两个都改。factor_change 遵循与 fix_level="factor" 相同的规则（params 或 formula），FC 修改 factor.py 后启动 sweep 验证策略参数。
       - **fix_level="retry"**：什么都不改，原样重试。
 

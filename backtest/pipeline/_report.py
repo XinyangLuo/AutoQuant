@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import traceback
-import warnings
+import shutil
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 
 # CJK font support — try common macOS / Linux Chinese fonts in order.
 for _font in ("PingFang HK", "Heiti TC", "STHeiti", "Arial Unicode MS",
@@ -23,7 +21,6 @@ for _font in ("PingFang HK", "Heiti TC", "STHeiti", "Arial Unicode MS",
     except Exception:
         continue
 
-from backtest.evaluation.benchmark import align_benchmark, load_benchmark
 from backtest.evaluation.report import _fmt
 
 from .state import PipelineState
@@ -325,7 +322,6 @@ def _render_step3(state: PipelineState, plots_dir: Path) -> list[str]:
     # Copy into the report plots dir so markdown references stay local.
     eval_plots = state.artifacts.get("eval_plots_dir")
     if eval_plots:
-        import shutil
         src_dir = Path(eval_plots)
         for h in [1, 5, 20]:
             src = src_dir / f"ic_ts_h{h}.png"
@@ -516,13 +512,12 @@ def _render_step10(state: PipelineState, plots_dir: Path) -> list[str]:
 def _decile_content(state: PipelineState, plots_dir: Path) -> list[str]:
     """十档分层回测（嵌入 step4 单调性）。
 
-    Uses ``state.eval_result.decile_result`` populated by step3 — does not
+    Uses ``state.eval_result.decile_result`` populated by step4 — does not
     re-run ``evaluate()``.
     """
     lines = ["### 十档分层回测", ""]
 
     try:
-        import shutil
 
         eval_result = state.eval_result
         if eval_result is None:
@@ -536,7 +531,7 @@ def _decile_content(state: PipelineState, plots_dir: Path) -> list[str]:
             lines.append("")
             return lines
 
-        # Decile plot was generated during step3; copy into report plots dir.
+        # Decile plot was generated during step4; copy into report plots dir.
         config = state.config
         factor_eval = Path(config.results_root) / config.factor_id / "factor_eval"
         decile_png = factor_eval / "decile_backtest" / f"{config.factor_id}_decile.png"
@@ -617,7 +612,6 @@ def _bt_metrics_table(metrics: dict) -> list[str]:
 
 def _copy_eval_plot(state: PipelineState, filename: str, plots_dir: Path) -> None:
     """Copy a pre-generated eval plot from factor_eval/plots/ to the report dir."""
-    import shutil
     eval_plots = state.artifacts.get("eval_plots_dir")
     if eval_plots:
         src = Path(eval_plots) / filename
@@ -631,7 +625,6 @@ def _copy_bt_nav_plot(state: PipelineState, tag: str, plots_dir: Path) -> None:
     The actual plot is generated during step6/step7 by
     ``_gen_backtest_nav_plot`` — the report only copies it.
     """
-    import shutil
     art_key = f"{tag}_bt"
     bt_dir = state.artifacts.get(art_key)
     src = Path(bt_dir) / f"nav_{tag}.png" if bt_dir else None
