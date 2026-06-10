@@ -27,7 +27,7 @@ class StepResult:
 class PipelineState:
     factor_id: str
     config: PipelineConfig
-    status: Literal["running", "passed", "rejected", "admitted", "ready_for_review"] = "running"
+    status: Literal["running", "passed", "rejected", "admitted", "ready_for_review", "quick_pass"] = "running"
     current_step: StepName | None = None
     step_results: dict[str, StepResult] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
@@ -61,7 +61,14 @@ class PipelineState:
         return cls.from_dict(data)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Drop non-serializable transient fields to avoid bloating the JSON
+        for key in (
+            "signals", "simple_bt_metrics", "detailed_bt_metrics",
+            "ridge_result", "residual_icir_result", "eval_result",
+        ):
+            d.pop(key, None)
+        return d
 
     @classmethod
     def from_dict(cls, data: dict) -> PipelineState:
@@ -146,6 +153,49 @@ class PipelineState:
         elif self.status == "rejected":
             # Reset rejection so re-running a previously-failed step
             # doesn't permanently block downstream steps from proceeding.
+            self.status = "running"
+
+    def clear_from_step(self, step: StepName) -> None:
+        """Discard step_results and artifacts from ``step`` onward.
+
+        Used when resuming a pipeline with new config/strategy overrides so
+        that downstream results are recomputed instead of silently reused.
+        """
+        order = [
+            "step1", "step2", "step3", "step4", "step5",
+            "step6", "step7", "step8", "step9", "step10",
+        ]
+        if step not in order:
+            return
+        start_idx = order.index(step)
+        for s in order[start_idx:]:
+            self.step_results.pop(s, None)
+        # Artifacts keyed by step tag or report path are also stale once
+        # the corresponding steps are re-run.  Remove only the artifact
+        # entries that depend on downstream steps; leave eval_result etc.
+        stale_artifact_keys = {
+            "strategy_config", "simple_bt", "detailed_bt",
+            "ridge", "residual_icir", "report",
+        }
+        for key in stale_artifact_keys:
+            self.artifacts.pop(key, None)
+        # Non-serialized cached objects that depend on cleared steps must
+        # also be wiped so that downstream steps don't reuse stale data.
+        if start_idx < 3:
+            self.eval_result = None
+        if start_idx < 4:
+            self.strategy_config = None
+            self.signals = None
+        if start_idx < 6:
+            self.simple_bt_metrics = None
+        if start_idx < 7:
+            self.detailed_bt_metrics = None
+        if start_idx < 8:
+            self.ridge_result = None
+        if start_idx < 9:
+            self.residual_icir_result = None
+        # Reset status so downstream steps can proceed.
+        if self.status in ("rejected", "ready_for_review", "quick_pass"):
             self.status = "running"
 
 

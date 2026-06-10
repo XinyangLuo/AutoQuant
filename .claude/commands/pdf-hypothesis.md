@@ -102,7 +102,7 @@
 - 公式用 AutoQuant transforms 命名风格：`rank()`, `ts_mean()`, `cs_zscore()`, `cs_rank()`, `ts_delta()`, `cs_mad_winsorize()`, `ts_regression_residual()` 等
 - 研报只给了文字描述 → 根据描述推断公式
 - 研报给了原始数学公式 → 直接转录为伪代码
-- 样式：`cs_rank` / 方向（`*(-1)` 等）**不要**写在因子公式里——因子只输出原始信号值，排名和方向由 pipeline strategy 层处理
+- 样式：因子公式应描述可计算的信号值；方向（`*(-1)` 等）可以在公式中明确表达。`rank()`/截面排名允许用于不同量纲变量的组合；但去极值、中性化、最终标准化不要写入公式，因为标准 pipeline 会统一处理。
 - 示例：「1 个月反转」→ `ts_delta(close * adj_factor, 21)`（原始累计收益，负值即反转）
 - 示例：「换手率加权的 6 个月」→ `ts_decay_exp(ret_1d * turnover_rate, 126, halflife=63)`（加权均值）
 - 示例：「5 日放量反转，小盘加权」→ `(ts_mean(amount, 5) / ts_mean(amount, 20)) * ts_delta(close * adj_factor, 5) * (1 / circ_mv)`
@@ -424,7 +424,7 @@ conda activate AutoQuant && python -m agents.kb_query \
 ```
 
 ## Construction Logic
-（仅描述因子原始值计算步骤。去极值/中性化/排名/方向由 pipeline 统一处理，不在此列出。）
+（描述因子信号值计算步骤。去极值/中性化/最终标准化由 pipeline 统一处理，不在此列出；`rank()`/截面排名只有在用于组合不同量纲变量时才写入。）
 1. Step 1
 2. Step 2
 ...

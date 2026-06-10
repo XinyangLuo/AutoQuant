@@ -29,11 +29,13 @@
 
 **父进程职责**：
 1. 识别输入类型：有 `--hypothesis <path>` → 直接 Read hypothesis.md 进入 FC；无 `--hypothesis` → 启动 HG
-2. HG 输出保存到 `results/<run_id>/hypothesis.json`
-3. HO 输出保存到 `results/<run_id>/hypothesis_optimized.json`
-4. `ho_review.recommendation == "abandon"` → 直接结束，不进入 FC
-5. `ho_review.recommendation == "revise"` → 将优化后的 hypothesis 展示给用户确认
-6. `ho_review.recommendation == "proceed"` → 直接进入 FC
+2. 识别用户输入中是否包含**明确因子表达式**（如公式代码块、`=` 赋值、`rank(...)`/`ts_*`/列名算子链等）。若存在，设置 `formula_locked=true`，将原始表达式原样写入 hypothesis 的 `## Formula` / `formula_draft`
+3. HG 输出保存到 `results/<run_id>/hypothesis.json`
+4. HO 输出保存到 `results/<run_id>/hypothesis_optimized.json`
+5. `formula_locked=true` 时，HO 只能做查重、风险提示、参数建议，**不得改写 Round 1 公式**；任何优化公式只能作为 Round 2+ repair 建议
+6. `ho_review.recommendation == "abandon"` → 直接结束，不进入 FC
+7. `ho_review.recommendation == "revise"` → 将优化后的 hypothesis 展示给用户确认
+8. `ho_review.recommendation == "proceed"` → 直接进入 FC
 
 ### --hypothesis 无参数交互模式
 
@@ -49,6 +51,7 @@ find agents/pdf_hypotheses -name "*.md" -type f | sort
 
 - 默认最多迭代 `max_rounds=10`。
 - **`--hypothesis <path>` 模式**：当用户提供 hypothesis.md 路径时，先 Read 该文件提取 `## Formula`、`## Construction Logic`、`## Parameters`、`## Suggested Config`。Formula 作为 FC 编码起点，Suggested Config 作为 `config.yaml` 初始值。FC 仍需校验列名和 transforms 是否存在。此模式下不需要用户再输入自然语言假设，`hypothesis.md` 中的 `## Hypothesis` 即为假设。
+- **Round 1 给定公式锁定**：如果 `/factor-iterate` 后面直接跟了明确因子表达式，或 `hypothesis.md` 中存在 `## Formula`，第一轮必须严格按给定公式复现。不得为了“更优”“更稳”“更常见”而主动改写、替换、叠加新变量、改变方向、调窗口或改组合权重。只允许做三类最小适配：① 语法落地（把伪代码翻译成可运行 pandas/AutoQuant 代码）；② 按 schema 做列名映射；③ 当原公式依赖项目缺失列/缺失 transform 时，用最接近 proxy，并在 trace 与用户摘要中明确标注。任何公式优化只能在第一轮跑完、RC 诊断后从 Round 2 开始。
 - 所有 Python 命令前必须使用 `conda activate AutoQuant`。
 - 因子代码写入 `alphas/exp/agent/<factor_id>/factor.py`。
 - 运行产物写入 `results/<factor_id>/`（因子评估与回测）和 `results/<run_id>/`（追踪文件）。
@@ -122,6 +125,7 @@ For each round:
    ```
 
 4. Generate or repair one factor implementation.
+   - **Round 1 + 给定公式**：如果 `formula_locked=true` 或 hypothesis 中有 `## Formula`，FC 的首要任务是“复现公式”，不是“改进公式”。代码结构、列名、helper 函数可以为运行而适配，但信号的经济含义、方向、窗口、权重、分组逻辑必须与给定公式一致；不确定处先用最保守的字面解释，并在 trace 中记录假设。
    - Use `from __future__ import annotations`.
    - Import `register` from `backtest.factor.registry`.
    - Import only existing transforms from `backtest.factor.transforms`.
@@ -138,7 +142,7 @@ For each round:
      例外：`pct_chg` 和 `change` 已是调整后涨跌幅，无需复权；`total_mv`/`circ_mv` 和 turnover 类列也已调整。详见 `agents/FACTOR_CODE_GUIDE.md` §5.8。
    - **⚠️ ST 股票**：ST/*ST 股票的剔除由 `strategy.universe.exclude_st: true`（config.yaml）处理，**因子代码中不需要手动屏蔽**。
    - **⚠️ 涨跌停**：涨跌停过滤由 simulation 层在交易执行时处理，**因子代码中不需要手动屏蔽**。
-   - **⚠️ 因子只输出原始信号值**：去极值、中性化、截面排名均由 pipeline 统一处理。因子函数**只返回 raw signal**（可包含 `*(-1)` 方向），不要加 `cs_rank`、`cs_mad_winsorize`、`~is_st`、`limit_up/down` 过滤。
+   - **⚠️ 因子输出公式信号值**：去极值、中性化和最终标准化由 pipeline 统一处理，因子函数不要重复加 `cs_mad_winsorize`、行业/市值中性化、`~is_st`、`limit_up/down` 过滤。`rank()`/截面排名**允许**用于不同量纲变量的组合或公式构造（例如 `rank(price_signal) * rank(volume_signal)`），但不要仅为了重复 pipeline 的最终归一化而嵌套。因子方向可在代码中用 `*(-1)` 明确表达。
    - **⚠️ 财务数据是季度频率**：`inc_*`/`bs_*`/`cf_*` 列在每个交易日重复同一季度值，直到下季度财报发布。对财务列做时序变换（`ts_mean`/`ts_delta`/`pct_change`）**无意义**——会产生阶梯状伪影。截面比值（`inc_eps / bs_equity`）没问题；增长/斜率因子必须用 `event_driven=True` 模式。详见 `agents/FACTOR_CODE_GUIDE.md` §5.12。
    - **⚠️ 成交量单位**：`volume` 单位是**股**（非手），`amount` 单位是**元**。跨股票比较成交量用 `turnover_rate`（换手率）或 `amount`（成交额），不要用原始 `volume`。详见 `agents/FACTOR_CODE_GUIDE.md` §5.13。
 5. Write the factor code + config:
@@ -196,7 +200,47 @@ For each round:
    ```
    > factor_eval/ / decile_backtest/ 结果不变，不重复生成。新的策略参数会产生一个新的策略变体目录（如 `top200_1d_d10`）。
 
+   **Quick 模式（默认用于 strategy-only 参数扫描）**：
+   当因子公式已锁定、只需要比较策略参数时，使用 `--quick`（等价于 `--to-step 6`）跳过 detailed backtest / Ridge / residual，只跑到 simple backtest。这会快很多，且仍然生成包含 step1-6 的 `result.json` 和 `pipeline_report.md`。
+   ```bash
+   conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
+     --factor-file results/<run_id>/factor.py \
+     --top-k 100 --decay 10 --rebalance 5D \
+     --quick
+   ```
+
+   **并行 strategy sweep（参数网格扫描，默认 quick 模式）**：
+   当 RC 建议尝试多个 `top_k/decay/rebalance` 组合时，不要逐个 `run`，直接用 `sweep`。系统会先把 base 因子算到 step4，然后为每个参数组合克隆一个独立 factor_id 并行跑 step5-6，最后输出对比表。
+   ```bash
+   conda activate AutoQuant && python -m agents.claude_cli sweep <factor_id> \
+     --factor-file results/<run_id>/factor.py \
+     --top-k 100,200 \
+     --decay 5,10,15 \
+     --rebalance 1D,5D \
+     --workers 4
+   ```
+   - 默认 `--quick`（只跑 step5-6）。若某个组合看起来很好，再单独 `run` 做完整 pipeline。
+   - 想直接跑完整 pipeline 对比，加 `--full`。
+   - Sweep 结束后会打印最佳组合（按 Calmar > Sharpe），并把完整表格写到 `results/<factor_id>/sweep_summary.json`。
+
+   **Sweep 参数设计（按因子类型区分）**：
+
+   | 因子类型 | rebalance | decay | top_k 范围 | 说明 |
+   |----------|-----------|-------|-----------|------|
+   | 量价/技术因子 | 1D, 5D | 3~15 | 50~300 | 信号日频更新，用 decay 平滑 |
+   | 基本面/财务因子 | 1M, 3M | **不扫** | 50~200 | 数据季度更新，decay 无意义，用长换仓周期 |
+
+   - 量价因子 sweep 示例：`--rebalance 1D,5D --decay 5,10,15 --top-k 100,200`
+   - 基本面因子 sweep 示例：`--rebalance 1M,3M --top-k 100,200`（不加 `--decay`）
+
+   **Sweep 后的标准 workflow**：
+   1. 公式确定后先跑一次 `--quick` 确认 simple metrics 有信号；
+   2. 用 `sweep` 扫 `top_k × decay × rebalance`（默认 quick，按因子类型选 grid）；
+   3. 从 summary 挑 1-2 个最优组合，**并行**跑完整 pipeline（`run` 不带 `--quick`，或用 `sweep --full` 只跑最优组合）确认 detailed / ridge / residual；
+   4. 只有完整 run `pass` 才进 `candidates/`。
+
 7. Read `result.json`（位于 `results/<factor_id>/<strategy>/result.json`）。
+   - 如果用了 `sweep`，每个组合的 `result.json` 在 `results/<clone_id>/<tag>/result.json`，同时 `results/<factor_id>/sweep_summary.json` 汇总全部结果。
    - `result.json.report_path` 指向 pipeline 诊断报告。
    
 8. **If `result.json.status == "pass"`**：
@@ -257,14 +301,25 @@ For each round:
     - 追加一行到 `trace.jsonl`（将 RC 输出的字段合并进去，见 Trace JSONL Schema）
 
 11. 根据 RC subagent 返回的诊断 JSON：
+
+    **RC 职责边界**：RC 的核心任务是诊断**因子构造**问题（公式、窗口、算子组合、方向、数据列选择）。当失败原因是策略参数空间问题时，RC 只需指出"这是策略参数问题，建议 sweep"，**不要**让 RC 输出具体的 top_k/decay/rebalance 数值组合——那是 sweep 的工作，RC 逐个猜参数效率低且浪费 token。
+
+    具体规则：
+    - **fix_level="strategy_only" 且已连续出现 ≥2 次**：不再按 RC 的 `strategy_params` 逐个跑，直接启动 `sweep` 扫 grid。RC 的诊断只用于确认"公式方向正确，瓶颈在参数提取"。
+    - **fix_level="strategy_only" 且是第一次出现**：可以按 RC 建议跑一次，但如果仍然失败，下一轮必须进 sweep。
+    - **fix_level="factor"**：按 RC 建议修改因子代码（窗口、horizon、variant、公式结构），这才是 RC 的主战场。
+    - **fix_level="both"**：先改因子代码，然后启动 sweep 验证策略参数，不要手调单个参数。
+
+    执行决策：
     - 如果 `recommend_abandon == true` 或 `same_direction == false` 或 `round >= max_rounds`：
       - **Update KB**（见 §Abandon 收尾）
       - End loop. 输出放弃报告（根因分析 + 为什么无法修复）。
     - 如果 `same_direction == true` 且 `recommend_abandon != true` 且 `round < max_rounds`：
       - **fix_level="factor" + factor_change="params"**：以 RC 的 `factor_params` 为指导修改因子代码（窗口/horizon/variant），进入下一轮。
       - **fix_level="factor" + factor_change="formula"**：按 RC 的 `fix_strategy` 中的**公式改进方向**重构因子代码（变换算子/归一化/组合增强），进入下一轮。
-      - **fix_level="strategy_only"**：只更新 `config.yaml`（用 `strategy_params` 中的 decay/rebalance/top_k），**因子代码不变**，进入下一轮。
-      - **fix_level="both"**：两个都改。factor_change 遵循与 fix_level="factor" 相同的规则（params 或 formula），FC 必须同时修改 factor.py 和 config.yaml。
+      - **fix_level="strategy_only"（第一次）**：只更新 `config.yaml`（用 `strategy_params` 中的 decay/rebalance/top_k），**因子代码不变**，进入下一轮。
+      - **fix_level="strategy_only"（第二次及以上）**：**跳过单点修复，直接启动 sweep**。用 `sweep` 并行扫 grid，从结果中选最优 1-2 个再跑 full pipeline。
+      - **fix_level="both"**：两个都改。factor_change 遵循与 fix_level="factor" 相同的规则（params 或 formula），FC 修改 factor.py 后启动 sweep 验证策略参数。
       - **fix_level="retry"**：什么都不改，原样重试。
 
 ## Trace JSONL Schema
