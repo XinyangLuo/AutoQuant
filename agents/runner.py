@@ -38,14 +38,19 @@ class AutoQuantFactorRunner:
         end_date: str,
         *,
         results_root: Path | str = "results",
+        results_subdir: str | None = None,
+        state_subdir: str | None = None,
         generated_dir: Path | str | None = None,
         market_storage: MarketStorage | None = None,
         factor_storage: FactorStorage | None = None,
+        factor_storage_read_only: bool = False,
         benchmark: str = "000300.SH",
     ):
         self.start_date = start_date
         self.end_date = end_date
         self.results_root = Path(results_root)
+        self.results_subdir = results_subdir
+        self.state_subdir = state_subdir
         self.generated_dir = Path(generated_dir) if generated_dir else Path("alphas/exp/agent")
         self.market_storage = market_storage
         self.factor_storage = factor_storage
@@ -56,7 +61,7 @@ class AutoQuantFactorRunner:
         if self.market_storage is None:
             self.market_storage = MarketStorage(read_only=True)
         if self.factor_storage is None:
-            self.factor_storage = FactorStorage()
+            self.factor_storage = FactorStorage(read_only=factor_storage_read_only)
 
     def __enter__(self):
         return self
@@ -64,8 +69,8 @@ class AutoQuantFactorRunner:
     def __exit__(self, exc_type, exc_val, exc_tb):
         try:
             self._close_storages()
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"[runner] warning: failed to close storages: {exc}", file=sys.stderr)
         return False
 
     def _close_storages(self) -> None:
@@ -77,12 +82,14 @@ class AutoQuantFactorRunner:
             self.factor_storage = None
 
     def cleanup_work_db(self, factor_id: str) -> None:
-        if self.factor_storage is None:
-            return
         if not self._factor_storage_owned:
             return
         try:
-            self.factor_storage.delete_factor(factor_id)
+            if self.factor_storage is None:
+                with FactorStorage() as fs:
+                    fs.delete_factor(factor_id)
+            else:
+                self.factor_storage.delete_factor(factor_id)
         except Exception as exc:
             print(f"  [cleanup] WARN: failed to drop {factor_id} from work DB: {exc}")
 
@@ -94,6 +101,7 @@ class AutoQuantFactorRunner:
         self,
         experiment: AutoQuantFactorExperiment,
         from_step: int = 1,
+        to_step: int | None = None,
         top_k: int | None = None,
         top_pct: float | None = None,
         decay: int | None = None,
@@ -129,6 +137,13 @@ class AutoQuantFactorRunner:
                                 f"the factor."
                             )
 
+            # Release the agent-owned factor DB handle before the pipeline opens
+            # its own read/write or read-only handles. DuckDB rejects mixed
+            # connection configurations to the same file inside one process.
+            if self._factor_storage_owned and self.factor_storage is not None:
+                self.factor_storage.close()
+                self.factor_storage = None
+
             # Phase B: canonical step1~step10 (shared with manual CLI)
             ret_type = get_section_or("open", "pipeline", "ret_type")
             state = run_pipeline(
@@ -137,9 +152,12 @@ class AutoQuantFactorRunner:
                 start_date=self.start_date,
                 end_date=self.end_date,
                 results_root=str(self.results_root),
+                results_subdir=self.results_subdir,
+                state_subdir=self.state_subdir,
                 ret_type=ret_type,
                 benchmark=self.benchmark,
                 from_step=from_step,
+                to_step=to_step,
                 top_k=top_k,
                 top_pct=top_pct,
                 decay=decay,
@@ -176,6 +194,8 @@ class AutoQuantFactorRunner:
 
             if state.status == "ready_for_review":
                 experiment.status = "candidate"
+            elif state.status == "quick_pass":
+                experiment.status = "quick_pass"
             elif state.is_rejected():
                 experiment.status = "rejected"
                 last_step = state.last_step()

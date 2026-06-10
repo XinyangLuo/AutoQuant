@@ -29,6 +29,7 @@ _DEFAULT_PIPELINE = {
     "default_top_pct": None,
     "default_decay": 5,
     "default_rebalance": "1D",
+    "default_universe": "000300.SH",
     "ret_type": "open",
     "benchmark": "000300.SH",
 }
@@ -108,23 +109,11 @@ class StepThresholds:
     min_calmar_simple: float | None = field(default_factory=_pipe_thresholds("simple_backtest", "min_calmar"))
     max_annual_turnover: float | None = field(default_factory=_pipe_thresholds("simple_backtest", "max_annual_turnover"))
 
-    # step6: simple backtest — relative HS300
-    min_excess_sharpe_simple_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_sharpe_hs300"))
-    min_excess_annual_return_simple_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_annual_return_hs300"))
-    max_excess_max_drawdown_simple_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "max_excess_max_drawdown_hs300"))
-    min_excess_calmar_simple_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_calmar_hs300"))
-
-    # step6: simple backtest — relative CSI500
-    min_excess_sharpe_simple_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_sharpe_csi500"))
-    min_excess_annual_return_simple_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_annual_return_csi500"))
-    max_excess_max_drawdown_simple_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "max_excess_max_drawdown_csi500"))
-    min_excess_calmar_simple_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_calmar_csi500"))
-
-    # step6: simple backtest — relative CSI1000
-    min_excess_sharpe_simple_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_sharpe_csi1000"))
-    min_excess_annual_return_simple_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_annual_return_csi1000"))
-    max_excess_max_drawdown_simple_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "max_excess_max_drawdown_csi1000"))
-    min_excess_calmar_simple_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_calmar_csi1000"))
+    # step6: simple backtest — excess (benchmark follows universe)
+    min_excess_sharpe_simple: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_sharpe"))
+    min_excess_annual_return_simple: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_annual_return"))
+    max_excess_max_drawdown_simple: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "max_excess_max_drawdown"))
+    min_excess_calmar_simple: float | None = field(default_factory=_pipe_thresholds_or(None, "simple_backtest", "min_excess_calmar"))
 
     # step7: detailed backtest — absolute
     min_sharpe_detailed: float | None = field(default_factory=_pipe_thresholds("detailed_backtest", "min_sharpe"))
@@ -133,23 +122,11 @@ class StepThresholds:
     max_max_drawdown_detailed: float | None = field(default_factory=_pipe_thresholds("detailed_backtest", "max_max_drawdown"))
     max_annual_turnover_detailed: float | None = field(default_factory=_pipe_thresholds("detailed_backtest", "max_annual_turnover"))
 
-    # step7: detailed backtest — relative HS300
-    min_excess_sharpe_detailed_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_sharpe_hs300"))
-    min_excess_annual_return_detailed_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_annual_return_hs300"))
-    max_excess_max_drawdown_detailed_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "max_excess_max_drawdown_hs300"))
-    min_excess_calmar_detailed_hs300: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_calmar_hs300"))
-
-    # step7: detailed backtest — relative CSI500
-    min_excess_sharpe_detailed_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_sharpe_csi500"))
-    min_excess_annual_return_detailed_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_annual_return_csi500"))
-    max_excess_max_drawdown_detailed_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "max_excess_max_drawdown_csi500"))
-    min_excess_calmar_detailed_csi500: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_calmar_csi500"))
-
-    # step7: detailed backtest — relative CSI1000
-    min_excess_sharpe_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_sharpe_csi1000"))
-    min_excess_annual_return_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_annual_return_csi1000"))
-    max_excess_max_drawdown_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "max_excess_max_drawdown_csi1000"))
-    min_excess_calmar_detailed_csi1000: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_calmar_csi1000"))
+    # step7: detailed backtest — excess (benchmark follows universe)
+    min_excess_sharpe_detailed: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_sharpe"))
+    min_excess_annual_return_detailed: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_annual_return"))
+    max_excess_max_drawdown_detailed: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "max_excess_max_drawdown"))
+    min_excess_calmar_detailed: float | None = field(default_factory=_pipe_thresholds_or(None, "detailed_backtest", "min_excess_calmar"))
 
 
 def map_yaml_threshold_key(section: str, key: str) -> str | None:
@@ -200,22 +177,36 @@ def map_yaml_threshold_key(section: str, key: str) -> str | None:
         field_name = f"{key}_detailed"
         return field_name if _has(field_name) else None
 
-    # Relative excess metrics: insert suffix before the benchmark token.
-    # e.g. min_excess_calmar_hs300 -> min_excess_calmar_simple_hs300.
-    # Use the known benchmark aliases to find the token boundary rather
-    # than splitting on ``_`` — alias tokens may contain underscores.
+    # Relative excess metrics: insert suffix before the benchmark token
+    # if present.  Keys WITHOUT a benchmark suffix (e.g. min_excess_sharpe)
+    # are the new generic form and just get the section suffix appended
+    # (e.g. min_excess_sharpe_simple).
     if key.startswith("min_excess_") or key.startswith("max_excess_"):
+        # 1) Try per-benchmark keys (backward compat — deprecated)
         for alias in _BENCHMARK_ALIASES:
             target_suffix = f"_{alias}"
             if key.endswith(target_suffix):
                 base = key[: -len(target_suffix)]
                 field_name = base + suffix + target_suffix
-                return field_name if _has(field_name) else None
-        # Excess key found but no known benchmark alias matched.
+                if _has(field_name):
+                    return field_name
+                # Per-benchmark fields no longer exist; warn and fall through
+                # to the generic form.
+                warnings.warn(
+                    f"Per-benchmark threshold key '{key}' is deprecated — "
+                    f"use the generic form '{base}' instead. "
+                    f"The benchmark-specific threshold will be ignored.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
+        # 2) Try generic excess key (no benchmark token)
+        field_name = key + suffix
+        if _has(field_name):
+            return field_name
+        # 3) Neither matched — warn and skip.
         warnings.warn(
             f"Excess threshold key '{key}' under section '{section}' "
-            f"does not match any known benchmark alias "
-            f"({list(_BENCHMARK_ALIASES)}); skipping.",
+            f"does not match any StepThresholds field; skipping.",
             stacklevel=2,
         )
         return None
@@ -290,7 +281,7 @@ class PipelineConfig:
     default_top_pct: float | None = field(default_factory=lambda: _DEFAULT_PIPELINE["default_top_pct"])
     default_decay: int = field(default_factory=lambda: _DEFAULT_PIPELINE["default_decay"])
     default_rebalance: str = field(default_factory=lambda: _DEFAULT_PIPELINE["default_rebalance"])
-    default_universe: str | None = None
+    default_universe: str | None = field(default_factory=lambda: _DEFAULT_PIPELINE["default_universe"])
 
     # thresholds (frequency-aware)
     thresholds: StepThresholds = field(default_factory=StepThresholds)
@@ -303,6 +294,12 @@ class PipelineConfig:
     # Per-factor strategy & simulation overrides (populated by from_factor_config).
     strategy_overrides: dict | None = None
     simulation_overrides: dict | None = None
+
+    # Optional subdirectory routing — when set, results and state are nested
+    # under results_root/factor_id/<subdir>/ instead of results_root/factor_id/.
+    # Used by the agent sweep to isolate per-combo results.
+    results_subdir: str | None = None
+    state_subdir: str | None = None
 
     @classmethod
     def for_frequency(
@@ -416,6 +413,8 @@ class PipelineConfig:
 
         # Pop keys that are set explicitly so they don't collide with **overrides.
         results_root_val = str(overrides.pop("results_root", "results"))
+        results_subdir_val = overrides.pop("results_subdir", None)
+        state_subdir_val = overrides.pop("state_subdir", None)
 
         return cls(
             factor_id=factor_id,
@@ -431,8 +430,11 @@ class PipelineConfig:
             default_top_pct=pipe["default_top_pct"],
             default_decay=pipe["default_decay"],
             default_rebalance=pipe["default_rebalance"],
+            default_universe=pipe.get("default_universe"),
             thresholds=th,
             results_root=results_root_val,
+            results_subdir=results_subdir_val,
+            state_subdir=state_subdir_val,
             ret_type=str(overrides.pop("ret_type", pipe["ret_type"])),
             benchmark=str(overrides.pop("benchmark", pipe["benchmark"])),
             strategy_overrides=strat,
@@ -441,7 +443,13 @@ class PipelineConfig:
         )
 
     def state_path(self) -> Path:
-        return Path(self.results_root) / self.factor_id / "pipeline_state.json"
+        base = Path(self.results_root)
+        if self.state_subdir:
+            return base / self.state_subdir / "pipeline_state.json"
+        return base / self.factor_id / "pipeline_state.json"
 
     def results_dir(self) -> Path:
-        return Path(self.results_root) / self.factor_id
+        base = Path(self.results_root)
+        if self.results_subdir:
+            return base / self.results_subdir
+        return base / self.factor_id

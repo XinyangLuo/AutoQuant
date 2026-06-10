@@ -176,8 +176,14 @@ _BENCHMARK_ALIASES = {
     "hs300": "000300.SH",
     "csi500": "000905.SH",
     "csi1000": "000852.SH",
+    "csi2000": "932000.CSI",
 }
 
+
+# Reverse mapping: index ts_code → benchmark alias.  Used to detect when a
+# strategy universe is one of the benchmark indices so self-comparisons can
+# be skipped in pipeline gates.
+_INDEX_TO_BENCHMARK_ALIAS = {v: k for k, v in _BENCHMARK_ALIASES.items()}
 
 _BENCH_METRIC_MAP = {
     "excess_sharpe": "information_ratio",

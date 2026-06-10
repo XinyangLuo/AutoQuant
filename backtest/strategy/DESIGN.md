@@ -109,6 +109,17 @@ signals = strategy.run("20200101", "20241231")
 4. **指数成分股过滤**：查 `index_members` 表（`MarketStorage.get_index_members`，月度快照已 densify 到每个交易日）
 5. **流动性过滤**：最小流通市值、最小20日平均成交额
 
+**指数 Universe 支持**：四大宽基指数均可作为 universe 使用，将选股范围限定在指数成分股内：
+
+| 指数 | ts_code | 说明 |
+|---|---|---|
+| 沪深 300 | `000300.SH` | 大盘蓝筹 |
+| 中证 500 | `000905.SH` | 中盘成长 |
+| 中证 1000 | `000852.SH` | 小盘 |
+| 中证 2000 | `932000.CSI` | 微盘 |
+
+通过 `UniverseConfig.index_members` 或 Pipeline CLI `--universe` 指定。当 universe 为某指数时，Pipeline 的 step6/step7 门控会**自动跳过与该指数自身的超额收益比较**（避免循环比较——在成分股内选股与指数本身比超额无意义），但仍会与其他指数比较。例如 `--universe 000905.SH` 时，仅检查 vs HS300/CSI1000/CSI2000 的超额收益。**全局全市场回测不受影响。**
+
 ### 选股方式
 
 | 方式 | 说明 | 权重特点 |

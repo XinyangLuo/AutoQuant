@@ -81,14 +81,20 @@ def _build_universe(
     index_members: str | None = None,
     overrides: dict | None = None,
 ) -> UniverseConfig:
-    """Build UniverseConfig with hardcoded defaults + optional per-factor overrides."""
+    """Build UniverseConfig with hardcoded defaults + optional per-factor overrides.
+
+    When *index_members* is set (index universe mode), board and market-cap
+    filters are disabled — the index definition already determines the
+    investable set. ST and new-IPO filters remain active.
+    """
+    is_index_universe = index_members is not None
     cfg = {
         "exclude_st": True,
         "exclude_new_ipo_days": 252,
         "include_cyb": True,
-        "include_kcb": False,
-        "include_bse": False,
-        "min_market_cap": 500_000_000,
+        "include_kcb": False if not is_index_universe else True,
+        "include_bse": False if not is_index_universe else True,
+        "min_market_cap": 500_000_000 if not is_index_universe else None,
         "min_avg_amount": 10_000_000,
     }
     if overrides and "universe" in overrides:
@@ -547,6 +553,10 @@ def step5_build_strategy(
     _rebalance = rebalance if rebalance is not None else config.default_rebalance
     _universe = universe if universe is not None else config.default_universe
 
+    # Benchmark follows the universe index; when universe is None (full market)
+    # fall back to the configured default (HS300).
+    _benchmark = _universe if _universe else config.benchmark
+
     # Determine selection: top_k takes priority if specified
     if _top_k is not None:
         selection = SelectionConfig(method="topk", top_k=_top_k)
@@ -572,7 +582,7 @@ def step5_build_strategy(
         backtest=BacktestConfig(
             start_date=config.start_date,
             end_date=config.end_date,
-            benchmark=config.benchmark,
+            benchmark=_benchmark,
         ),
     )
 
@@ -606,6 +616,27 @@ def step5_build_strategy(
     else:
         metrics["top_pct"] = _top_pct
     return _pass(state, "step5", metrics)
+
+
+def _bt_threshold_map(suffix: str, *, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """Build a threshold_map for a backtest gate.
+
+    All backtest gates share the same absolute + excess metric structure;
+    only the threshold suffix (``_simple`` / ``_detailed``) differs.
+    """
+    m = {
+        "sharpe": f"min_sharpe{suffix}",
+        "annual_return": f"min_annual_return{suffix}",
+        "max_drawdown": f"max_max_drawdown{suffix}" if suffix == "_detailed" else "max_max_drawdown",
+        "calmar": f"min_calmar{suffix}",
+        "excess_sharpe": f"min_excess_sharpe{suffix}",
+        "excess_annual_return": f"min_excess_annual_return{suffix}",
+        "excess_max_drawdown": f"max_excess_max_drawdown{suffix}",
+        "excess_calmar": f"min_excess_calmar{suffix}",
+    }
+    if extra:
+        m.update(extra)
+    return m
 
 
 # ---------------------------------------------------------------------------
@@ -664,24 +695,7 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
     sim = SimpleSimulator(sim_cfg)
     result = sim.run(signals, market_data)
 
-    return _backtest_gate(state, result, "step6", "simple", {
-        "sharpe": "min_sharpe_simple",
-        "annual_return": "min_annual_return_simple",
-        "max_drawdown": "max_max_drawdown",
-        "calmar": "min_calmar_simple",
-        "excess_sharpe_hs300": "min_excess_sharpe_simple_hs300",
-        "excess_annual_return_hs300": "min_excess_annual_return_simple_hs300",
-        "excess_max_drawdown_hs300": "max_excess_max_drawdown_simple_hs300",
-        "excess_calmar_hs300": "min_excess_calmar_simple_hs300",
-        "excess_sharpe_csi500": "min_excess_sharpe_simple_csi500",
-        "excess_annual_return_csi500": "min_excess_annual_return_simple_csi500",
-        "excess_max_drawdown_csi500": "max_excess_max_drawdown_simple_csi500",
-        "excess_calmar_csi500": "min_excess_calmar_simple_csi500",
-        "excess_sharpe_csi1000": "min_excess_sharpe_simple_csi1000",
-        "excess_annual_return_csi1000": "min_excess_annual_return_simple_csi1000",
-        "excess_max_drawdown_csi1000": "max_excess_max_drawdown_simple_csi1000",
-        "excess_calmar_csi1000": "min_excess_calmar_simple_csi1000",
-    })
+    return _backtest_gate(state, result, "step6", "simple", _bt_threshold_map("_simple"))
 
 
 # ---------------------------------------------------------------------------
@@ -702,25 +716,8 @@ def step7_detailed_backtest(state: PipelineState) -> PipelineState:
     sim = DetailedSimulator(sim_cfg)
     result = sim.run(state.signals, market_data, dividends)
 
-    return _backtest_gate(state, result, "step7", "detailed", {
-        "sharpe": "min_sharpe_detailed",
-        "annual_return": "min_annual_return_detailed",
-        "max_drawdown": "max_max_drawdown_detailed",
-        "calmar": "min_calmar_detailed",
-        "annual_turnover": "max_annual_turnover_detailed",
-        "excess_sharpe_hs300": "min_excess_sharpe_detailed_hs300",
-        "excess_annual_return_hs300": "min_excess_annual_return_detailed_hs300",
-        "excess_max_drawdown_hs300": "max_excess_max_drawdown_detailed_hs300",
-        "excess_calmar_hs300": "min_excess_calmar_detailed_hs300",
-        "excess_sharpe_csi500": "min_excess_sharpe_detailed_csi500",
-        "excess_annual_return_csi500": "min_excess_annual_return_detailed_csi500",
-        "excess_max_drawdown_csi500": "max_excess_max_drawdown_detailed_csi500",
-        "excess_calmar_csi500": "min_excess_calmar_detailed_csi500",
-        "excess_sharpe_csi1000": "min_excess_sharpe_detailed_csi1000",
-        "excess_annual_return_csi1000": "min_excess_annual_return_detailed_csi1000",
-        "excess_max_drawdown_csi1000": "max_excess_max_drawdown_detailed_csi1000",
-        "excess_calmar_csi1000": "min_excess_calmar_detailed_csi1000",
-    })
+    return _backtest_gate(state, result, "step7", "detailed",
+        _bt_threshold_map("_detailed", extra={"annual_turnover": "max_annual_turnover_detailed"}))
 
 
 # ---------------------------------------------------------------------------
@@ -759,7 +756,13 @@ def _backtest_gate(
     sub_dir: str,
     threshold_map: dict[str, str],
 ) -> PipelineState:
-    """Persist result, check thresholds, record pass/reject."""
+    """Persist result, check thresholds, record pass/reject.
+
+    Excess-metric keys in *threshold_map* are generic (e.g. ``excess_sharpe``).
+    They are resolved at runtime to the per-benchmark keys that
+    ``BacktestResult.summary()`` produces (e.g. ``excess_sharpe_hs300``)
+    by appending the benchmark alias derived from the strategy's benchmark.
+    """
     config = state.config
     tag = _build_tag(state)
     out_dir = Path(config.results_root) / config.factor_id / tag / sub_dir
@@ -777,6 +780,26 @@ def _backtest_gate(
     else:
         state.detailed_bt_metrics = metrics
 
+    # Resolve the benchmark alias so generic excess keys (e.g. "excess_sharpe")
+    # can be mapped to per-benchmark metric keys (e.g. "excess_sharpe_hs300").
+    bench_code = (
+        state.strategy_config.backtest.benchmark
+        if state.strategy_config and state.strategy_config.backtest
+        else "000300.SH"
+    )
+    from backtest.evaluation.benchmark import _INDEX_TO_BENCHMARK_ALIAS
+
+    bench_alias = _INDEX_TO_BENCHMARK_ALIAS.get(bench_code)
+    if bench_alias is None:
+        import warnings
+        warnings.warn(
+            f"Benchmark code '{bench_code}' is not in the known benchmark "
+            f"alias map ({list(_INDEX_TO_BENCHMARK_ALIAS.keys())}). "
+            f"Falling back to 'hs300' for excess metric gate checks.",
+            stacklevel=2,
+        )
+        bench_alias = "hs300"
+
     th = config.thresholds
     checks: dict[str, bool] = {}
     for metric_key, th_key in threshold_map.items():
@@ -784,7 +807,14 @@ def _backtest_gate(
         # None means the threshold is disabled — skip it.
         if threshold is None:
             continue
-        val = metrics.get(metric_key)
+
+        # Resolve generic excess keys to per-benchmark metric keys.
+        if metric_key.startswith("excess_"):
+            resolved_key = f"{metric_key}_{bench_alias}"
+        else:
+            resolved_key = metric_key
+
+        val = metrics.get(resolved_key)
         # NaN means the engine doesn't compute this metric (e.g. SimpleSimulator
         # doesn't track turnover).  Skip the check rather than failing.
         if val is None or (isinstance(val, float) and math.isnan(val)):
@@ -796,15 +826,36 @@ def _backtest_gate(
         else:
             checks[metric_key] = val > threshold
 
+    if not checks:
+        # All thresholds were disabled (None/null) — warn because the step
+        # passes with zero verification.
+        import warnings
+        warnings.warn(
+            f"{step}: all thresholds are disabled — gate passes vacuously.",
+            stacklevel=2,
+        )
     if all(checks.values()):
         return _pass(state, step, metrics)
 
     violations = []
     for metric_key, passed in checks.items():
         if not passed:
-            val = metrics.get(metric_key, 0)
+            resolved_key = (
+                f"{metric_key}_{bench_alias}"
+                if metric_key.startswith("excess_") else metric_key
+            )
+            val = metrics.get(resolved_key, float("nan"))
             label = metric_key.replace("_", " ").title()
-            violations.append(f"{label}={val:.3f} <= threshold")
+            # Gate direction: "higher is better" for all metrics except
+            # max_drawdown (checked as val > -threshold) and annual_turnover
+            # (checked as val < threshold).
+            if "max_drawdown" in metric_key:
+                direction = "deeper than"
+            elif metric_key in ("annual_turnover",):
+                direction = "exceeds"
+            else:
+                direction = "below"
+            violations.append(f"{label}={val:.3f} {direction} threshold")
     return _reject(state, step, "; ".join(violations), metrics)
 
 
@@ -986,9 +1037,12 @@ def run_pipeline(
     start_date: str | None = None,
     end_date: str | None = None,
     results_root: str = "results",
+    results_subdir: str | None = None,
+    state_subdir: str | None = None,
     ret_type: str | None = None,
     benchmark: str | None = None,
     from_step: int = 1,
+    to_step: int | None = None,
     skip_mark_rejected: bool = False,
     # Strategy kwargs forwarded to step5_build_strategy
     top_k: int | None = None,
@@ -1007,6 +1061,8 @@ def run_pipeline(
     ----------
     from_step : int
         1-based step index to start from (default 1 = step1).
+    to_step : int | None
+        If set, stop after this step (inclusive).  None = run all 10 steps.
     skip_mark_rejected : bool
         If True, do not call ``mark_rejected()`` on failure.  The agent
         runner sets this to True because it manages rejection differently
@@ -1015,6 +1071,10 @@ def run_pipeline(
         Strategy params forwarded to step5.  When provided, they take
         priority over config.yaml defaults.  Useful for re-running from
         step5 with adjusted params after a backtest_fail.
+    results_subdir / state_subdir : optional
+        Nest results and state under results_root/<factor_id>/<subdir>/
+        instead of the flat results_root/<factor_id>/ layout.  Used by
+        the agent sweep to isolate per-combo artifacts.
     """
     # Validate from_step range.  Values >5 can only work when PipelineState
     # is loaded from a prior run (per-step CLI), not with a fresh state.
@@ -1035,6 +1095,10 @@ def run_pipeline(
         )
 
     overrides: dict[str, Any] = {"results_root": results_root}
+    if results_subdir is not None:
+        overrides["results_subdir"] = results_subdir
+    if state_subdir is not None:
+        overrides["state_subdir"] = state_subdir
     if start_date is not None:
         overrides["start_date"] = start_date
     if end_date is not None:
@@ -1078,6 +1142,8 @@ def run_pipeline(
         else:
             state = step_fn(state)
         state.save(config.state_path())
+        if to_step is not None and step_idx >= to_step:
+            break
 
     # Always generate a diagnostic report
     from backtest.pipeline._report import generate_pipeline_report

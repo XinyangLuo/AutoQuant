@@ -473,6 +473,50 @@ def _read_pipeline_thresholds() -> dict[str, Any]:
         return {}
 
 
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """Run a multi-universe strategy sweep for a generated factor."""
+    factor_id: str = args.factor_id
+    factor_file = Path(args.factor_file)
+    generated_dir = Path(args.generated_dir)
+    results_root = Path(args.results_root)
+
+    if not factor_file.exists():
+        print(f"Factor file not found: {factor_file}", file=sys.stderr)
+        return 2
+
+    # Parse universe overrides.
+    universes: dict[str, str] | None = None
+    if args.universes:
+        universes = {}
+        for item in args.universes.split(","):
+            item = item.strip()
+            if "=" in item:
+                name, code = item.split("=", 1)
+                universes[name.strip()] = code.strip()
+
+    from agents.sweep import run_sweep
+
+    try:
+        summary = run_sweep(
+            factor_id=factor_id,
+            factor_file=factor_file,
+            generated_dir=generated_dir,
+            results_root=results_root,
+            to_step=args.to_step,
+            workers=args.workers,
+            validate_top_n=args.validate_top_n,
+            universes=universes,
+        )
+    except Exception as exc:
+        print(f"Sweep failed: {exc}", file=sys.stderr)
+        traceback.print_exc()
+        return 1
+
+    # Print summary to stdout for easy consumption.
+    print(json.dumps(_clean_json(summary), ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m agents.claude_cli",
@@ -558,6 +602,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     kb_update.add_argument("--rc-output", help="Optional path to RC diagnosis JSON (for anti-pattern extraction)")
     kb_update.set_defaults(func=cmd_kb_update)
+
+    # ------------------------------------------------------------------
+    # sweep subcommand
+    # ------------------------------------------------------------------
+    sweep = sub.add_parser(
+        "sweep",
+        help="Multi-universe strategy parameter sweep for a generated factor",
+    )
+    sweep.add_argument("factor_id", help="Factor id, e.g. f_auto_run001_001")
+    sweep.add_argument(
+        "--factor-file", required=True,
+        help="Path to the factor code file to execute",
+    )
+    sweep.add_argument(
+        "--generated-dir", default="alphas/exp/agent",
+        help="Directory for importable generated factors",
+    )
+    sweep.add_argument(
+        "--results-root", default="results",
+        help="Root for all result artifacts",
+    )
+    sweep.add_argument(
+        "--to-step", type=int, default=7,
+        help="Stop after this pipeline step (default 7 = detailed backtest)",
+    )
+    sweep.add_argument(
+        "--workers", type=int, default=4,
+        help="Max parallel workers per universe",
+    )
+    sweep.add_argument(
+        "--validate-top-n", type=int, default=1,
+        help="Number of top combos to validate per universe with full detailed BT",
+    )
+    sweep.add_argument(
+        "--universes",
+        help="Comma-separated universe name=code overrides, e.g. hs300=000300.SH,csi500=000905.SH",
+    )
+    sweep.set_defaults(func=cmd_sweep)
 
     return parser
 

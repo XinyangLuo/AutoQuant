@@ -77,12 +77,15 @@ class UniverseFilter:
                         | trading_days.isna()
                     ]
 
-        # 3. Board filter
-        if not self.config.include_cyb:
+        # 3. Board filter — driven by config flags.  When *index_members* is
+        #    set, _build_universe() defaults to include_kcb=True, include_bse=True
+        #    so these filters are naturally inactive.  Explicit overrides are
+        #    always respected.  Use ``is False`` to avoid treating None as False.
+        if self.config.include_cyb is False:
             df = df[~df["symbol"].str.startswith("30").fillna(False)]
-        if not self.config.include_kcb:
+        if self.config.include_kcb is False:
             df = df[~df["symbol"].str.startswith("68").fillna(False)]
-        if not self.config.include_bse:
+        if self.config.include_bse is False:
             # BSE (北交所): 8xxxxx.BJ / 4xxxxx.BJ — consistent with detect_board()
             is_bse = (
                 df["symbol"].str.startswith(("8", "4"))
@@ -96,6 +99,8 @@ class UniverseFilter:
             df = df[df["symbol"].isin(members)]
 
         # 5. Liquidity filter
+        #    _build_universe() sets min_market_cap=None for index universes so
+        #    this filter is naturally inactive.  Explicit overrides are respected.
         if self.config.min_market_cap and "circ_mv" in df.columns:
             # circ_mv is stored in 万元 (Tushare convention) — convert to 元
             # so the threshold is unit-aligned with min_avg_amount.

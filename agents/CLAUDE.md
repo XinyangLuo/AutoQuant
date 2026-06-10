@@ -72,6 +72,10 @@ python -m agents.claude_cli kb-update \
     --result results/<factor_id>/<strategy>/result.json \
     --status pass
 
+# 多 universe 策略参数扫描（top10% 选股，自动检测量价/基本面因子类型）
+python -m agents.claude_cli sweep f_auto_001 \
+    --factor-file alphas/exp/agent/f_auto_001/factor.py
+
 # 帮助
 python -m agents.claude_cli --help
 ```
@@ -124,15 +128,43 @@ agents/
 
 ### `claude_cli.py` — CLI 入口
 
-四个子命令：
+五个子命令：
 
 - `schema --sources`：输出指定数据源在 `panel` 中的可用列名（JSON）
-- `run <factor_id> --run-dir --factor-file`：运行完整 step1~step10 流水线，输出 `result.json`（含自动计算的 HS300/CSI500/CSI1000 超额指标）
+- `run <factor_id> --run-dir --factor-file`：运行完整 step1~step10 流水线，输出 `result.json`。超额收益基准由 universe 决定（默认沪深300）
   - `--run-dir` 模式下自动追加 `trace.jsonl`（需配合 `--round`/`--parent-round`/`--branch-id`）
   - `--auto-kb-update` 自动更新 KB 文件
   - `--feedback-format` 控制 feedback 输出：`flat` / `layered`（默认） / `relevant`
+- `sweep <factor_id> --factor-file`：多 universe 策略参数扫描（见下方 § sweep 章节）
 - `trace-append --run-dir --result`：从 `result.json` 构建并追加 `trace.jsonl` 记录
 - `kb-update --result --status`：根据运行结果自动更新 KB 四文件
+
+### `sweep.py` — 多 Universe 策略参数扫描
+
+对已通过 step1~step4 的因子，在四大宽基指数 universe 下自动扫描策略参数组合：
+
+- **Universe**：沪深300 / 中证500 / 中证1000 / 中证2000（串行，避免 DB 争用）
+- **选股**：统一 top 10%（`top_pct=0.1`）
+- **参数网格**（按因子类型自动选择）：
+  - 量价因子：decay ∈ {5, 10, 15} × rebalance ∈ {1D, 5D}（6 组合）
+  - 基本面因子：decay ∈ {5} × rebalance ∈ {1M, 3M}（2 组合）
+- **并行**：universe 之间串行，同一 universe 内 strategy 组合并行
+- **输出**：每个 universe 选出最优 strategy，最终生成 `cross_universe.json` 跨 universe 比较
+
+目录结构：
+```
+results/{factor_id}/
+  hs300/
+    factor_eval/
+    top10pct_1D_d5/
+      simple/ detailed/ plots/ pipeline_report.md
+    top10pct_5D_d10/
+      ...
+  csi500/ ...
+  csi1000/ ...
+  csi2000/ ...
+  cross_universe.json
+```
 
 通过的因子自动写入 `results/candidates/<factor_id>/`，等待人工 review 后 admit。
 

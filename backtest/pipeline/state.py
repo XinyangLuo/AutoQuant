@@ -32,7 +32,7 @@ class PipelineState:
     step_results: dict[str, StepResult] = field(default_factory=dict)
     artifacts: dict[str, str] = field(default_factory=dict)
 
-    # Shared data populated during pipeline execution (not serialised)
+    # Shared data populated during pipeline execution
     strategy_config: "StrategyConfig | None" = None
     signals: "pd.DataFrame | None" = None
     simple_bt_metrics: dict | None = None
@@ -83,6 +83,17 @@ class PipelineState:
             except Exception:
                 pass  # fallback to None; step4 will re-run evaluate if needed
 
+        # Restore strategy_config so sweep Phase C validation can resume
+        # from step6+ without re-running step5.
+        strategy_config = None
+        sc_raw = data.get("strategy_config")
+        if isinstance(sc_raw, dict):
+            try:
+                from backtest.strategy.config import StrategyConfig
+                strategy_config = StrategyConfig.from_dict(sc_raw)
+            except Exception:
+                pass
+
         # Discard legacy retry fields for backward compatibility
         # (not present in current serialized state; harmless if absent).
         return cls(
@@ -93,6 +104,7 @@ class PipelineState:
             current_step=data.get("current_step"),
             artifacts=data.get("artifacts", {}),
             eval_result=eval_result,
+            strategy_config=strategy_config,
         )
 
     # ------------------------------------------------------------------
