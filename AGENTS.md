@@ -50,6 +50,7 @@ python -m backtest.data.update_daily                     # 日更（所有表）
 # 因子 → 回测 → 入库
 python -m backtest.factor.backfill f_xxx                 # 回填因子到 work DB
 python -m backtest.pipeline run-all f_xxx                # step1~step10 全自动
+python -m backtest.pipeline run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py  # 生成因子：注册/回填/回测
 python -m backtest.factor.admission admit f_xxx          # 人工 admit
 python -m backtest.factor.update                         # 日更 admitted 因子
 
@@ -58,7 +59,7 @@ python -m backtest.evaluation <result_dir>               # 8 子图 + summary
 
 # Agent 因子迭代
 python -m agents.codex_cli schema --sources market_daily       # 查询可用列名
-python -m agents.codex_cli run f_auto_xxx --run-dir <dir>      # 单轮执行
+python -m agents.codex_cli run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py  # 单轮执行 + feedback/trace/KB
 
 # 交互式因子研究（Codex slash command）
 # /factor-iterate "..."                                          # 见 .codex/commands/factor-iterate.md
@@ -199,6 +200,7 @@ DuckDB，三个物理库 + 八张表：
   - `.codex/skills/reject-factor/SKILL.md`
 - **耗时任务**：回测、批量抓取、批量因子计算用 `background exec session` 起背景任务
 - **改动前**：先读对应模块的 `DESIGN.md`，确认接口契约（§8）
+- **文档先行与一致性**：功能新增/行为变更/跨模块接口调整时，先更新相关层级文档固化目标、边界、数据契约与验收口径；`DESIGN.md` 是模块设计锚点，但 `AGENTS.md`、`PIPELINE.md`、`README.md`、skill 文档等已有约定也必须同步维护，确认文档与目标一致后再改代码，避免文档和实现漂移
 - **文档分层**：`AGENTS.md` 只在项目根 + 大子项目根两级（当前是 `./AGENTS.md` + `backtest/AGENTS.md`）；更深的模块用 `DESIGN.md`，避免自动加载文件过多
 - **新模块骨架**：每个新模块至少 `__init__.py` + `DESIGN.md`
 - **Plan 完成后**：把设计沉淀到对应 `DESIGN.md`；不要在 `AGENTS.md` 里塞细节

@@ -121,11 +121,12 @@ CLI --overrides > per-factor config.yaml > 硬编码默认值 (_DEFAULT_*)
 backtest/pipeline/
     __init__.py          # 公开 API
     config.py            # PipelineConfig, StepThresholds（默认值从 config.yaml 读取）
+    runner.py            # generated factor: register/backfill → run_pipeline()
     state.py             # PipelineState（可序列化）
     steps.py             # step1~step10 函数（纯逻辑，无 CLI）
     _report.py           # markdown 报告 + 诊断图生成（拒绝时也会执行）
     _cleanup.py          # 手动清理工具（不再自动调用）
-    __main__.py          # CLI dispatcher: step1~step10 + run-all
+    __main__.py          # CLI dispatcher: step1~step10 + run-all + run
 ```
 
 ## CLI 接口
@@ -148,6 +149,10 @@ python -m backtest.pipeline step10 f_001  # report + ready_for_review
 
 # 一键全跑（日期默认从 config.yaml 读取）
 python -m backtest.pipeline run-all f_001 --frequency D
+
+# 生成因子：注册/回填 factor.py 后再跑 step1~step10
+python -m backtest.pipeline run f_auto_001 \
+    --factor-file alphas/exp/agent/f_auto_001/factor.py
 
 # 从某 step 重跑
 python -m backtest.pipeline run-all f_001 --from-step 5
@@ -244,8 +249,10 @@ Pipeline 每个 step 只执行一次，不做自动重试。当 step6 或 step7 
 # 手动调参：从 step5 开始，覆盖 decay + top_k
 python -m backtest.pipeline run-all f_001 --from-step 5 --decay 10 --top-k 100
 
-# Agent 路径：同样支持
-python -m agents.codex_cli run f_001 --run-dir ... --from-step 5 --decay 10 --top-k 100
+# 生成因子路径：同样支持
+python -m backtest.pipeline run f_001 \
+    --factor-file alphas/exp/agent/f_001/factor.py \
+    --from-step 5 --decay 10 --top-k 100
 ```
 
 调参责任由调用者承担，pipeline 不做自动放宽——避免稀释强 alpha 因子。

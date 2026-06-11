@@ -135,7 +135,7 @@ agents/
 五个子命令：
 
 - `schema --sources`：输出指定数据源在 `panel` 中的可用列名（JSON）
-- `run <factor_id> --run-dir --factor-file`：运行完整 step1~step10 流水线，输出 `result.json`。超额收益基准由 universe 决定（默认沪深300）
+- `run <factor_id> --run-dir --factor-file`：Agent 兼容入口，内部复用 `backtest.pipeline.runner.GeneratedFactorPipelineRunner`，并额外输出 feedback/trace/KB 所需的 `result.json`
   - `--run-dir` 模式下自动追加 `trace.jsonl`（需配合 `--round`/`--parent-round`/`--branch-id`）
   - `--auto-kb-update` 自动更新 KB 文件
   - `--feedback-format` 控制 feedback 输出：`flat` / `layered`（默认） / `relevant`
@@ -145,10 +145,10 @@ agents/
 
 ### `sweep.py` — 多 Universe 策略参数扫描
 
-对已通过 step1~step4 的因子，在四大宽基指数 universe 下自动扫描策略参数组合：
+对已通过 step1~step4 的因子，在 default 全 A 与四大宽基指数 universe 下自动扫描策略参数组合：
 
-- **Universe**：沪深300 / 中证500 / 中证1000 / 中证2000（串行，避免 DB 争用）
-- **选股**：统一 top 10%（`top_pct=0.1`）
+- **Universe**：default 全 A / 沪深300 / 中证500 / 中证1000 / 中证2000（串行，避免 DB 争用）
+- **选股**：default 全 A 搜 `top_k=100/200`；指数 universe 用 `top_pct=0.1`
 - **参数网格**（按因子类型自动选择）：
   - 量价因子：decay ∈ {5, 10, 15} × rebalance ∈ {1D, 5D}（6 组合）
   - 基本面因子：decay ∈ {5} × rebalance ∈ {1M, 3M}（2 组合）
@@ -158,6 +158,11 @@ agents/
 目录结构：
 ```
 results/{factor_id}/
+  default/
+    top100_1D_d5/
+      simple/ detailed/ plots/ pipeline_report.md
+    top200_5D_d10/
+      ...
   hs300/
     factor_eval/
     top10pct_1D_d5/
@@ -181,12 +186,10 @@ results/{factor_id}/
 
 ### `runner.py` — 流水线执行器
 
-`AutoQuantFactorRunner` 是 agent 与回测流水线的适配层：
+`AutoQuantFactorRunner` 是 agent 与共享 generated-factor runner 的适配层：
 
-1. 写因子代码到磁盘 → import 触发 `@register`
-2. `compute_factor()` + `apply_variant_pipeline()` 中性化 → work DB
-3. 调用 `backtest.pipeline.steps` 中的 step1~step10 函数依次执行门控流水线
-4. 收集 `PipelineState` 结果写入 experiment（step_results, eval_result, bt_metrics, ridge_result, residual_icir_result）
+1. 调用 `backtest.pipeline.runner.GeneratedFactorPipelineRunner` 完成 factor.py 注册、回填与 `run_pipeline()`
+2. 收集 `PipelineState` 结果写入 experiment（step_results, eval_result, bt_metrics, ridge_result, residual_icir_result）
 
 阈值和策略默认值全部从 `backtest.pipeline.config.PipelineConfig` / `StepThresholds` 读取，agent 不重复定义。
 
@@ -233,8 +236,9 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 
 | 边界 | 消费方 | 提供方 |
 |------|--------|--------|
-| 因子计算 + 中性化 | `runner.py` | `backtest.factor.compute` |
-| 流水线步骤 step1~step10 | `runner.py` | `backtest.pipeline.steps` |
+| 生成因子注册 + 回填 + pipeline | `runner.py` | `backtest.pipeline.runner.GeneratedFactorPipelineRunner` |
+| 因子计算 + 中性化 | `backtest.pipeline.runner` | `backtest.factor.compute` |
+| 流水线步骤 step1~step10 | `backtest.pipeline.runner` | `backtest.pipeline.steps` |
 | 阈值 + 策略默认值 | `runner.py` | `backtest.pipeline.config.PipelineConfig` |
 | 因子准入 | Codex 建议 → 人工 | `backtest.factor.admission` |
 

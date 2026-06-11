@@ -233,11 +233,12 @@ For each round:
      --factor-file alphas/exp/agent/<factor_id>/factor.py \
      --workers 4
    ```
-   - **Universe 维度**：默认覆盖 hs300 / csi500 / csi1000 / csi2000 四大宽基指数。串行执行避免 DB 争用。
+   - **Universe 维度**：默认覆盖 default（全A，仅去 ST/新股/科创/北交）+ hs300 / csi500 / csi1000 / csi2000 四大宽基指数。串行执行避免 DB 争用。
    - 使用真实 `factor_id` 原地扫描，不会创建 `alphas/exp/agent/<factor_id>_sw_*` clone 目录。
-   - **策略维度**：固定 `top_pct=10%`，按因子类型自动选 decay × rebalance 网格：
+   - **策略维度**：default 全 A 搜 `top_k=100/200`；指数 universe 固定 `top_pct=10%`；再按因子类型自动选 decay × rebalance 网格：
      - 量价/技术因子：`decay=5,10,15 × rebalance=1D,5D`（6 combo）
      - 基本面/财务因子：`decay=5 × rebalance=1M,3M`（2 combo）
+     - 因此量价因子在 default 有 `2 × 6 = 12` 个 combo，指数 universe 各 6 个 combo。
    - **默认跑 step5~7**（含 detailed backtest）。全过则直接进 candidates/ 对应 universe 目录。
    - `--validate-top-n N`（默认 1）：每个 universe 保留 top N combo 的 full result。
    - `--to-step 6`：只到 simple backtest（跳过 detailed / ridge / residual）。
@@ -276,7 +277,7 @@ For each round:
      --factor-file alphas/exp/agent/<factor_id>/factor.py \
      --workers 4
    ```
-   - 默认覆盖 default（全A，仅去 ST/新股/科创/北交）+ hs300/csi500/csi1000/csi2000 五个 universe。自动按因子类型选 decay/rebalance 网格（量价：5,10,15 × 1D,5D；基本面：5 × 1M,3M），不再手动传 `--top-k/--decay/--rebalance`。
+   - 默认覆盖 default（全A，仅去 ST/新股/科创/北交）+ hs300/csi500/csi1000/csi2000 五个 universe。default 自动扫 `top100/top200`，指数 universe 自动用 `top10pct`；再按因子类型选 decay/rebalance 网格（量价：5,10,15 × 1D,5D；基本面：5 × 1M,3M），不再手动传 `--top-k/--decay/--rebalance`。
    - 如果任一 universe 有 full `pass`，进入 Pass 收尾。
    - 如果全部 universe 无 pass，或 full 验证仍失败，再进入 RC，并把 `cross_universe.json` 注入 prompt。
 

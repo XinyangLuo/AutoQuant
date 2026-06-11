@@ -66,13 +66,17 @@ class _DummyRunner:
             experiment.status = "quick_pass"
             return experiment
 
-        tag = sweep_mod._combo_tag(
-            kwargs.get("decay", 0),
-            kwargs.get("rebalance", "1D"),
-        )
+        if kwargs.get("top_k") is not None:
+            tag = f"top{kwargs['top_k']}_{kwargs.get('rebalance', '1D').lower()}_d{kwargs.get('decay', 0)}"
+        else:
+            pct = int(round(float(kwargs.get("top_pct", 0.0)) * 100))
+            tag = f"top{pct}pct_{kwargs.get('rebalance', '1D').lower()}_d{kwargs.get('decay', 0)}"
         report = cfg.results_dir() / tag / "pipeline_report.md"
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text("# report\n", encoding="utf-8")
+        plots = report.parent / "plots"
+        plots.mkdir()
+        (plots / "nav.png").write_text("plot\n", encoding="utf-8")
         experiment.report_path = str(report)
         experiment.status = "candidate" if from_step == 7 else "quick_pass"
         experiment.step_results = {
@@ -125,7 +129,19 @@ def test_sweep_does_not_create_clone_factor_dirs(tmp_path, monkeypatch):
     assert results["n_universes"] == 1
     assert not list(generated_dir.glob("f_test_sweep_sw_*"))
     assert results["best_overall"]["universe"] == "default"
-    assert results["best_overall"]["combo_tag"] == "top10pct_1d_d5"
+    assert results["best_overall"]["combo_tag"] == "top100_1d_d5"
+    assert results["best_overall"]["top_k"] == 100
+    assert results["universes"]["default"]["n_combos"] == 12
+    assert {r["params"].get("top_k") for r in results["universes"]["default"]["all_results"]} == {100, 200}
+    assert all(
+        "top_pct" not in r["params"]
+        for r in results["universes"]["default"]["all_results"]
+    )
+    candidate_dir = tmp_path / "results" / "candidates" / "f_test_sweep"
+    assert (candidate_dir / "factor.py").exists()
+    assert (candidate_dir / "result.json").exists()
+    assert (candidate_dir / "pipeline_report.md").exists()
+    assert (candidate_dir / "plots" / "nav.png").exists()
     assert not list((tmp_path / "results" / "f_test_sweep").glob("**/f_test_sweep_sw_*"))
 
 
@@ -159,9 +175,45 @@ def test_sweep_validate_top_n_resumes_best_combo_from_step7(tmp_path, monkeypatc
     )
 
     assert calls.count(1) == 1
-    assert calls.count(5) == 6
+    assert calls.count(5) == 12
     assert calls.count(7) == 1
     assert results["best_overall"]["universe"] == "default"
+
+
+def test_sweep_standard_universes_include_default_all_a():
+    assert sweep_mod.UNIVERSES["default"] is None
+
+
+def test_index_universe_sweep_uses_top_pct(tmp_path, monkeypatch):
+    monkeypatch.setattr(sweep_mod, "ProcessPoolExecutor", _ImmediateExecutor)
+    monkeypatch.setattr(sweep_mod, "as_completed", _fake_as_completed)
+    monkeypatch.setattr(sweep_mod, "AutoQuantFactorRunner", _DummyRunner)
+
+    generated_dir = tmp_path / "alphas" / "exp" / "agent"
+    generated_dir.mkdir(parents=True)
+    factor_dir = generated_dir / "f_test_sweep"
+    factor_dir.mkdir()
+    factor_file = factor_dir / "factor.py"
+    _write_factor_file(factor_file)
+
+    results = sweep_mod.run_sweep(
+        factor_id="f_test_sweep",
+        factor_file=factor_file,
+        generated_dir=generated_dir,
+        results_root=tmp_path / "results",
+        workers=2,
+        universes={"hs300": "000300.SH"},
+    )
+
+    assert results["best_overall"]["universe"] == "hs300"
+    assert results["best_overall"]["combo_tag"] == "top10pct_1d_d5"
+    assert results["best_overall"]["top_pct"] == 0.1
+    assert results["universes"]["hs300"]["n_combos"] == 6
+    assert {r["params"].get("top_pct") for r in results["universes"]["hs300"]["all_results"]} == {0.1}
+    assert all(
+        "top_k" not in r["params"]
+        for r in results["universes"]["hs300"]["all_results"]
+    )
 
 
 def test_seed_combo_state_copies_only_step1_to_step4(tmp_path):

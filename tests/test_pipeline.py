@@ -16,6 +16,7 @@ from backtest.pipeline.config import PipelineConfig, StepThresholds
 from backtest.pipeline.state import PipelineState, StepResult
 from backtest.factor.evaluation import _ic_series, _rank_ic_series
 from backtest.pipeline.steps import (
+    FULL_MARKET_UNIVERSE,
     _build_tag,
     run_pipeline,
     step1_coverage_check,
@@ -352,6 +353,101 @@ class TestPipelineState:
         assert result.step_results["step6"].passed is True
         assert result.step_results["step5"].metrics["top_k"] == 20
 
+    def test_run_pipeline_accumulates_state_json_for_step1_to_step10(
+        self, tmp_path, monkeypatch
+    ):
+        factor_id = "f_pipeline_integration"
+        calls: list[str] = []
+
+        def _make_step(name):
+            def _step(s):
+                calls.append(name)
+                s.artifacts[f"{name}_artifact"] = f"{name}.json"
+                s.record(name, StepResult(passed=True, metrics={"ordinal": int(name[4:])}))
+                return s
+            return _step
+
+        def _step5(s, **kwargs):
+            calls.append("step5")
+            assert kwargs["top_k"] == 20
+            s.artifacts["strategy_config"] = "strategy_config.json"
+            s.record("step5", StepResult(passed=True, metrics={"top_k": kwargs["top_k"]}))
+            return s
+
+        monkeypatch.setattr(
+            pipeline_steps,
+            "_STEP_ORDER",
+            [
+                ("step1", _make_step("step1")),
+                ("step2", _make_step("step2")),
+                ("step3", _make_step("step3")),
+                ("step4", _make_step("step4")),
+                ("step5", _step5),
+                ("step6", _make_step("step6")),
+                ("step7", _make_step("step7")),
+                ("step8", _make_step("step8")),
+                ("step9", _make_step("step9")),
+                ("step10", _make_step("step10")),
+            ],
+        )
+
+        result = run_pipeline(
+            factor_id,
+            start_date="20240101",
+            end_date="20240131",
+            results_root=str(tmp_path),
+            skip_report=True,
+            skip_mark_rejected=True,
+            top_k=20,
+        )
+
+        state_path = tmp_path / factor_id / "pipeline_state.json"
+        assert calls == [f"step{i}" for i in range(1, 11)]
+        assert result.status == "running"
+        assert result.current_step == "step10"
+        assert state_path.exists()
+
+        with state_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+
+        assert list(data["step_results"]) == [f"step{i}" for i in range(1, 11)]
+        assert data["step_results"]["step1"]["metrics"]["ordinal"] == 1
+        assert data["step_results"]["step5"]["metrics"]["top_k"] == 20
+        assert data["step_results"]["step10"]["passed"] is True
+        assert data["artifacts"]["step1_artifact"] == "step1.json"
+        assert data["artifacts"]["strategy_config"] == "strategy_config.json"
+        assert data["artifacts"]["step10_artifact"] == "step10.json"
+
+
+class TestStep5Universe:
+    def test_full_market_sentinel_bypasses_default_index_universe(self):
+        cfg = PipelineConfig(
+            factor_id="f_full_market",
+            start_date="20200101",
+            end_date="20200131",
+            default_universe="000300.SH",
+        )
+        state = PipelineState(factor_id="f_full_market", config=cfg)
+
+        result = step5_build_strategy(
+            state,
+            top_k=100,
+            decay=5,
+            rebalance="1D",
+            universe=FULL_MARKET_UNIVERSE,
+        )
+
+        universe = result.strategy_config.universe
+        assert universe.index_members is None
+        assert universe.exclude_st is True
+        assert universe.exclude_new_ipo_days == 252
+        assert universe.include_cyb is True
+        assert universe.include_kcb is False
+        assert universe.include_bse is False
+        assert universe.min_market_cap == 500_000_000
+        assert universe.min_avg_amount == 10_000_000
+        assert result.strategy_config.backtest.benchmark == "000300.SH"
+
 
 # ---------------------------------------------------------------------------
 # Helper function tests
@@ -635,6 +731,24 @@ class TestStep5BuildStrategy:
         assert result.strategy_config.selection.top_k == 20
         assert result.strategy_config.decay == 3
         assert result.strategy_config.universe.index_members == "000300.SH"
+
+    def test_strategy_config_artifact_uses_state_subdir_when_isolated(self, tmp_path):
+        cfg = PipelineConfig(
+            factor_id="f_iso",
+            start_date="20200101",
+            end_date="20241231",
+            results_root=str(tmp_path / "results"),
+            results_subdir="f_iso/default",
+            state_subdir="f_iso/default/top100_1d_d5",
+        )
+        state = PipelineState(factor_id="f_iso", config=cfg)
+
+        result = step5_build_strategy(state, top_k=100, decay=5, rebalance="1D")
+
+        artifact_path = Path(result.artifacts["strategy_config"])
+        assert artifact_path == cfg.state_path().parent / "strategy_config.json"
+        assert artifact_path.exists()
+        assert artifact_path.parent != cfg.results_dir()
 
 
 # ---------------------------------------------------------------------------

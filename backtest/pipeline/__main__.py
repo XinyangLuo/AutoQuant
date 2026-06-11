@@ -21,6 +21,7 @@ import sys
 from pathlib import Path
 
 from backtest.pipeline.config import PipelineConfig
+from backtest.pipeline.runner import GeneratedFactorPipelineRunner
 from backtest.pipeline.state import PipelineState, StepResult
 from backtest.pipeline.steps import _STEP_ORDER
 
@@ -63,6 +64,30 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--decay", type=int)
     p_run.add_argument("--universe")
     p_run.add_argument("--rebalance")
+
+    # run generated factor code through register/backfill + pipeline
+    p_generated = sub.add_parser(
+        "run",
+        help="Register/backfill a factor file, then run the pipeline",
+    )
+    p_generated.add_argument("factor_id")
+    p_generated.add_argument("--factor-file", required=True)
+    p_generated.add_argument("--frequency", choices=["D", "M"], default="D")
+    p_generated.add_argument(
+        "--generated-dir",
+        default="alphas/exp/agent",
+        help="Directory where importable generated factors are written",
+    )
+    p_generated.add_argument("--results-root", default="results")
+    p_generated.add_argument("--result-path")
+    p_generated.add_argument("--from-step", type=int, default=1, choices=range(1, 11))
+    p_generated.add_argument("--to-step", type=int, choices=range(1, 11))
+    p_generated.add_argument("--top-k", type=int)
+    p_generated.add_argument("--top-pct", type=float)
+    p_generated.add_argument("--decay", type=int)
+    p_generated.add_argument("--universe")
+    p_generated.add_argument("--rebalance")
+    p_generated.add_argument("--keep-work-db", action="store_true")
 
     return parser
 
@@ -108,6 +133,46 @@ def _output_json(step_name: str, passed: bool, reason: str | None, metrics: dict
         "metrics": metrics,
     }
     print(json.dumps(output, ensure_ascii=False, indent=2, default=str))
+
+
+def _clean_json(value):
+    if isinstance(value, dict):
+        return {str(k): _clean_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_clean_json(v) for v in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
+
+
+def _write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(
+        json.dumps(_clean_json(data), ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def _pipeline_result_payload(
+    *,
+    state: PipelineState,
+    factor_file_path: Path | None,
+    result_path: Path,
+) -> dict:
+    return {
+        "factor_id": state.factor_id,
+        "status": state.status,
+        "result_path": str(result_path),
+        "factor_file": str(factor_file_path) if factor_file_path else None,
+        "report_path": state.artifacts.get("report") or None,
+        "step_results": {
+            name: {"passed": sr.passed, "reason": sr.reason, "metrics": sr.metrics}
+            for name, sr in state.step_results.items()
+        },
+        "artifacts": state.artifacts,
+    }
 
 
 def cmd_init(args) -> int:
@@ -183,15 +248,71 @@ def cmd_run_all(args) -> int:
     return 0
 
 
-def main() -> int:
+def cmd_run_generated(args) -> int:
+    factor_file = Path(args.factor_file)
+    if not factor_file.exists():
+        print(f"Error: factor file not found: {factor_file}", file=sys.stderr)
+        return 2
+
+    config = PipelineConfig.from_factor_config(
+        args.factor_id,
+        frequency=args.frequency,
+        results_root=args.results_root,
+    )
+    factor_code = factor_file.read_text(encoding="utf-8")
+    result_path = Path(args.result_path) if args.result_path else (
+        Path(args.results_root) / args.factor_id / "result.json"
+    )
+
+    with GeneratedFactorPipelineRunner(
+        start_date=config.start_date,
+        end_date=config.end_date,
+        results_root=args.results_root,
+        frequency=args.frequency,
+        generated_dir=args.generated_dir,
+    ) as runner:
+        try:
+            run = runner.run_factor_code(
+                factor_id=args.factor_id,
+                factor_code=factor_code,
+                from_step=args.from_step,
+                to_step=args.to_step,
+                top_k=args.top_k,
+                top_pct=args.top_pct,
+                decay=args.decay,
+                universe=args.universe,
+                rebalance=args.rebalance,
+                skip_report=False,
+                skip_mark_rejected=True,
+            )
+        except Exception:
+            if not args.keep_work_db:
+                runner.cleanup_work_db(args.factor_id)
+            raise
+
+    payload = _pipeline_result_payload(
+        state=run.state,
+        factor_file_path=run.factor_file_path or factor_file,
+        result_path=result_path,
+    )
+    _write_json(result_path, payload)
+    print(json.dumps(_clean_json(payload), ensure_ascii=False, indent=2, default=str))
+
+    return 1 if run.state.is_rejected() else 0
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.command == "init":
         return cmd_init(args)
 
     if args.command == "run-all":
         return cmd_run_all(args)
+
+    if args.command == "run":
+        return cmd_run_generated(args)
 
     if args.command.startswith("step"):
         return cmd_step(args, args.command)

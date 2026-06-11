@@ -62,6 +62,10 @@ conda activate AutoQuant
 # 一键跑完 step1~step10
 python -m backtest.pipeline run-all f_xxx
 
+# 生成因子：注册/回填 factor.py 后跑完整 pipeline
+python -m backtest.pipeline run f_auto_xxx \
+    --factor-file alphas/exp/agent/f_auto_xxx/factor.py
+
 # 或分步执行
 python -m backtest.pipeline step1 f_xxx
 python -m backtest.pipeline step2 f_xxx
@@ -72,8 +76,9 @@ python -m backtest.pipeline step2 f_xxx
 # 查询数据 schema
 python -m agents.codex_cli schema --sources market_daily
 
-# 单轮执行（完整 step1~step10；默认输出到 results/f_auto_xxx/）
-python -m agents.codex_cli run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py
+# 单轮执行 + trace/KB/feedback（完整 step1~step10；默认输出到 results/f_auto_xxx/）
+python -m agents.codex_cli run f_auto_xxx \
+    --factor-file alphas/exp/agent/f_auto_xxx/factor.py
 
 # === 手动流程（附录 A） ===
 
@@ -719,6 +724,7 @@ python -m backtest.data.update_daily                     # 日更
 
 # === 自动化流水线 ===
 python -m backtest.pipeline run-all f_xxx                # step1~step10 一键
+python -m backtest.pipeline run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py
 python -m backtest.pipeline step1 f_xxx                  # 分步执行
 # ... step2~step10
 
@@ -737,7 +743,7 @@ python -m backtest.evaluation <result_dir> --benchmark 000300.SH
 
 # === Agent ===
 python -m agents.codex_cli schema --sources market_daily
-python -m agents.codex_cli run f_auto_xxx --run-dir <dir>
+python -m agents.codex_cli run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py
 ```
 
 ---

@@ -1,0 +1,260 @@
+"""Offline unit tests for data storage and fetch transforms."""
+
+from __future__ import annotations
+
+import pandas as pd
+import pytest
+
+from backtest.data.fetcher.daily_fetcher import (
+    merge_adj_factor,
+    merge_daily_basic,
+    merge_limit_prices,
+    merge_margin_detail,
+    merge_moneyflow,
+    merge_st_status,
+    transform_daily,
+)
+from backtest.data.storage import MarketStorage
+
+
+@pytest.fixture
+def tmp_market_storage(tmp_path, monkeypatch):
+    import backtest.data.storage as storage_module
+
+    db_dir = tmp_path / "duckdb"
+    monkeypatch.setattr(storage_module, "DATA_DIR", db_dir)
+    monkeypatch.setattr(storage_module, "DB_PATH", db_dir / "market.duckdb")
+
+    with MarketStorage() as storage:
+        yield storage
+
+
+def _meta(
+    symbol: str,
+    end_date: str,
+    f_ann_date: str,
+    *,
+    update_flag: str = "0",
+    report_type: str = "1",
+) -> dict:
+    return {
+        "symbol": symbol,
+        "end_date": end_date,
+        "ann_date": f_ann_date,
+        "f_ann_date": f_ann_date,
+        "report_type": report_type,
+        "comp_type": "1",
+        "end_type": "1",
+        "update_flag": update_flag,
+    }
+
+
+class TestMarketStorageFundamentals:
+    def test_get_fina_snapshot_uses_latest_visible_version_per_table(
+        self, tmp_market_storage
+    ):
+        storage = tmp_market_storage
+        storage.insert_income(
+            pd.DataFrame(
+                [
+                    {**_meta("000001.SZ", "20231231", "20240401"), "n_income": 100.0},
+                    {**_meta("000001.SZ", "20231231", "20240430"), "n_income": 120.0},
+                    {**_meta("000001.SZ", "20231231", "20240515"), "n_income": 999.0},
+                ]
+            )
+        )
+        storage.insert_balancesheet(
+            pd.DataFrame(
+                [
+                    {
+                        **_meta("000001.SZ", "20231231", "20240402"),
+                        "total_assets": 1_000.0,
+                    },
+                    {
+                        **_meta("000001.SZ", "20231231", "20240510"),
+                        "total_assets": 1_200.0,
+                    },
+                ]
+            )
+        )
+        storage.insert_cashflow(
+            pd.DataFrame(
+                [
+                    {
+                        **_meta("000001.SZ", "20231231", "20240403"),
+                        "n_cashflow_act": 50.0,
+                    }
+                ]
+            )
+        )
+
+        before_revision = storage.get_fina_snapshot(
+            "20240420",
+            symbols=["000001.SZ"],
+            columns=["inc_n_income", "bs_total_assets", "cf_n_cashflow_act"],
+        )
+        after_income_revision = storage.get_fina_snapshot(
+            "20240505",
+            symbols=["000001.SZ"],
+            columns=["inc_n_income", "bs_total_assets", "cf_n_cashflow_act"],
+        )
+        after_bs_revision = storage.get_fina_snapshot(
+            "20240512",
+            symbols=["000001.SZ"],
+            columns=["inc_n_income", "bs_total_assets", "cf_n_cashflow_act"],
+        )
+
+        assert before_revision.iloc[0]["inc_n_income"] == pytest.approx(100.0)
+        assert before_revision.iloc[0]["bs_total_assets"] == pytest.approx(1_000.0)
+        assert before_revision.iloc[0]["cf_n_cashflow_act"] == pytest.approx(50.0)
+        assert after_income_revision.iloc[0]["inc_n_income"] == pytest.approx(120.0)
+        assert after_income_revision.iloc[0]["bs_total_assets"] == pytest.approx(1_000.0)
+        assert after_bs_revision.iloc[0]["inc_n_income"] == pytest.approx(120.0)
+        assert after_bs_revision.iloc[0]["bs_total_assets"] == pytest.approx(1_200.0)
+
+    def test_get_fina_snapshot_range_respects_trade_calendar_and_visibility_delay(
+        self, tmp_market_storage
+    ):
+        storage = tmp_market_storage
+        storage.insert_trade_calendar(
+            pd.DataFrame(
+                {
+                    "cal_date": pd.to_datetime(["2024-04-01", "2024-04-02"]),
+                    "is_open": [True, True],
+                    "is_week_first": [True, False],
+                    "is_week_last": [False, False],
+                    "is_month_first": [True, False],
+                    "is_month_last": [False, False],
+                }
+            )
+        )
+        storage.insert_income(
+            pd.DataFrame(
+                [
+                    {**_meta("000001.SZ", "20231231", "20240401"), "n_income": 100.0}
+                ]
+            )
+        )
+
+        same_day_visible = storage.get_fina_snapshot_range(
+            "20240401",
+            "20240402",
+            symbols=["000001.SZ"],
+            columns=["inc_n_income"],
+            delay=0,
+        )
+        next_day_visible = storage.get_fina_snapshot_range(
+            "20240401",
+            "20240402",
+            symbols=["000001.SZ"],
+            columns=["inc_n_income"],
+            delay=1,
+        )
+        same_day_visible = same_day_visible.sort_values("date").reset_index(drop=True)
+        next_day_visible = next_day_visible.sort_values("date").reset_index(drop=True)
+
+        assert same_day_visible["date"].dt.strftime("%Y%m%d").tolist() == [
+            "20240401",
+            "20240402",
+        ]
+        assert next_day_visible["date"].dt.strftime("%Y%m%d").tolist() == ["20240402"]
+        assert next_day_visible.iloc[0]["inc_n_income"] == pytest.approx(100.0)
+
+
+class TestDailyFetcherMerge:
+    def test_process_like_multi_type_merge_keeps_daily_rows_and_unit_conversions(self):
+        daily = transform_daily(
+            pd.DataFrame(
+                {
+                    "trade_date": ["20240102", "20240102"],
+                    "ts_code": ["000001.SZ", "000002.SZ"],
+                    "open": [10.0, 20.0],
+                    "high": [11.0, 21.0],
+                    "low": [9.0, 19.0],
+                    "close": [10.5, 20.5],
+                    "pre_close": [10.0, 20.0],
+                    "change": [0.5, 0.5],
+                    "pct_chg": [5.0, 2.5],
+                    "vol": [12.0, 34.0],
+                    "amount": [56.0, 78.0],
+                }
+            )
+        )
+        merged = merge_adj_factor(
+            daily,
+            pd.DataFrame(
+                {
+                    "trade_date": ["20240102"],
+                    "ts_code": ["000001.SZ"],
+                    "adj_factor": [1.1],
+                }
+            ),
+        )
+        merged = merge_st_status(
+            merged,
+            pd.DataFrame({"ts_code": ["000002.SZ"]}),
+        )
+        merged = merge_limit_prices(
+            merged,
+            pd.DataFrame(
+                {
+                    "trade_date": ["20240102"],
+                    "ts_code": ["000001.SZ"],
+                    "up_limit": [11.55],
+                    "down_limit": [9.45],
+                }
+            ),
+        )
+        merged = merge_daily_basic(
+            merged,
+            pd.DataFrame(
+                {
+                    "trade_date": ["20240102"],
+                    "ts_code": ["000001.SZ"],
+                    "turnover_rate": [1.2],
+                    "circ_mv": [500_000.0],
+                }
+            ),
+        )
+        merged = merge_margin_detail(
+            merged,
+            pd.DataFrame(
+                {
+                    "trade_date": ["20240102"],
+                    "ts_code": ["000001.SZ"],
+                    "rzye": [10.0],
+                    "rqye": [2.0],
+                }
+            ),
+        )
+        merged = merge_moneyflow(
+            merged,
+            pd.DataFrame(
+                {
+                    "trade_date": ["20240102"],
+                    "ts_code": ["000001.SZ"],
+                    "buy_sm_vol": [3.0],
+                    "buy_sm_amount": [4.0],
+                    "net_mf_vol": [5.0],
+                    "net_mf_amount": [6.0],
+                }
+            ),
+        )
+
+        row1 = merged.set_index("symbol").loc["000001.SZ"]
+        row2 = merged.set_index("symbol").loc["000002.SZ"]
+
+        assert len(merged) == 2
+        assert row1["volume"] == 1_200
+        assert row1["amount"] == pytest.approx(56_000.0)
+        assert row1["adj_factor"] == pytest.approx(1.1)
+        assert row1["is_st"] == pytest.approx(0)
+        assert row2["is_st"] == pytest.approx(1)
+        assert row1["limit_up"] == pytest.approx(11.55)
+        assert row1["circ_mv"] == pytest.approx(500_000.0)
+        assert row1["margin_rzye"] == pytest.approx(10.0)
+        assert row1["mf_buy_sm_vol"] == 300
+        assert row1["mf_buy_sm_amount"] == pytest.approx(40_000.0)
+        assert row1["mf_net_mf_vol"] == 500
+        assert row1["mf_net_mf_amount"] == pytest.approx(60_000.0)
+        assert pd.isna(row2["limit_up"])

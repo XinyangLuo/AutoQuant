@@ -49,9 +49,23 @@ from backtest.strategy.strategies.single_factor import SingleFactorStrategy
 from .config import PipelineConfig
 from .state import PipelineState, StepResult
 
+FULL_MARKET_UNIVERSE = "__full_market__"
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _resolve_universe_override(universe: str | None, default_universe: str | None) -> str | None:
+    """Resolve CLI/sweep universe values.
+
+    ``None`` preserves legacy behavior: use the configured default universe.
+    ``FULL_MARKET_UNIVERSE`` is an explicit request for the full-market
+    universe, bypassing ``PipelineConfig.default_universe``.
+    """
+    if universe == FULL_MARKET_UNIVERSE:
+        return None
+    return universe if universe is not None else default_universe
 
 
 def _reject(state: PipelineState, step: str, reason: str, metrics: dict | None = None) -> PipelineState:
@@ -606,7 +620,7 @@ def step5_build_strategy(
     _top_pct = top_pct if top_pct is not None else config.default_top_pct
     _decay = decay if decay is not None else config.default_decay
     _rebalance = rebalance if rebalance is not None else config.default_rebalance
-    _universe = universe if universe is not None else config.default_universe
+    _universe = _resolve_universe_override(universe, config.default_universe)
 
     # Benchmark follows the universe index; when universe is None (full market)
     # fall back to the configured default (HS300).
@@ -643,8 +657,10 @@ def step5_build_strategy(
 
     state.strategy_config = strategy_config
 
-    # Persist strategy config artifact
-    cfg_dir = config.results_dir()
+    # Persist strategy config artifact. Sweep combos share a universe-level
+    # results_dir but each has its own state directory, so strategy config must
+    # follow state_subdir when present to avoid cross-combo overwrites.
+    cfg_dir = config.state_path().parent if config.state_subdir else config.results_dir()
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = cfg_dir / "strategy_config.json"
     # Save the full StrategyConfig dict so step7 can restore it in a later

@@ -1,7 +1,7 @@
 """Multi-universe parallel strategy sweep for generated factors.
 
-Used by ``agents.claude_cli sweep`` to explore strategy parameters
-(top_pct=10%, decay, rebalance) across the four main宽基指数 universes.
+Used by ``agents.claude_cli sweep`` to explore strategy parameters across
+the default all-A universe and the four main宽基指数 universes.
 
 One factor hypothesis → one factor implementation.  Each
 (universe × decay × rebalance) combination is a strategy variant.
@@ -11,9 +11,14 @@ within a universe run in **parallel** via ProcessPoolExecutor.
 Directory layout::
 
     results/{factor_id}/
+      default/
+        top100_1D_d5/       # all-A absolute-holding variant
+          simple/
+          detailed/
+          plots/
+          pipeline_report.md
       hs300/
-        factor_eval/          # per-universe IC / decile
-        top10pct_1D_d5/       # strategy variant
+        top10pct_1D_d5/    # index percentage-selection variant
           simple/
           detailed/
           plots/
@@ -28,9 +33,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import traceback
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -45,6 +51,7 @@ from backtest.factor.storage import FactorStorage
 from backtest.pipeline.config import PipelineConfig
 from backtest.pipeline.state import PipelineState
 from backtest.pipeline.steps import (
+    FULL_MARKET_UNIVERSE,
     step1_coverage_check,
     step2_neutralization_check,
     step3_icir_check,
@@ -55,15 +62,17 @@ from backtest.pipeline.steps import (
 # Constants
 # ---------------------------------------------------------------------------
 
-UNIVERSES: dict[str, str] = {
+UNIVERSES: dict[str, str | None] = {
+    "default": None,
     "hs300": "000300.SH",
     "csi500": "000905.SH",
     "csi1000": "000852.SH",
     "csi2000": "932000.CSI",
 }
 
-# Selection: always top 10 %.
-TOP_PCT = 0.1
+# Selection grids.
+DEFAULT_TOP_KS = [100, 200]
+INDEX_TOP_PCT = 0.1
 
 # Strategy parameter grids by factor type.
 _PRICE_VOLUME_COMBOS = list(product(
@@ -74,6 +83,35 @@ _FUNDAMENTAL_COMBOS = list(product(
     [5],                  # decay
     ["1M", "3M"],         # rebalance
 ))
+
+
+@dataclass(frozen=True)
+class StrategyCombo:
+    decay: int
+    rebalance: str
+    top_k: int | None = None
+    top_pct: float | None = None
+
+    @property
+    def tag(self) -> str:
+        return _combo_tag(
+            self.decay,
+            self.rebalance,
+            top_k=self.top_k,
+            top_pct=self.top_pct,
+        )
+
+    def params(self, universe_name: str) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "decay": self.decay,
+            "rebalance": self.rebalance,
+            "universe": universe_name,
+        }
+        if self.top_k is not None:
+            params["top_k"] = self.top_k
+        if self.top_pct is not None:
+            params["top_pct"] = self.top_pct
+        return params
 
 # ---------------------------------------------------------------------------
 # Factor-type detection
@@ -97,6 +135,25 @@ def _get_combos(factor_id: str) -> list[tuple[int, str]]:
     if _is_fundamental(factor_id):
         return _FUNDAMENTAL_COMBOS
     return _PRICE_VOLUME_COMBOS
+
+
+def _get_strategy_combos(factor_id: str, universe_name: str) -> list[StrategyCombo]:
+    """Return selection + timing combos for a universe.
+
+    The default all-A universe searches absolute holdings (top100/top200).
+    Index universes search a stable percentage selection (top10pct).
+    """
+    timing = _get_combos(factor_id)
+    if universe_name == "default":
+        return [
+            StrategyCombo(decay=decay, rebalance=rebalance, top_k=top_k)
+            for top_k in DEFAULT_TOP_KS
+            for decay, rebalance in timing
+        ]
+    return [
+        StrategyCombo(decay=decay, rebalance=rebalance, top_pct=INDEX_TOP_PCT)
+        for decay, rebalance in timing
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -149,9 +206,20 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(str(tmp), str(path))
 
 
-def _combo_tag(decay: int, rebalance: str) -> str:
-    """Stable strategy-combo tag.  Always uses top_pct=0.1 (top10pct)."""
-    return f"top10pct_{rebalance.lower()}_d{decay}"
+def _combo_tag(
+    decay: int,
+    rebalance: str,
+    *,
+    top_k: int | None = None,
+    top_pct: float | None = INDEX_TOP_PCT,
+) -> str:
+    """Stable strategy-combo tag matching pipeline strategy tags."""
+    if top_k is not None:
+        prefix = f"top{top_k}"
+    else:
+        pct = int(round(float(top_pct or INDEX_TOP_PCT) * 100))
+        prefix = f"top{pct}pct"
+    return f"{prefix}_{rebalance.lower()}_d{decay}"
 
 
 def _print_progress(message: str) -> None:
@@ -177,6 +245,8 @@ def _progress_line(
     tag = result.get("combo_tag") or _combo_tag(
         int(params.get("decay", 0)),
         str(params.get("rebalance", "")),
+        top_k=params.get("top_k"),
+        top_pct=params.get("top_pct"),
     )
     line = (
         f"{prefix} {done}/{total} done {tag} "
@@ -249,8 +319,10 @@ def _run_combo_worker(
     results_root: str,
     results_subdir: str,
     state_subdir: str,
-    universe_code: str,
+    universe_code: str | None,
     universe_name: str,
+    top_k: int | None,
+    top_pct: float | None,
     decay: int,
     rebalance: str,
     from_step: int,
@@ -270,7 +342,7 @@ def _run_combo_worker(
         if market_cache:
             os.environ["AQ_MARKET_CACHE"] = market_cache
 
-        tag = _combo_tag(decay, rebalance)
+        tag = _combo_tag(decay, rebalance, top_k=top_k, top_pct=top_pct)
         generated_dir_p = Path(generated_dir)
         results_root_p = Path(results_root)
         combo_dir = results_root_p / state_subdir
@@ -298,11 +370,18 @@ def _run_combo_worker(
                     kwargs: dict[str, Any] = {"from_step": from_step, "to_step": to_step}
                     if from_step <= 5:
                         kwargs.update(
-                            top_pct=TOP_PCT,
                             decay=decay,
                             rebalance=rebalance,
-                            universe=universe_code,
+                            universe=(
+                                FULL_MARKET_UNIVERSE
+                                if universe_name == "default"
+                                else universe_code
+                            ),
                         )
+                        if top_k is not None:
+                            kwargs["top_k"] = top_k
+                        if top_pct is not None:
+                            kwargs["top_pct"] = top_pct
                     experiment = runner.run(experiment, **kwargs)
                     feedback = evaluator.evaluate(experiment)
                 except Exception as exc:
@@ -339,12 +418,12 @@ def _run_combo_worker(
             "status": status,
             "error": error,
             "traceback": tb,
-            "params": {
-                "top_pct": TOP_PCT,
-                "decay": decay,
-                "rebalance": rebalance,
-                "universe": universe_name,
-            },
+            "params": StrategyCombo(
+                decay=decay,
+                rebalance=rebalance,
+                top_k=top_k,
+                top_pct=top_pct,
+            ).params(universe_name),
             "metrics": _clean_json(metrics),
             "result_path": str(result_path),
             "report_path": experiment.report_path,
@@ -512,7 +591,7 @@ def run_sweep(
     to_step: int | None = 7,
     workers: int = 4,
     validate_top_n: int = 1,
-    universes: dict[str, str] | None = None,
+    universes: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """Run a multi-universe strategy sweep.
 
@@ -532,7 +611,7 @@ def run_sweep(
     validate_top_n : int
         Number of top combos to validate per universe with full detailed BT.
     universes : dict | None
-        Override the default 4-index universe set.
+        Override the default all-A + 4-index universe set.
 
     Returns
     -------
@@ -546,12 +625,16 @@ def run_sweep(
     validate_transforms_imports(code)
     code = force_register_factor_id(code, factor_id)
 
-    combos = _get_combos(factor_id)
+    combos_by_universe = {
+        name: _get_strategy_combos(factor_id, name)
+        for name in universes
+    }
+    total_combos = sum(len(combos) for combos in combos_by_universe.values())
     factor_type = "fundamental" if _is_fundamental(factor_id) else "price_volume"
     _print_progress(
         f"Preparing {factor_id} ({factor_type}): "
-        f"{len(universes)} universes × {len(combos)} strategy combos = "
-        f"{len(universes) * len(combos)} total"
+        f"{len(universes)} universes × variable strategy grids = "
+        f"{total_combos} total"
     )
 
     # --- Phase A: base step1~step4 (universe-independent) -------------------
@@ -594,11 +677,12 @@ def run_sweep(
 
         # Seed per-combo state for this universe.
         uni_subdir = f"{factor_id}/{uni_name}"
-        combo_state_subdirs: dict[tuple[int, str], str] = {}
-        for decay, rebalance in combos:
-            tag = _combo_tag(decay, rebalance)
+        combos = combos_by_universe[uni_name]
+        combo_state_subdirs: dict[StrategyCombo, str] = {}
+        for combo in combos:
+            tag = combo.tag
             state_subdir = f"{uni_subdir}/{tag}"
-            combo_state_subdirs[(decay, rebalance)] = state_subdir
+            combo_state_subdirs[combo] = state_subdir
             _seed_combo_state(
                 base_state=base_state,
                 factor_id=factor_id,
@@ -621,24 +705,26 @@ def run_sweep(
                     str(generated_dir),
                     str(results_root),
                     uni_subdir,
-                    combo_state_subdirs[(decay, rebalance)],
+                    combo_state_subdirs[combo],
                     uni_code,
                     uni_name,
-                    decay,
-                    rebalance,
+                    combo.top_k,
+                    combo.top_pct,
+                    combo.decay,
+                    combo.rebalance,
                     5,
                     to_step,
                     factor_cache_path,
                     market_cache_path,
-                ): (decay, rebalance)
-                for decay, rebalance in combos
+                ): combo
+                for combo in combos
             }
             for future in as_completed(futures):
-                decay, rebalance = futures[future]
+                combo = futures[future]
                 try:
                     payload = future.result()
                 except Exception as exc:
-                    tag = _combo_tag(decay, rebalance)
+                    tag = combo.tag
                     payload = {
                         "factor_id": factor_id,
                         "combo_tag": tag,
@@ -646,18 +732,13 @@ def run_sweep(
                         "universe_code": uni_code,
                         "status": "error",
                         "error": f"{type(exc).__name__}: {exc}",
-                        "params": {
-                            "top_pct": TOP_PCT,
-                            "decay": decay,
-                            "rebalance": rebalance,
-                            "universe": uni_name,
-                        },
+                        "params": combo.params(uni_name),
                         "metrics": {},
                         "result_path": None,
                         "report_path": None,
                         "results_root": str(results_root),
                         "results_subdir": uni_subdir,
-                        "state_subdir": combo_state_subdirs[(decay, rebalance)],
+                        "state_subdir": combo_state_subdirs[combo],
                     }
                 results.append(payload)
                 _print_progress(
@@ -689,6 +770,8 @@ def run_sweep(
                                 result["state_subdir"],
                                 uni_code,
                                 uni_name,
+                                params.get("top_k"),
+                                params.get("top_pct"),
                                 params["decay"],
                                 params["rebalance"],
                                 7,
@@ -752,9 +835,70 @@ def run_sweep(
     cross_summary = _build_cross_universe_summary(factor_id, factor_type, universe_results)
     cross_path = results_root / factor_id / "cross_universe.json"
     _write_json(cross_path, cross_summary)
+    _write_sweep_candidate(
+        factor_id=factor_id,
+        factor_file=factor_file,
+        results_root=results_root,
+        cross_summary=cross_summary,
+    )
     _print_progress(f"Cross-universe summary: {cross_path}")
 
     return cross_summary
+
+
+def _write_sweep_candidate(
+    *,
+    factor_id: str,
+    factor_file: Path,
+    results_root: Path,
+    cross_summary: dict[str, Any],
+) -> None:
+    """Write the best full-pass sweep result to candidates/."""
+    selected: dict[str, Any] | None = None
+    for entry in cross_summary.get("ranking", []):
+        universe = entry.get("universe")
+        combo_tag = entry.get("combo_tag")
+        universe_data = cross_summary.get("universes", {}).get(universe, {})
+        for result in universe_data.get("all_results", []):
+            if result.get("combo_tag") != combo_tag:
+                continue
+            full = result.get("full_result")
+            if full and full.get("status") == "pass":
+                selected = full
+                break
+            if result.get("status") == "pass":
+                selected = result
+                break
+        if selected is not None:
+            break
+
+    if selected is None:
+        return
+
+    candidate_dir = results_root / "candidates" / factor_id
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(factor_file, candidate_dir / "factor.py")
+
+    result_path = Path(selected["result_path"]) if selected.get("result_path") else None
+    if result_path and result_path.exists():
+        shutil.copy2(result_path, candidate_dir / "result.json")
+
+    report_path = Path(selected["report_path"]) if selected.get("report_path") else None
+    if report_path and report_path.exists():
+        shutil.copy2(report_path, candidate_dir / "pipeline_report.md")
+        plots_src = report_path.parent / "plots"
+        if plots_src.is_dir():
+            plots_dst = candidate_dir / "plots"
+            if plots_dst.exists():
+                shutil.rmtree(plots_dst)
+            shutil.copytree(plots_src, plots_dst)
+
+    state_subdir = selected.get("state_subdir")
+    selected_root = Path(selected.get("results_root") or results_root)
+    if state_subdir:
+        state_path = selected_root / state_subdir / "pipeline_state.json"
+        if state_path.exists():
+            shutil.copy2(state_path, candidate_dir / "pipeline_state.json")
 
 
 def _build_cross_universe_summary(
@@ -771,11 +915,16 @@ def _build_cross_universe_summary(
         if best is None:
             continue
         metrics = best.get("metrics", {})
+        params = best.get("params", {}) or {}
         entry = {
             "universe": uni_name,
             "universe_code": uni_data["universe_code"],
             "combo_tag": best.get("combo_tag"),
             "status": best.get("status"),
+            "top_k": params.get("top_k"),
+            "top_pct": params.get("top_pct"),
+            "decay": params.get("decay"),
+            "rebalance": params.get("rebalance"),
             "sharpe": metrics.get("simple_sharpe"),
             "annual_return": metrics.get("simple_annual_return"),
             "max_drawdown": metrics.get("simple_mdd"),
@@ -795,10 +944,10 @@ def _build_cross_universe_summary(
     return {
         "factor_id": factor_id,
         "factor_type": factor_type,
-        "top_pct": TOP_PCT,
         "n_universes": len(universe_results),
         "best_per_universe": best_per_universe,
         "ranking": ranking,
         "best_overall": ranking[0] if ranking else None,
         "universes_tested": list(universe_results.keys()),
+        "universes": universe_results,
     }

@@ -27,14 +27,6 @@
 - [ ] **OOS/IS 时间切分**：`PipelineConfig` 增加 `oos_ratio` / `oos_start` 参数，step3~step7 在 IS 上训练/筛选，OOS 上独立验证。要求 OOS IC 衰减 < 30%。
 - [ ] **多 universe 稳健性**：因子至少在 2 个 universe（全A / HS300 / CSI500）上通过 step3 ICIR gate。
 
-### 2.4 测试覆盖
-
-- [ ] **Pipeline 集成测试**：step1~step10 顺序调用 + state JSON 累积验证，确保门控逻辑不退化。
-- [ ] **Barra L1 smoke test**：`barra_ind_size` pipeline 端到端，验证中性化不破坏因子结构。
-- [ ] Data 模块：multi-type fetch + PIT snapshot 正确性
-- [ ] Transforms 单测：`single_quarter` / `ttm` / `yoy` / `ts_ir`
-- [ ] 策略模块：`SingleFactorStrategy` + `MultiFactorStrategy` 基础路径
-
 ### 2.5 文档 & 工程
 
 （当前无待办项）
