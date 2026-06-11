@@ -1,7 +1,7 @@
-"""Data schema query helpers for Claude Code-driven factor iteration.
+"""Data schema query helpers for Codex-driven factor iteration.
 
-Provides the column lists Claude needs to generate factor code without
-hallucinating column names.  No LLM prompt rendering — that's Claude's job now.
+Provides the column lists Codex needs to generate factor code without
+hallucinating column names.  No LLM prompt rendering belongs here.
 """
 
 from __future__ import annotations

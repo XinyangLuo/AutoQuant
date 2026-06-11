@@ -66,9 +66,11 @@ class _DummyRunner:
             experiment.status = "quick_pass"
             return experiment
 
-        tag = sweep_mod._build_combo_tag(
-            kwargs.get("top_k", 100), kwargs.get("decay", 0), kwargs.get("rebalance", "1D")
-        )
+        tag = sweep_mod._combo_tag({
+            "top_k": kwargs.get("top_k", 100),
+            "decay": kwargs.get("decay", 0),
+            "rebalance": kwargs.get("rebalance", "1D"),
+        })
         report = cfg.results_dir() / tag / "pipeline_report.md"
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text("# report\n", encoding="utf-8")
@@ -116,23 +118,16 @@ def test_sweep_does_not_create_clone_factor_dirs(tmp_path, monkeypatch):
         factor_file=factor_file,
         generated_dir=generated_dir,
         results_root=tmp_path / "results",
-        top_ks=[50, 100],
-        decays=[5],
-        rebalances=["1D"],
         workers=2,
+        universes={"default": None},
     )
 
-    assert len(results) == 2
+    assert results["factor_id"] == "f_test_sweep"
+    assert results["n_universes"] == 1
     assert not list(generated_dir.glob("f_test_sweep_sw_*"))
-    assert all(r["factor_id"] == "f_test_sweep" for r in results)
-    assert {r["combo_tag"] for r in results} == {"top50_1d_d5", "top100_1d_d5"}
-    assert all("clone_id" not in r for r in results)
-    assert all(
-        Path(r["result_path"]).parent
-        == tmp_path / "results" / "f_test_sweep" / "sweep_runs" / r["combo_tag"]
-        for r in results
-    )
-    assert not list((tmp_path / "results" / "f_test_sweep" / "sweep_runs").glob("*/f_test_sweep/*"))
+    assert results["best_overall"]["universe"] == "default"
+    assert results["best_overall"]["combo_tag"] in {"top100_1d_d5", "top200_1d_d5"}
+    assert not list((tmp_path / "results" / "f_test_sweep").glob("**/f_test_sweep_sw_*"))
 
 
 def test_sweep_validate_top_n_resumes_best_combo_from_step7(tmp_path, monkeypatch):
@@ -159,17 +154,15 @@ def test_sweep_validate_top_n_resumes_best_combo_from_step7(tmp_path, monkeypatc
         factor_file=factor_file,
         generated_dir=generated_dir,
         results_root=tmp_path / "results",
-        top_ks=[50, 100],
-        decays=[5],
-        rebalances=["1D"],
         workers=2,
         validate_top_n=1,
+        universes={"default": None},
     )
 
     assert calls.count(1) == 1
-    assert calls.count(5) == 2
+    assert calls.count(5) == 12
     assert calls.count(7) == 1
-    assert sum("full_result" in r for r in results) == 1
+    assert results["best_overall"]["universe"] == "default"
 
 
 def test_seed_combo_state_copies_only_step1_to_step4(tmp_path):
@@ -210,7 +203,7 @@ def test_seed_combo_state_copies_only_step1_to_step4(tmp_path):
 
 
 def test_factor_iterate_prompt_prefers_pre_rc_sweep():
-    prompt = Path(".claude/commands/factor-iterate.md").read_text(encoding="utf-8")
+    prompt = Path(".codex/commands/factor-iterate.md").read_text(encoding="utf-8")
     assert "Pre-RC Strategy Sweep Fast Path" in prompt
     assert "不要启动 RC" in prompt
     assert "--validate-top-n" in prompt

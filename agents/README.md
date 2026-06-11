@@ -1,7 +1,7 @@
 # AutoQuant Agent 投研系统 — 使用手册
 
 > **版本**: 2026-06-02  
-> **定位**: Claude Code subagent 驱动的 A 股因子迭代研究系统。不写独立 agent 循环，由 Claude Code 本身承担决策、代码生成和结果分析。Python 侧只保留最小执行层。
+> **定位**: Codex subagent 驱动的 A 股因子迭代研究系统。不写独立 agent 循环，由 Codex 本身承担决策、代码生成和结果分析。Python 侧只保留最小执行层。
 
 ---
 
@@ -265,7 +265,7 @@ results/
 
 ## 命令速查
 
-### 交互式命令（Claude Code slash commands）
+### 交互式命令（Codex slash commands）
 
 ```text
 # 自然语言输入 → 完整 HG→HO→FC→Pipeline→RC 流程
@@ -290,11 +290,11 @@ results/
 conda activate AutoQuant
 
 # 查询数据 schema（FC 编码前必查，确认列名存在）
-python -m agents.claude_cli schema --sources market_daily
-python -m agents.claude_cli schema --sources market_daily,income_q
+python -m agents.codex_cli schema --sources market_daily
+python -m agents.codex_cli schema --sources market_daily,income_q
 
-# 单轮执行（通常由 Claude Code 自动调用，无需手动）
-python -m agents.claude_cli run f_auto_001 \
+# 单轮执行（通常由 Codex 自动调用，无需手动）
+python -m agents.codex_cli run f_auto_001 \
     --factor-file results/<run_id>/factor.py
 
 # KB 查询（通常由父进程自动调用）
@@ -348,10 +348,10 @@ agents/knowledge_base/
 ```text
 agents/
 ├── README.md                   # 本文（使用手册）
-├── CLAUDE.md                   # 系统总览与定位
+├── AGENTS.md                   # 系统总览与定位
 ├── DESIGN.md                   # 架构设计文档（v2.0）
 ├── TODO.md                     # P0~P4 工单池
-├── claude_cli.py               # CLI 入口：schema + run
+├── codex_cli.py               # CLI 入口：schema + run
 ├── runner.py                   # 流水线执行器（对接 backtest）
 ├── evaluator.py                # 评估器：result → feedback
 ├── experiment.py               # 实验数据类
@@ -369,7 +369,7 @@ agents/
     └── <slug>/
         └── *_hypothesis.md
 
-.claude/
+.codex/
 ├── commands/
 │   ├── factor-iterate.md       # /factor-iterate 命令定义
 │   └── pdf-hypothesis.md       # /pdf-hypothesis 命令定义
@@ -447,7 +447,7 @@ conda activate AutoQuant && python -m backtest.factor.admission admit <factor_id
 
 ### Q: 系统需要 API Key 吗？
 
-- **Claude Code 本身**：需要 `ANTHROPIC_API_KEY`（在 `.env` 中配置）
+- **Codex 本身**：需要 `OPENAI_API_KEY`（在 `.env` 中配置）
 - **Python 执行层**：需要 `TUSHARE_TOKEN`（数据下载）
 - **mcp-pdf**：PDF 提取走本地 MCP server，不消耗 API token
 

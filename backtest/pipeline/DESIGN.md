@@ -245,7 +245,7 @@ Pipeline 每个 step 只执行一次，不做自动重试。当 step6 或 step7 
 python -m backtest.pipeline run-all f_001 --from-step 5 --decay 10 --top-k 100
 
 # Agent 路径：同样支持
-python -m agents.claude_cli run f_001 --run-dir ... --from-step 5 --decay 10 --top-k 100
+python -m agents.codex_cli run f_001 --run-dir ... --from-step 5 --decay 10 --top-k 100
 ```
 
 调参责任由调用者承担，pipeline 不做自动放宽——避免稀释强 alpha 因子。

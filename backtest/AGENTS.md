@@ -4,7 +4,7 @@
 
 数据 → 因子 → 策略 → 引擎 → 分析的完整流水线。
 
-回测系统同时作为 **Agent 投研系统的执行后端**：Claude Code 生成的因子代码通过 `backtest.factor.compute` 计算、通过 `backtest.factor.evaluation` 静态评估、通过 `backtest.simulation` 回测验证。回测模块不感知 Agent 层，仅提供稳定 API。详见 [`agents/CLAUDE.md`](../agents/CLAUDE.md)。
+回测系统同时作为 **Agent 投研系统的执行后端**：Codex 生成的因子代码通过 `backtest.factor.compute` 计算、通过 `backtest.factor.evaluation` 静态评估、通过 `backtest.simulation` 回测验证。回测模块不感知 Agent 层，仅提供稳定 API。详见 [`agents/AGENTS.md`](../agents/AGENTS.md)。
 
 ## 数据流
 

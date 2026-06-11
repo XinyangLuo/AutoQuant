@@ -2,7 +2,7 @@
 
 Read-only intraday data only. Trading APIs (xttrader) are out of scope here —
 those belong in a future ``trading/broker/`` module with explicit account
-authorization (see CLAUDE.md §6.5).
+authorization (see AGENTS.md §6.5).
 
 xtquant ships only as a Windows DLL bundle. On macOS / Linux you typically run
 it under Wine / CrossOver with Windows Python 3.9. This module assumes the

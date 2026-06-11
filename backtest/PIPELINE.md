@@ -67,13 +67,13 @@ python -m backtest.pipeline step1 f_xxx
 python -m backtest.pipeline step2 f_xxx
 # ... step3~step10
 
-# === Agent 驱动（Claude Code subagent） ===
+# === Agent 驱动（Codex subagent） ===
 
 # 查询数据 schema
-python -m agents.claude_cli schema --sources market_daily
+python -m agents.codex_cli schema --sources market_daily
 
 # 单轮执行（完整 step1~step10；默认输出到 results/f_auto_xxx/）
-python -m agents.claude_cli run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py
+python -m agents.codex_cli run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py
 
 # === 手动流程（附录 A） ===
 
@@ -171,7 +171,7 @@ def my_idea(panel, ret_window=20, turnover_window=20, z_window=60):
 ### 1.4 命名建议
 
 - **f_xxx**：稳定 ID，按 category 留段（`f_mom_*` 动量、`f_rev_*` 反转、`f_fin_*` 财务、`f_qual_*` 质量、`f_vol_*` 波动率……）
-- **Agent 生成**：前缀 `f_auto_`（Claude 生成）vs `f_`（人工）
+- **Agent 生成**：前缀 `f_auto_`（Codex 生成）vs `f_`（人工）
 - **name**：snake_case 语义名
 - **parameters**：把窗口长度都暴露出来，便于参数扫描
 
@@ -734,8 +734,8 @@ python -m backtest.pipeline run-all f_xxx
 python -m backtest.evaluation <result_dir> --benchmark 000300.SH
 
 # === Agent ===
-python -m agents.claude_cli schema --sources market_daily
-python -m agents.claude_cli run f_auto_xxx --run-dir <dir>
+python -m agents.codex_cli schema --sources market_daily
+python -m agents.codex_cli run f_auto_xxx --run-dir <dir>
 ```
 
 ---

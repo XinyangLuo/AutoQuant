@@ -1,7 +1,7 @@
 """Trace management for factor iteration rounds.
 
 Provides TraceRecord (aligned with the Trace JSONL Schema in
-.claude/prompts/shared/output_formats.md) and TraceManager for
+.codex/prompts/shared/output_formats.md) and TraceManager for
 atomic read/write of per-run trace.jsonl files.
 
 Usage::

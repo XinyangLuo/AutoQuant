@@ -1,6 +1,6 @@
 """Multi-universe parallel strategy sweep for generated factors.
 
-Used by ``agents.claude_cli sweep`` to explore strategy parameters
+Used by ``agents.codex_cli sweep`` to explore strategy parameters
 (top_pct=10%, decay, rebalance) across the four main宽基指数 universes.
 
 One factor hypothesis → one factor implementation.  Each

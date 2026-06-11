@@ -732,7 +732,27 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
     if isinstance(sc, dict):
         sc = StrategyConfig.from_dict(sc)
     strategy = SingleFactorStrategy(sc)
-    signals = strategy.run(config.start_date, config.end_date)
+
+    # Pre-load market data once so the strategy doesn't load its own copy.
+    # Keep a post-end buffer for the simulator's T+1 return calculation, but
+    # pass only the original date range into strategy/universe filtering.
+    market_end = (
+        pd.to_datetime(config.end_date)
+        + pd.Timedelta(days=_MARKET_BUFFER_DAYS)
+    ).strftime("%Y%m%d")
+    with MarketStorage(read_only=True) as ms:
+        market_panel = ms.get_bars(
+            symbols=None,
+            start=config.start_date, end=market_end,
+            columns=["close", "open", "high", "low", "adj_factor", "circ_mv", "amount",
+                     "is_st", "list_date", "limit_up", "limit_down"],
+        )
+    market_for_strategy = market_panel[
+        market_panel["date"] <= pd.to_datetime(config.end_date)
+    ]
+
+    signals = strategy.run(config.start_date, config.end_date,
+                           market_panel=market_for_strategy)
     state.signals = signals
 
     if signals.empty:
@@ -746,7 +766,9 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
     signals.to_parquet(signals_path, index=False)
     state.artifacts["signals"] = str(signals_path)
 
-    market_data = _load_market_data(config, signals)
+    # Reuse pre-loaded data filtered to signal symbols for the simulator.
+    signal_symbols = set(signals["symbol"].unique())
+    market_data = market_panel[market_panel["symbol"].isin(signal_symbols)]
     sim_cfg = _load_simulation_config(overrides=config.simulation_overrides)
     sim = SimpleSimulator(sim_cfg)
     result = sim.run(signals, market_data)

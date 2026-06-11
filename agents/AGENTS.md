@@ -2,7 +2,7 @@
 
 ## 1. 定位
 
-**Claude Code 直接驱动**的 A 股因子迭代研究系统。不再维护独立的 Python agent 循环（原 RD-Agent），由 Claude Code 本身承担决策、代码生成、结果分析和迭代逻辑。
+**Codex 直接驱动**的 A 股因子迭代研究系统。不再维护独立的 Python agent 循环（原 RD-Agent），由 Codex 本身承担决策、代码生成、结果分析和迭代逻辑。
 
 闭环流程：
 
@@ -19,24 +19,24 @@
 /factor-iterate --hypothesis   ← 原有入口，也可直接自然语言
     |
     v
-Claude Code（决策层）
+Codex（决策层）
     |-- [FC] 根据 hypothesis.md / 自然语言 生成/修复因子代码
     |-- Write 到 alphas/exp/agent/<factor_id>/factor.py
     |
     v
-python -m agents.claude_cli run <factor_id>   （执行层）
+python -m agents.codex_cli run <factor_id>   （执行层）
     |-- compute → backfill → evaluate → simple BT → detailed BT
     |-- 输出 result.json
     |
     v
-Claude Code（分析层）
+Codex（分析层）
     |-- Read result.json
     |-- 写 trace.jsonl
     |-- [RC] 诊断失败 → 查 KB → 输出 repair/abandon 指令
     |-- 决策：修复 / 调参 / 换方向 / 停止
 ```
 
-**阅读网页/PDF 等能力**通过 Claude Code 的 MCP tools / skills 扩展，不在 Python 层实现。PDF 阅读走 `mcp-pdf`（pdfplumber / pymupdf 文本提取），不依赖模型原生多模态。详见 `DESIGN.md` §4.5。
+**阅读网页/PDF 等能力**通过 Codex 的 MCP tools / skills 扩展，不在 Python 层实现。PDF 阅读走 `mcp-pdf`（pdfplumber / pymupdf 文本提取），不依赖模型原生多模态。详见 `DESIGN.md` §4.5。
 
 ## 2. 使用方式
 
@@ -47,37 +47,37 @@ Claude Code（分析层）
 /factor-iterate max_rounds=5 data_sources=market_daily,income_q 低估值盈利改善动量
 ```
 
-详见 `.claude/commands/factor-iterate.md`。
+详见 `.codex/commands/factor-iterate.md`。
 
 ### 命令行工具
 
 ```bash
 conda activate AutoQuant
 
-# 查询数据 schema（Claude 生成代码前先查可用列名）
-python -m agents.claude_cli schema --sources market_daily
-python -m agents.claude_cli schema --sources market_daily,income_q
+# 查询数据 schema（Codex 生成代码前先查可用列名）
+python -m agents.codex_cli schema --sources market_daily
+python -m agents.codex_cli schema --sources market_daily,income_q
 
 # 单轮执行（传入因子 ID 和因子文件；--run-dir 可选，默认输出到 results/<factor_id>/）
-python -m agents.claude_cli run f_auto_001 \
+python -m agents.codex_cli run f_auto_001 \
     --factor-file results/<factor_id>/factor.py
 
 # 自动追加 trace（从 result.json 构建并写入 trace.jsonl）
-python -m agents.claude_cli trace-append --run-dir results/<run_id>/ \
+python -m agents.codex_cli trace-append --run-dir results/<run_id>/ \
     --result results/<factor_id>/<strategy>/result.json \
     --round 1 --category volume_reversal
 
 # 自动更新 KB（Pass / Fail 时调用）
-python -m agents.claude_cli kb-update \
+python -m agents.codex_cli kb-update \
     --result results/<factor_id>/<strategy>/result.json \
     --status pass
 
 # 多 universe 策略参数扫描（top10% 选股，自动检测量价/基本面因子类型）
-python -m agents.claude_cli sweep f_auto_001 \
+python -m agents.codex_cli sweep f_auto_001 \
     --factor-file alphas/exp/agent/f_auto_001/factor.py
 
 # 帮助
-python -m agents.claude_cli --help
+python -m agents.codex_cli --help
 ```
 
 ## 3. 目录结构
@@ -85,10 +85,10 @@ python -m agents.claude_cli --help
 ```
 agents/
 ├── __init__.py               # 空（保持）
-├── CLAUDE.md                 # 本文
+├── AGENTS.md                 # 本文
 ├── DESIGN.md                 # Multi-Agent 自动因子挖掘实施计划
 ├── PLAN.md                   # 演进路线（Phase 1→4）
-├── claude_cli.py             # 单轮执行 CLI 入口（schema + run）
+├── codex_cli.py              # 单轮执行 CLI 入口（schema + run）
 ├── config.py                 # AgentConfig：阈值从 config.yaml 读取
 ├── experiment.py             # AutoQuantFactorExperiment dataclass
 ├── evaluator.py              # QuantFeedback + AutoQuantFactorEvaluator
@@ -104,7 +104,7 @@ agents/
     └── <slug>/               #   每次提取一个子目录
         └── *_hypothesis.md
 
-.claude/
+.codex/
 ├── commands/
 │   ├── factor-iterate.md     # /factor-iterate 命令
 │   └── pdf-hypothesis.md     # /pdf-hypothesis 命令（P2.A.4）
@@ -120,13 +120,13 @@ agents/
 └── settings.json
 ```
 
-**不再包含**：Python agent 循环、LLM API 调用、knowledge base Python 模块。这些现在由 Claude Code 本身处理。
+**不再包含**：Python agent 循环、LLM API 调用、knowledge base Python 模块。这些现在由 Codex 本身处理。
 
-**Prompt 模板**：已迁移到 `.claude/prompts/`（Markdown 文件级复用），参考 RD-Agent 的 Jinja2 YAML 共享块思路，但保持轻量。
+**Prompt 模板**：已迁移到 `.codex/prompts/`（Markdown 文件级复用），参考 RD-Agent 的 Jinja2 YAML 共享块思路，但保持轻量。
 
 ## 4. 执行层模块
 
-### `claude_cli.py` — CLI 入口
+### `codex_cli.py` — CLI 入口
 
 五个子命令：
 
@@ -217,7 +217,7 @@ results/{factor_id}/
 
 ### `schema.py` — Schema 查询
 
-提供 `get_panel_columns_for_data_sources()` + `COLUMN_ALIASES` 映射表／Claude 在生成因子代码前调用 `claude_cli schema` 获取真实列名，避免 hallucinate。
+提供 `get_panel_columns_for_data_sources()` + `COLUMN_ALIASES` 映射表／Codex 在生成因子代码前调用 `codex_cli schema` 获取真实列名，避免 hallucinate。
 
 ### `helpers.py` — 工具函数
 
@@ -234,28 +234,28 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 | 因子计算 + 中性化 | `runner.py` | `backtest.factor.compute` |
 | 流水线步骤 step1~step10 | `runner.py` | `backtest.pipeline.steps` |
 | 阈值 + 策略默认值 | `runner.py` | `backtest.pipeline.config.PipelineConfig` |
-| 因子准入 | Claude Code 建议 → 人工 | `backtest.factor.admission` |
+| 因子准入 | Codex 建议 → 人工 | `backtest.factor.admission` |
 
 ## 6. 编码约定
 
-- 与根目录 `CLAUDE.md` §9 一致
-- Agent 特有：因子 ID 前缀 `f_auto_`（Claude 生成）vs `f_`（人工）
+- 与根目录 `AGENTS.md` §9 一致
+- Agent 特有：因子 ID 前缀 `f_auto_`（Codex 生成）vs `f_`（人工）
 - 因子代码遵循 `FACTOR_CODE_GUIDE.md` 规范
 
-## 7. Multi-Agent 自动因子挖掘（Claude Code Subagent 模式）
+## 7. Multi-Agent 自动因子挖掘（Codex Subagent 模式）
 
 > **实施计划**：[`agents/PLAN.md`](PLAN.md)。本章为摘要，完整演进路线以 PLAN.md 为准。
 
 ### 7.1 核心思路
 
-用 Claude Code 的 **Agent tool（subagent）** 做决策，Python 层只管执行。不建独立的 agent 循环，不新增 Python 模块（Phase 1 零新代码）。
+用 Codex 的 **Codex subagent（subagent）** 做决策，Python 层只管执行。不建独立的 agent 循环，不新增 Python 模块（Phase 1 零新代码）。
 
 **与旧版设计的关键区别**：
 - ~~5 个专用 subagent~~ → **2 个**（Factor Coder + Result Critic）
 - ~~8 个 KB 文件~~ → **3 个**（anti_patterns + successful_patterns + failed_attempts）
 - ~~新增 knowledge.py / scheduler.py / orchestrator.py~~ → **Phase 1 不写任何新 Python**
-- ~~bandit 方向选择~~ → 方向选择由父进程（Claude Code 对话）直接完成
-- ~~claude_cli kb-query / run-index 子命令~~ → 用 Read + jq 代替
+- ~~bandit 方向选择~~ → 方向选择由父进程（Codex 对话）直接完成
+- ~~codex_cli kb-query / run-index 子命令~~ → 用 Read + jq 代替
 
 ### 7.2 Phase 1（当前）：增强 `/factor-iterate` + KB 驱动修复
 
@@ -263,7 +263,7 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 / factor-iterate "成交额放量后短期反转，小盘股更强"
   │
   ├─ Round 1..N:
-  │   ├─ [Factor Coder]  生成/修复代码 → claude_cli run
+  │   ├─ [Factor Coder]  生成/修复代码 → codex_cli run
   │   ├─ [Result Critic] 诊断 fail → 查 KB 反模式 → 输出 repair/abandon 指令
   │   └─ [父进程] 追加 trace.jsonl，更新 KB
   │
@@ -276,8 +276,8 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `agents/knowledge_base/` | 新建 | 3 个 JSON 文件（空 schema + 手动 bootstrap） |
-| `.claude/commands/factor-iterate.md` | 改 | 集成 RC subagent + KB 查询 |
-| `agents/claude_cli.py` | 不改 | |
+| `.codex/commands/factor-iterate.md` | 改 | 集成 RC subagent + KB 查询 |
+| `agents/codex_cli.py` | 不改 | |
 | `agents/` 其他模块 | 不改 | |
 
 后续 Phase（并行探索、自动审计、bandit 调度）的触发条件、范围、设计细节见 [`PLAN.md`](PLAN.md)。

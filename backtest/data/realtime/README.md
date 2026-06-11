@@ -28,7 +28,7 @@ hot snapshot.
 
 - Order placement / position queries / fund queries — these require account
   authorization and an unlocked trader session. They belong in a future
-  `trading/broker/` module (CLAUDE.md §6.5, Phase 2).
+  `trading/broker/` module (AGENTS.md §6.5, Phase 2).
 - Any persistence of realtime data.
 
 ## Setup (macOS / Linux)

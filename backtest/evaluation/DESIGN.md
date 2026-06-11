@@ -298,7 +298,7 @@ MarketStorage.get_index_bars([code], start, end)   # 新增方法
 
 ### 下游（agent）
 
-- Agent 通过 `claude_cli run` 调用 evaluation，产出 `result.json.metrics`
+- Agent 通过 `codex_cli run` 调用 evaluation，产出 `result.json.metrics`
 - Agent 投研系统：`get_backtest_result(result_id)` 工具底层调 `evaluate()` 拿扁平 dict
 
 ## `BacktestResult.summary()` 退化为薄封装

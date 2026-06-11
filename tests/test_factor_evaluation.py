@@ -63,6 +63,12 @@ class TestRankICSeries:
         r = pd.Series([1.0, 4.0, 9.0, 16.0, 25.0])
         assert _rank_ic_series(f, r) == pytest.approx(1.0, abs=1e-6)
 
+    def test_ties_use_average_rank(self):
+        f = pd.Series([1.0, 1.0, 2.0, 3.0])
+        r = pd.Series([1.0, 2.0, 2.0, 3.0])
+        expected = f.rank(method="average").corr(r.rank(method="average"))
+        assert _rank_ic_series(f, r) == pytest.approx(expected, abs=1e-6)
+
 
 class TestComputeICStats:
     def test_basic(self):

@@ -116,6 +116,62 @@ def _compute_forward_returns(
     return df[["date", "symbol"] + ret_cols].dropna(subset=ret_cols, how="all")
 
 
+def _compute_daily_ic(
+    merged: pd.DataFrame, ret_col: str,
+) -> pd.DataFrame:
+    """Vectorized per-date IC + RankIC computation.
+
+    Replaces ``groupby("date").apply(lambda)`` with a single groupby-agg
+    pass for Pearson IC, and ``groupby().rank()`` + second agg for RankIC.
+    Avoids ~12K Python-lambda calls per ``evaluate()`` invocation.
+    """
+    v = merged["value"]
+    r = merged[ret_col]
+    g = merged.groupby("date")
+
+    # --- Pearson IC via single groupby-agg ---------------------------------
+    # IC = cov(v, r) / (std(v) * std(r))
+    # cov = mean(v * r) - mean(v) * mean(r)
+    merged_tmp = merged[["date"]].copy()
+    merged_tmp["v"] = v
+    merged_tmp["r"] = r
+    merged_tmp["vr"] = v * r
+    agg = merged_tmp.groupby("date").agg(
+        v_mean=("v", "mean"), r_mean=("r", "mean"),
+        vr_mean=("vr", "mean"),
+        v_std=("v", "std"), r_std=("r", "std"),
+        n=("v", "count"),
+    )
+    agg["cov"] = agg["vr_mean"] - agg["v_mean"] * agg["r_mean"]
+    denom_pearson = agg["v_std"] * agg["r_std"]
+    daily = pd.DataFrame(index=agg.index)
+    daily["ic"] = np.where(
+        (denom_pearson > 0) & (agg["n"] >= 3),
+        agg["cov"].values / denom_pearson.values,
+        np.nan,
+    )
+
+    # --- RankIC (Spearman) via group-rank + same formula -------------------
+    merged_tmp["v_rank"] = v.groupby(merged["date"]).rank()
+    merged_tmp["r_rank"] = r.groupby(merged["date"]).rank()
+    merged_tmp["vr_rank"] = merged_tmp["v_rank"] * merged_tmp["r_rank"]
+    rank_agg = merged_tmp.groupby("date").agg(
+        v_mean=("v_rank", "mean"), r_mean=("r_rank", "mean"),
+        vr_mean=("vr_rank", "mean"),
+        v_std=("v_rank", "std"), r_std=("r_rank", "std"),
+        n=("v_rank", "count"),
+    )
+    rank_agg["cov"] = rank_agg["vr_mean"] - rank_agg["v_mean"] * rank_agg["r_mean"]
+    denom_rank = rank_agg["v_std"] * rank_agg["r_std"]
+    daily["rank_ic"] = np.where(
+        (denom_rank > 0) & (rank_agg["n"] >= 3),
+        rank_agg["cov"].values / denom_rank.values,
+        np.nan,
+    )
+
+    return daily
+
+
 def _ic_series(factor_vals: pd.Series, returns: pd.Series) -> float:
     """Pearson correlation (single day's IC)."""
     mask = factor_vals.notna() & returns.notna()
@@ -125,14 +181,15 @@ def _ic_series(factor_vals: pd.Series, returns: pd.Series) -> float:
 
 
 def _rank_ic_series(factor_vals: pd.Series, returns: pd.Series) -> float:
-    """Spearman correlation (single day's RankIC) — pure numpy, no scipy."""
+    """Spearman correlation (single day's RankIC) with average ranks for ties."""
     mask = factor_vals.notna() & returns.notna()
-    if mask.sum() < 3:
+    n = mask.sum()
+    if n < 3:
         return np.nan
-    f_rank = factor_vals[mask].rank().values
-    r_rank = returns[mask].rank().values
-    f_rank = f_rank - f_rank.mean()
-    r_rank = r_rank - r_rank.mean()
+    f_rank = factor_vals[mask].rank(method="average").values
+    r_rank = returns[mask].rank(method="average").values
+    f_rank -= f_rank.mean()
+    r_rank -= r_rank.mean()
     denom = np.sqrt((f_rank**2).sum() * (r_rank**2).sum())
     if denom == 0:
         return np.nan

@@ -64,14 +64,17 @@ class StrategyBase(ABC):
         end_date: str,
         factor_storage: FactorStorage | None = None,
         market_storage: MarketStorage | None = None,
+        market_panel: "pd.DataFrame | None" = None,
     ) -> pd.DataFrame:
         """Full pipeline: fetch factors + market data → generate signals.
 
-        Returns
-        -------
-        pd.DataFrame
-            Columns ``[date, symbol, target_weight]`` where ``date`` is the
-            effective holding date (signal date + delay).
+        Parameters
+        ----------
+        market_panel : pd.DataFrame | None
+            Pre-loaded market data.  When provided, the internal
+            ``get_bars(symbols=None)`` call is skipped, saving one
+            full-table DuckDB scan per call.  The caller is responsible
+            for including the columns the strategy needs.
         """
         own_factor = factor_storage is None
         own_market = market_storage is None
@@ -94,13 +97,17 @@ class StrategyBase(ABC):
                 raise ValueError("No factor data found for the given date range")
 
             # Load market data (for universe filtering, neutralization, etc.)
-            market_panel = market_storage.get_bars(
-                symbols=None,
-                start=start_date,
-                end=end_date,
-                columns=["close", "open", "high", "low", "circ_mv", "amount",
-                         "is_st", "list_date", "limit_up", "limit_down"],
-            )
+            # Reuse caller-supplied data to avoid duplicate DuckDB scans.
+            if market_panel is not None:
+                pass
+            else:
+                market_panel = market_storage.get_bars(
+                    symbols=None,
+                    start=start_date,
+                    end=end_date,
+                    columns=["close", "open", "high", "low", "circ_mv", "amount",
+                             "is_st", "list_date", "limit_up", "limit_down"],
+                )
 
             rebalance_dates = get_rebalance_dates(
                 start_date, end_date, self.config.rebalance_freq

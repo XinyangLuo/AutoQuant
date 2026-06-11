@@ -70,7 +70,7 @@
 
 ### 4.1 Agent 规模化
 
-- [ ] **并行探索**：父进程手动指定 2 个方向，独立 `/factor-iterate`（不同 run dir + `run_in_background`），验证 DuckDB 并发安全 + token 消耗。
+- [ ] **并行探索**：父进程手动指定 2 个方向，独立 `/factor-iterate`（不同 run dir + background exec session），验证 DuckDB 并发安全 + token 消耗。
 - [ ] **Workspace checkpoint/rollback**：`FactorWorkspace` dataclass + zip checkpoint，支持 round 间回滚。
 - [ ] **DuckDB vss 向量检索**：L3 冷数据语义查重，当前 keyword 过滤够用，vss 是备选加速。
 - [ ] **库审计**：触发条件 admitted factor > 50；冗余/缺口/衰减检测 → 自动生成 HG 输入。

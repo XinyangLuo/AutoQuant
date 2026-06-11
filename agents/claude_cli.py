@@ -1,8 +1,11 @@
-"""Claude Code helper CLI for single-factor iteration.
+"""Codex helper CLI implementation for single-factor iteration.
 
-This module intentionally keeps the loop outside Python: Claude Code generates or
+This module intentionally keeps the loop outside Python: Codex generates or
 edits factor code, calls this CLI for one deterministic execution, then decides
 how to iterate based on the JSON result.
+
+The module name is kept for backward compatibility. Prefer
+``python -m agents.codex_cli`` in new docs and commands.
 """
 
 from __future__ import annotations
@@ -186,6 +189,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                     decay=args.decay,
                     universe=args.universe,
                     rebalance=args.rebalance,
+                    # No strategy → no report; sweep will generate it later.
+                    skip_report=(args.to_step is not None and args.to_step <= 4),
                 )
                 feedback = evaluator.evaluate(experiment)
             except Exception as exc:
@@ -520,8 +525,8 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m agents.claude_cli",
-        description="Claude Code helper CLI for AutoQuant factor iteration.",
+        prog="python -m agents.codex_cli",
+        description="Codex helper CLI for AutoQuant factor iteration.",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
