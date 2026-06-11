@@ -107,14 +107,16 @@ class DecileSimulator:
         decile_returns = decile_returns.reindex(columns=range(10), fill_value=0.0)
         decile_returns = decile_returns.sort_index()
 
-        # 5. Cumulate NAV
-        nav = cumulate_nav(decile_returns)
+        # 5. Cumulate NAV.  decile_returns[t] is the holding-period return
+        #    starting at row date t, so it is realised on the next NAV row.
+        realised_returns = decile_returns.shift(1).fillna(0.0)
+        nav = cumulate_nav(realised_returns)
 
         # Long-short: only use deciles that actually have data
         present_deciles = [c for c in decile_returns.columns if c in valid["decile"].values]
         max_label = max(present_deciles)
         min_label = min(present_deciles)
-        ls_daily = decile_returns[max_label] - decile_returns[min_label]
+        ls_daily = realised_returns[max_label] - realised_returns[min_label]
         ls_nav = cumulate_nav(ls_daily)
         nav["ls"] = ls_nav.values
 

@@ -238,6 +238,8 @@ class DetailedSimulator:
             for sym, pos in snapshot.positions.items():
                 if sym in portfolio.positions:
                     portfolio.positions[sym].shares = pos.shares
+                    portfolio.positions[sym].avg_cost = pos.avg_cost
+                    portfolio.positions[sym].market_value = pos.market_value
                 else:
                     portfolio.positions[sym] = pos
 

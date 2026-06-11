@@ -66,11 +66,10 @@ class _DummyRunner:
             experiment.status = "quick_pass"
             return experiment
 
-        tag = sweep_mod._combo_tag({
-            "top_k": kwargs.get("top_k", 100),
-            "decay": kwargs.get("decay", 0),
-            "rebalance": kwargs.get("rebalance", "1D"),
-        })
+        tag = sweep_mod._combo_tag(
+            kwargs.get("decay", 0),
+            kwargs.get("rebalance", "1D"),
+        )
         report = cfg.results_dir() / tag / "pipeline_report.md"
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text("# report\n", encoding="utf-8")
@@ -126,7 +125,7 @@ def test_sweep_does_not_create_clone_factor_dirs(tmp_path, monkeypatch):
     assert results["n_universes"] == 1
     assert not list(generated_dir.glob("f_test_sweep_sw_*"))
     assert results["best_overall"]["universe"] == "default"
-    assert results["best_overall"]["combo_tag"] in {"top100_1d_d5", "top200_1d_d5"}
+    assert results["best_overall"]["combo_tag"] == "top10pct_1d_d5"
     assert not list((tmp_path / "results" / "f_test_sweep").glob("**/f_test_sweep_sw_*"))
 
 
@@ -160,7 +159,7 @@ def test_sweep_validate_top_n_resumes_best_combo_from_step7(tmp_path, monkeypatc
     )
 
     assert calls.count(1) == 1
-    assert calls.count(5) == 12
+    assert calls.count(5) == 6
     assert calls.count(7) == 1
     assert results["best_overall"]["universe"] == "default"
 

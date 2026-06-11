@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoQuant Reject Factor"
+  short_description: "Reject and archive failed factors"
+  default_prompt: "Use $reject-factor to reject and archive a failed AutoQuant factor."

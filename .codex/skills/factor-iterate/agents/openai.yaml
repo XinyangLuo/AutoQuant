@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoQuant Factor Iterate"
+  short_description: "Iterate A-share factor ideas"
+  default_prompt: "Use $factor-iterate to research and iterate an AutoQuant factor idea."

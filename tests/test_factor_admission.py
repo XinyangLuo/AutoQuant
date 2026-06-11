@@ -124,7 +124,7 @@ class TestReject:
 
 class TestThresholdCheck:
     def test_all_pass(self):
-        m = {"rankicir": 0.30, "ic_positive_ratio": 0.55,
+        m = {"rankicir": 0.50, "ic_positive_ratio": 0.55,
              "turnover": 0.40, "max_corr": 0.60}
         assert check_recommended_thresholds(m) == {
             "rankicir": True, "ic_positive_ratio": True,

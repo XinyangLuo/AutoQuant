@@ -37,11 +37,11 @@ step3: 离线 IC/ICIR/t-stat/正IC占比 门控（日频 + 月频两套阈值）
   ↓
 step4: 分 10 组单调性检验（Spearman 组号→收益）
   ↓
-step5: 策略组装（默认 top_k=100, decay=5, universe=全A）
+step5: 策略组装（当前代码默认 top_k=100, decay=5, universe=000300.SH；可由 per-factor config / CLI 覆盖）
   ↓
-step6: 简单回测（向量化）+ 必检阈值 → 失败回 step5，最多 3 次重试
+step6: 简单回测（向量化）+ 必检阈值 → 失败后由调用者调参并从 step5 重跑
   ↓
-step7: 详细回测（含分红/成本）+ 必检阈值 → 失败回 step5，最多 3 次重试
+step7: 详细回测（含分红/成本）+ 必检阈值 → 失败后由调用者调参并从 step5 重跑
   ↓
 step8: 对全部已入库因子做逐日截面 Ridge 回归，输出 R² 分布（均值做门控）→ 不拒绝，委托 step9
   ↓
@@ -223,9 +223,9 @@ python -m backtest.factor.backfill --pending             # 所有 pending 因子
 |---|---|---|
 | 与 size 的 Pearson corr | `|corr| < max_corr_size` | 验中性化是否成功 |
 | 与 industry dummies 的 Pearson corr（任一行业） | `|corr| < max_corr_industry` | 同上 |
-| 与 library 已入库因子的 max |corr| | `|corr| < max_corr_existing` | 避免重复因子 |
+| 与 library 已入库因子的 max |corr| | 仅记录 | 重复风险诊断，最终交给 step8 Ridge R² |
 
-> 阈值定义在 `config.yaml` → `pipeline.max_corr_size` / `max_corr_industry` / `max_corr_existing`。默认：0.05 / 0.05 / 0.50。
+> 阈值定义在 `config.yaml` / per-factor config 的 pipeline 参数中；`max_corr_existing` 仍保留为诊断配置，但不在 step2 门控。
 >
 > 与 library 因子的相关性仅计算不门控（保留在 metrics 中供参考），统一推迟到 step8 Ridge R² 做风格克隆判定。
 
@@ -355,7 +355,7 @@ selection:
   top_k: 100          # 默认选前 100 支；与 top_pct 二选一
 decay: 5              # 日频因子；月频因子可设 None
 universe:
-  index_members: null # 默认全 A；可选 000300/000905/000852/932000
+  index_members: 000300.SH # 当前代码默认沪深 300；设为 null 则全 A；可选 000300/000905/000852/932000
 rebalance_freq: 1D    # 日频；月频因子用 1M
 delay: 1
 ```
@@ -472,16 +472,18 @@ sim = SimpleSimulator(SimulationConfig(initial_cash=1e8))
 result = sim.run(signals, market_data)
 ```
 
-### 6.3 重试机制（最多 3 次）
+### 6.3 调参重跑（调用者驱动）
 
-全部通过 → step7；任一不通过 → 回 step5。
+全部通过 → step7；任一不通过 → 停止并生成诊断报告。Pipeline 本身每个 step 只执行一次，不自动放宽参数；Agent 或人工分析失败原因后，从 step5 重跑。
 
-每次 agent 拿到失败指标后选择调整一项：
+常见调参项：
 - `decay` ∈ {1, 3, 5, 10}
 - `universe` ∈ {全A, 000300, 000905, 000852}
 - `top_k` ∈ {20, 50, 100} 或 `top_pct` ∈ {0.05, 0.10, 0.20}
 
-第 3 次仍不通过 → reject。
+```bash
+python -m backtest.pipeline run-all f_xxx --from-step 5 --decay 10 --top-k 50
+```
 
 ---
 
@@ -534,9 +536,9 @@ result = sim.run(signals, market_data, dividends)
 
 详细 vs 简单的 `annual_return` 差距典型 0.5~3 pp，> 5 pp 说明因子过度依赖涨停股或停牌前后突变。
 
-### 7.3 重试机制
+### 7.3 调参重跑
 
-同 step6（独立计数，最多 3 次）。全部通过 → step8。
+同 step6：失败后由 Agent 或人工决定是否调整 `decay` / `universe` / `top_k` / `rebalance`，再用 `--from-step 5` 重跑。全部通过 → step8。
 
 ---
 

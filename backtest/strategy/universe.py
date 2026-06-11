@@ -86,14 +86,17 @@ class UniverseFilter:
                 return df
             if trade_date_to_idx is not None and date in trade_date_to_idx:
                 current_idx = trade_date_to_idx[date]
+                list_dates = pd.to_datetime(df["list_date"])
                 list_indices = (
-                    pd.to_datetime(df["list_date"]).dt.strftime("%Y%m%d")
-                    .map(trade_date_to_idx)
+                    list_dates.dt.strftime("%Y%m%d").map(trade_date_to_idx)
                 )
                 trading_days = current_idx - list_indices
+                approx_trading_days = (
+                    (pd.to_datetime(date) - list_dates).dt.days * 5 // 7
+                )
+                trading_days = trading_days.fillna(approx_trading_days)
                 df = df[
-                    (trading_days >= self.config.exclude_new_ipo_days)
-                    | trading_days.isna()
+                    trading_days >= self.config.exclude_new_ipo_days
                 ]
             else:
                 # Fallback: compute calendar on the fly (legacy path).
@@ -104,16 +107,26 @@ class UniverseFilter:
                     )
                     all_trade_dates = get_trade_dates(min_list_date_str, date)
                     _date_to_idx = {d: i for i, d in enumerate(all_trade_dates)}
+                    list_dates = pd.to_datetime(df["list_date"])
                     if date in _date_to_idx:
                         current_idx = _date_to_idx[date]
                         list_indices = (
-                            pd.to_datetime(df["list_date"]).dt.strftime("%Y%m%d")
-                            .map(_date_to_idx)
+                            list_dates.dt.strftime("%Y%m%d").map(_date_to_idx)
                         )
                         trading_days = current_idx - list_indices
+                        approx_trading_days = (
+                            (pd.to_datetime(date) - list_dates).dt.days * 5 // 7
+                        )
+                        trading_days = trading_days.fillna(approx_trading_days)
                         df = df[
-                            (trading_days >= self.config.exclude_new_ipo_days)
-                            | trading_days.isna()
+                            trading_days >= self.config.exclude_new_ipo_days
+                        ]
+                    else:
+                        approx_trading_days = (
+                            (pd.to_datetime(date) - list_dates).dt.days * 5 // 7
+                        )
+                        df = df[
+                            approx_trading_days >= self.config.exclude_new_ipo_days
                         ]
 
         # 3. Board filter — driven by config flags.  When *index_members* is

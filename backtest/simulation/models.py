@@ -150,16 +150,22 @@ class BacktestResult:
         )
 
         # Load default benchmarks for excess metrics.
-        from backtest.evaluation.benchmark import _BENCHMARK_ALIASES, load_benchmark
+        from backtest.evaluation.benchmark import (
+            _BENCHMARK_ALIASES,
+            align_benchmark,
+            load_benchmark,
+        )
         bench_navs: dict[str, pd.Series] = {}
         start_str = arts.start.strftime("%Y%m%d")
         end_str = arts.end.strftime("%Y%m%d")
         for alias, code in _BENCHMARK_ALIASES.items():
             try:
-                bench_navs[alias] = load_benchmark(code, start=start_str, end=end_str)
+                bench_nav = load_benchmark(code, start=start_str, end=end_str)
+                align_benchmark(self.nav_df, bench_nav)
+                bench_navs[alias] = bench_nav
             except Exception as exc:  # noqa: BLE001
                 warnings.warn(
-                    f"Failed to load benchmark {code} ({alias}): {exc}. "
+                    f"Failed to load or align benchmark {code} ({alias}): {exc}. "
                     f"Run `python -m backtest.data.backfill.indices --symbols {code}` to backfill.",
                     stacklevel=2,
                 )

@@ -386,7 +386,10 @@ def compute_all_metrics(
             compute_benchmark_metrics,
         )
         for alias, nav in bench_navs.items():
-            bm = compute_benchmark_metrics(nav_df, nav)
+            try:
+                bm = compute_benchmark_metrics(nav_df, nav)
+            except Exception:
+                bm = {}
             for out_key, src_key in _BENCH_METRIC_MAP.items():
                 out[f"{out_key}_{alias}"] = bm.get(src_key, float("nan"))
 

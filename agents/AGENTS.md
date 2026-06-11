@@ -87,7 +87,7 @@ agents/
 ├── __init__.py               # 空（保持）
 ├── AGENTS.md                 # 本文
 ├── DESIGN.md                 # Multi-Agent 自动因子挖掘实施计划
-├── PLAN.md                   # 演进路线（Phase 1→4）
+├── claude_cli.py             # CLI 实现主体（codex_cli.py 的兼容后端）
 ├── codex_cli.py              # 单轮执行 CLI 入口（schema + run）
 ├── config.py                 # AgentConfig：阈值从 config.yaml 读取
 ├── experiment.py             # AutoQuantFactorExperiment dataclass
@@ -95,6 +95,10 @@ agents/
 ├── runner.py                 # AutoQuantFactorRunner：对接 backtest 流水线
 ├── schema.py                 # 数据 schema 查询（列名、别名映射）
 ├── helpers.py                # 工具函数（代码校验、@register 注入）
+├── trace.py                  # trace.jsonl 读写
+├── kb_query.py               # KB 分层查询
+├── kb_update.py              # KB 自动更新
+├── sweep.py                  # 多 universe 参数扫描
 ├── FACTOR_CODE_GUIDE.md      # LLM 因子代码参考手册
 ├── knowledge_base/           # Agent 知识库（跨 run 本地持久化，gitignore）
 │   ├── anti_patterns.json    #   失败模式 → 修复建议
@@ -120,7 +124,7 @@ agents/
 └── settings.json
 ```
 
-**不再包含**：Python agent 循环、LLM API 调用、knowledge base Python 模块。这些现在由 Codex 本身处理。
+**不再包含**：独立 Python agent 循环和 LLM API 调用。这些现在由 Codex 本身处理；Python 侧只保留 CLI、trace/KB 文件工具和回测执行适配。
 
 **Prompt 模板**：已迁移到 `.codex/prompts/`（Markdown 文件级复用），参考 RD-Agent 的 Jinja2 YAML 共享块思路，但保持轻量。
 
@@ -203,8 +207,6 @@ results/{factor_id}/
 
 ### `kb_update.py` — KB 自动更新器
 
-### `kb_update.py` — KB 自动更新器
-
 `KbUpdater` 提供 Pass/Fail 后的自动 KB 更新：
 - `update_on_pass()` → upsert `hypothesis_index.jsonl` + 更新 `successful_patterns.json`
 - `update_on_fail()` → 条件更新 `anti_patterns.json`（`signature` 去重，`count++`）+ 追加 `failed_attempts.jsonl` + upsert `hypothesis_index.jsonl`
@@ -244,7 +246,7 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 
 ## 7. Multi-Agent 自动因子挖掘（Codex Subagent 模式）
 
-> **实施计划**：[`agents/PLAN.md`](PLAN.md)。本章为摘要，完整演进路线以 PLAN.md 为准。
+> 本章为摘要；详细机制以 [`agents/DESIGN.md`](DESIGN.md) 和 `.codex/commands/` 下的命令文件为准。
 
 ### 7.1 核心思路
 
@@ -280,4 +282,4 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 | `agents/codex_cli.py` | 不改 | |
 | `agents/` 其他模块 | 不改 | |
 
-后续 Phase（并行探索、自动审计、bandit 调度）的触发条件、范围、设计细节见 [`PLAN.md`](PLAN.md)。
+后续 Phase（并行探索、自动审计、bandit 调度）的触发条件、范围、设计细节见 [`DESIGN.md`](DESIGN.md)。

@@ -1,7 +1,7 @@
 # AutoQuant Agent 投研系统 — 使用手册
 
 > **版本**: 2026-06-02  
-> **定位**: Codex subagent 驱动的 A 股因子迭代研究系统。不写独立 agent 循环，由 Codex 本身承担决策、代码生成和结果分析。Python 侧只保留最小执行层。
+> **定位**: Codex subagent 驱动的 A 股因子迭代研究系统。不写独立 agent 循环，由 Codex 本身承担决策、代码生成和结果分析。Python 侧只保留执行层与轻量文件工具。
 
 ---
 
@@ -248,7 +248,7 @@ results/
   <factor_id>/                      # 因子评估结果
     factor_eval/                    # step1-4（同一因子共享）
     decile_backtest/                # 十段分层测试
-    top100_1d_d5/                   # 策略变体 1
+    top10pct_1d_d5/                 # 策略变体 1
       result.json
       pipeline_report.md
       plots/

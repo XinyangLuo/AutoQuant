@@ -262,98 +262,110 @@ def _run_combo_worker(
     # Set cache paths in this worker's own environment so
     # StrategyBase.run() picks them up regardless of the
     # multiprocessing start method (fork vs spawn).
-    if factor_cache:
-        os.environ["AQ_FACTOR_CACHE"] = factor_cache
-    if market_cache:
-        os.environ["AQ_MARKET_CACHE"] = market_cache
-
-    tag = _combo_tag(decay, rebalance)
-    generated_dir_p = Path(generated_dir)
-    results_root_p = Path(results_root)
-    combo_dir = results_root_p / state_subdir
-
-    experiment = AutoQuantFactorExperiment(factor_id=factor_id, factor_code=factor_code)
-    experiment.factor_file_path = generated_dir_p / factor_id / "factor.py"
-
-    cfg = AgentConfig()
-    feedback = None
-    error = None
-    tb = None
+    old_factor_cache = os.environ.get("AQ_FACTOR_CACHE")
+    old_market_cache = os.environ.get("AQ_MARKET_CACHE")
     try:
-        evaluator = AutoQuantFactorEvaluator()
-        with AutoQuantFactorRunner(
-            start_date=cfg.start_date,
-            end_date=cfg.end_date,
-            results_root=results_root_p,
-            results_subdir=results_subdir,
-            state_subdir=state_subdir,
-            generated_dir=generated_dir_p,
-            factor_storage_read_only=True,
-            benchmark=universe_code,
-        ) as runner:
-            try:
-                kwargs: dict[str, Any] = {"from_step": from_step, "to_step": to_step}
-                if from_step <= 5:
-                    kwargs.update(
-                        top_pct=TOP_PCT,
-                        decay=decay,
-                        rebalance=rebalance,
-                        universe=universe_code,
-                    )
-                experiment = runner.run(experiment, **kwargs)
-                feedback = evaluator.evaluate(experiment)
-            except Exception as exc:
+        if factor_cache:
+            os.environ["AQ_FACTOR_CACHE"] = factor_cache
+        if market_cache:
+            os.environ["AQ_MARKET_CACHE"] = market_cache
+
+        tag = _combo_tag(decay, rebalance)
+        generated_dir_p = Path(generated_dir)
+        results_root_p = Path(results_root)
+        combo_dir = results_root_p / state_subdir
+
+        experiment = AutoQuantFactorExperiment(factor_id=factor_id, factor_code=factor_code)
+        experiment.factor_file_path = generated_dir_p / factor_id / "factor.py"
+
+        cfg = AgentConfig()
+        feedback = None
+        error = None
+        tb = None
+        try:
+            evaluator = AutoQuantFactorEvaluator()
+            with AutoQuantFactorRunner(
+                start_date=cfg.start_date,
+                end_date=cfg.end_date,
+                results_root=results_root_p,
+                results_subdir=results_subdir,
+                state_subdir=state_subdir,
+                generated_dir=generated_dir_p,
+                factor_storage_read_only=True,
+                benchmark=universe_code,
+            ) as runner:
+                try:
+                    kwargs: dict[str, Any] = {"from_step": from_step, "to_step": to_step}
+                    if from_step <= 5:
+                        kwargs.update(
+                            top_pct=TOP_PCT,
+                            decay=decay,
+                            rebalance=rebalance,
+                            universe=universe_code,
+                        )
+                    experiment = runner.run(experiment, **kwargs)
+                    feedback = evaluator.evaluate(experiment)
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"
+                    tb = traceback.format_exc()
+                    experiment.error = error
+        except Exception as exc:
+            # Only record init/enter/exit errors if the inner run didn't already
+            # fail — avoid overwriting the root-cause error with a cleanup error.
+            if error is None:
                 error = f"{type(exc).__name__}: {exc}"
                 tb = traceback.format_exc()
                 experiment.error = error
-    except Exception as exc:
-        # Only record init/enter/exit errors if the inner run didn't already
-        # fail — avoid overwriting the root-cause error with a cleanup error.
-        if error is None:
-            error = f"{type(exc).__name__}: {exc}"
-            tb = traceback.format_exc()
-            experiment.error = error
 
-    if error:
-        status = "error"
-    elif experiment.status == "candidate":
-        status = "pass"
-    elif experiment.status == "quick_pass":
-        status = "quick_pass"
-    else:
-        status = "fail"
+        if error:
+            status = "error"
+        elif experiment.status == "candidate":
+            status = "pass"
+        elif experiment.status == "quick_pass":
+            status = "quick_pass"
+        else:
+            status = "fail"
 
-    result_path = combo_dir / "result.json"
-    if experiment.report_path:
-        result_path = Path(experiment.report_path).parent / "result.json"
+        result_path = combo_dir / "result.json"
+        if experiment.report_path:
+            result_path = Path(experiment.report_path).parent / "result.json"
 
-    metrics: dict[str, Any] = feedback.metrics if feedback else {}
-    payload = {
-        "factor_id": factor_id,
-        "combo_tag": tag,
-        "universe": universe_name,
-        "universe_code": universe_code,
-        "status": status,
-        "error": error,
-        "traceback": tb,
-        "params": {
-            "top_pct": TOP_PCT,
-            "decay": decay,
-            "rebalance": rebalance,
+        metrics: dict[str, Any] = feedback.metrics if feedback else {}
+        payload = {
+            "factor_id": factor_id,
+            "combo_tag": tag,
             "universe": universe_name,
-        },
-        "metrics": _clean_json(metrics),
-        "result_path": str(result_path),
-        "report_path": experiment.report_path,
-        "results_root": str(results_root_p),
-        "results_subdir": results_subdir,
-        "state_subdir": state_subdir,
-        "results_dir": str(combo_dir),
-    }
+            "universe_code": universe_code,
+            "status": status,
+            "error": error,
+            "traceback": tb,
+            "params": {
+                "top_pct": TOP_PCT,
+                "decay": decay,
+                "rebalance": rebalance,
+                "universe": universe_name,
+            },
+            "metrics": _clean_json(metrics),
+            "result_path": str(result_path),
+            "report_path": experiment.report_path,
+            "results_root": str(results_root_p),
+            "results_subdir": results_subdir,
+            "state_subdir": state_subdir,
+            "results_dir": str(combo_dir),
+        }
 
-    result_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json(result_path, payload)
-    return payload
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json(result_path, payload)
+        return payload
+    finally:
+        if old_factor_cache is None:
+            os.environ.pop("AQ_FACTOR_CACHE", None)
+        else:
+            os.environ["AQ_FACTOR_CACHE"] = old_factor_cache
+        if old_market_cache is None:
+            os.environ.pop("AQ_MARKET_CACHE", None)
+        else:
+            os.environ["AQ_MARKET_CACHE"] = old_market_cache
 
 
 # ---------------------------------------------------------------------------

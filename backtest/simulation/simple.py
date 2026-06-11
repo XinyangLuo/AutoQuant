@@ -87,14 +87,17 @@ class SimpleSimulator:
         # 5. 按日累加 daily_return[t] = Σ w × r。
         daily_return = np.bincount(t_idx, weights=w * r, minlength=T).astype(float)
 
-        # 6. 累积净值。
+        # 6. signals 的 date 是持仓生效日，returns_wide[t] 是 t -> t+1。
+        #    净值行 date=t 应代表 t 日收盘后的组合状态，因此 t -> t+1
+        #    的收益要体现在下一条净值记录上，首日 NAV 固定为 1.0。
         dr_series = pd.Series(daily_return, index=all_dates)
-        nav_series = cumulate_nav(dr_series)
+        realised_return = dr_series.shift(1).fillna(0.0)
+        nav_series = cumulate_nav(realised_return)
 
         nav_df = pd.DataFrame({
             "date": list(all_dates),
             "nav": nav_series.values,
-            "daily_return": daily_return,
+            "daily_return": realised_return.values,
         })
 
         return BacktestResult(nav_df=nav_df, initial_cash=self.config.initial_cash)

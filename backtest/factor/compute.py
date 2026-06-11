@@ -12,7 +12,7 @@ from backtest.data.storage import MarketStorage
 from backtest.factor.builtin.barra._common import apply_l3_pipeline
 from backtest.factor.registry import get_factor_function, get_factor_meta
 from backtest.factor.storage import FactorLibrary, FactorStorage
-from backtest.factor.transforms import cs_ols_residualize, cs_zscore, industry_median_fill
+from backtest.factor.transforms import cs_ols_residualize, cs_zscore
 from backtest.factor.variants import (
     BARRA_IND_SIZE_VARIANT,
     BARRA_L3_VARIANT,
@@ -38,8 +38,11 @@ def compute_factor(
       4. Return a DataFrame with columns [date, symbol, factor_id, value].
 
     The caller is responsible for writing the result to FactorStorage.
-    Only the raw factor is computed here. To apply the registry-declared
-    neutralization, pass the result to :func:`apply_variant_pipeline`.
+    Only the raw factor is computed here. Backfill/update callers must pass
+    the result to :func:`apply_variant_pipeline`, where the registry-declared
+    variant is applied. For normal user alphas that default variant is
+    ``barra_ind_size`` (industry + Size residualization); ``none`` is only an
+    explicit opt-out for structural factors such as Barra L1 composites.
 
     Fina-heavy factors (Growth / Quality / Value / ...) read PIT snapshots
     via :meth:`MarketStorage.get_fina_snapshot_range` — one range-join SQL
@@ -192,6 +195,9 @@ def apply_variant_pipeline(
 
     The factor's ``variant`` (from registry) selects the pipeline:
 
+    The default registry variant is ``"barra_ind_size"``. ``"none"`` is not
+    the default; it is an explicit opt-out.
+
     * ``"none"`` — pass-through, factor values untouched. Used by Barra L1
       composites (which apply the L3 pipeline to each component internally)
       and by any factor that opts out of post-processing.
@@ -230,18 +236,15 @@ def apply_variant_pipeline(
 
     own_market = market_storage is None
     try:
-        if market_storage is None:
-            market_storage = MarketStorage(read_only=True)
         start = raw_df["date"].min().strftime("%Y%m%d")
         end = raw_df["date"].max().strftime("%Y%m%d")
 
         if variant == NONE_VARIANT:
-            industry_panel = market_storage.get_industry_panel_range(
-                start=start, end=end, level="L1",
-            )
-            series = industry_median_fill(series, industry_panel)
+            pass
 
         elif variant in (BARRA_L3_VARIANT, BARRA_IND_SIZE_VARIANT):
+            if market_storage is None:
+                market_storage = MarketStorage(read_only=True)
             series = apply_l3_pipeline(raw_series, market_storage, start=start, end=end)
 
             if variant == BARRA_IND_SIZE_VARIANT:

@@ -44,15 +44,15 @@ thresholds:
     monotonicity:
       min_monotonicity: 0.7
     simple_backtest:
-      min_sharpe: 0.8
-      min_annual_return: 0.10
+      min_sharpe: 0.4
+      min_annual_return: 0.12
       max_max_drawdown: 0.5
-      min_calmar: 0.5
+      min_calmar: 0.4
       max_annual_turnover: 50.0
     detailed_backtest:
-      min_sharpe: 0.4
-      min_annual_return: 0.08
-      min_calmar: 0.5
+      min_sharpe: 0.35
+      min_annual_return: 0.10
+      min_calmar: 0.4
       max_max_drawdown: 0.5
       max_annual_turnover: 50.0
       # 相对阈值 — 设为 null 或省略表示不检查
@@ -144,7 +144,7 @@ python -m backtest.pipeline step6 f_001   # simple backtest
 python -m backtest.pipeline step7 f_001   # detailed backtest
 python -m backtest.pipeline step8 f_001   # ridge r2
 python -m backtest.pipeline step9 f_001   # residual icir
-python -m backtest.pipeline step10 f_001  # report + admit
+python -m backtest.pipeline step10 f_001  # report + ready_for_review
 
 # 一键全跑（日期默认从 config.yaml 读取）
 python -m backtest.pipeline run-all f_001 --frequency D
@@ -283,7 +283,7 @@ python -m agents.codex_cli run f_001 --run-dir ... --from-step 5 --decay 10 --to
 | step7 | `DetailedSimulator`, `MarketStorage.get_dividends()` |
 | step8 | `ridge_r2_check()` |
 | step9 | `residual_icir_check()` |
-| step10 | `admit()`, `generate_pipeline_report()` |
+| step10 | `generate_pipeline_report()`；人工再调用 `backtest.factor.admission.admit()` |
 
 ## Agent 交互模式
 

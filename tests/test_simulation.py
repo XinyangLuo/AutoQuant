@@ -218,6 +218,45 @@ class TestDividendHandler:
         assert events[0]["type"] == "cash_div"
         assert snapshot.cash == 100500  # 100000 + 1000 * 0.5
 
+    def test_detailed_simulator_syncs_stk_div_avg_cost(self):
+        sim = DetailedSimulator(SimulationConfig(
+            initial_cash=10000,
+            commission_rate=0.0,
+            min_commission=0.0,
+            stamp_duty_rate=0.0,
+            transfer_fee_rate=0.0,
+        ))
+        signals = pd.DataFrame({
+            "date": pd.to_datetime(["2024-06-03"]),
+            "symbol": ["A"],
+            "target_weight": [1.0],
+        })
+        market = pd.DataFrame({
+            "date": pd.to_datetime(["2024-06-03", "2024-06-04"]),
+            "symbol": ["A", "A"],
+            "open": [10.0, 10.0],
+            "high": [10.0, 10.0],
+            "low": [10.0, 10.0],
+            "close": [10.0, 10.0],
+            "volume": [10000, 10000],
+            "limit_up": [11.0, 11.0],
+            "limit_down": [9.0, 9.0],
+        })
+        dividends = pd.DataFrame({
+            "symbol": ["A"],
+            "ex_date": ["20240604"],
+            "pay_date": ["20240610"],
+            "cash_div": [0.0],
+            "stk_div": [1.0],
+        })
+
+        result = sim.run(signals, market, dividends)
+        positions = result.positions_df
+        day2 = positions[positions["date"] == date(2024, 6, 4)].iloc[0]
+
+        assert day2["shares"] == 2000
+        assert day2["avg_cost"] == pytest.approx(5.0)
+
     def test_no_position_no_event(self):
         handler = DividendHandler()
         snapshot = DailySnapshot(

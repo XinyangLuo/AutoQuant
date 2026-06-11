@@ -1,0 +1,4 @@
+interface:
+  display_name: "AutoQuant PDF Hypothesis"
+  short_description: "Extract factors from research PDFs"
+  default_prompt: "Use $pdf-hypothesis to extract factor hypotheses from a research PDF."

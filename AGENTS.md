@@ -130,7 +130,7 @@ DuckDB，三个物理库 + 八张表：
 |---|---|---|---|
 | `data/duckdb/market.duckdb` | `market_daily` | `(date, symbol)` | 日行情，回测主用 |
 | | `income_q` / `balancesheet_q` / `cashflow_q` | `(symbol, end_date, f_ann_date, update_flag, report_type)` | Tushare 原始三表，物理保留所有版本，查询时 `get_fina_snapshot(D)` 按 `f_ann_date <= D` + QUALIFY 取 PIT 快照 |
-| | `dividends` | `(symbol, end_date)` | 仅 `div_proc='实施'` |
+| | `dividends` | `(symbol, end_date, ann_date, ex_date)` | 仅 `div_proc='实施'`，支持同一报告期多次分红 |
 | | `index_daily` | `(date, symbol)` | 6 大宽基指数 |
 | | `index_members` | `(index_code, symbol, trade_date)` | 月度成分股权重 densify 到每个交易日；默认 4 大宽基（HS300/CSI500/CSI1000/CSI2000） |
 | | `sw_industry` | `(symbol, level, industry_code, in_date)` | SW2021 行业归属历史，L1/L2 |
@@ -150,7 +150,7 @@ DuckDB，三个物理库 + 八张表：
 
 总览：[`agents/AGENTS.md`](agents/AGENTS.md)。
 
-**Codex subagent 模式**：不再维护独立的 Python agent 循环。Codex 直接承担决策、代码生成、结果分析。Python 侧只保留最小执行层（`agents/` 的 7 个模块），负责将因子代码送入 backtest 流水线并返回结构化 JSON。
+**Codex subagent 模式**：不再维护独立的 Python agent 循环。Codex 直接承担决策、代码生成、结果分析。Python 侧保留执行层与轻量文件 IPC（CLI、runner、trace、KB、sweep 等），负责将因子代码送入 backtest 流水线并返回结构化 JSON。
 
 交互式因子研究通过 `/factor-iterate` slash command 触发，批量无人值守场景可通过 Codex 的 Agent / Cron 工具编排。
 
@@ -191,7 +191,12 @@ DuckDB，三个物理库 + 八张表：
 ## 10. Codex 协作提示
 
 - **环境**：任何 Python 命令前先 `conda activate AutoQuant`
+- **Superpowers 默认开启**：每次开始 Codex 工作时，先使用已安装的 `using-superpowers` skill 检查适用工作流；如有相关 Superpowers/项目 skill，先读对应 `SKILL.md` 并按其流程执行。用户显式指令优先。
 - **数据获取**：取行情/财务/资金/板块数据时优先用 `tushare-data` skill
+- **项目级技能**：本仓库的 AutoQuant 专用 skills 放在 `.codex/skills/`，随项目版本管理。用户提到 factor iteration / PDF hypothesis / reject factor 等流程时，先读对应 `SKILL.md`：
+  - `.codex/skills/factor-iterate/SKILL.md`
+  - `.codex/skills/pdf-hypothesis/SKILL.md`
+  - `.codex/skills/reject-factor/SKILL.md`
 - **耗时任务**：回测、批量抓取、批量因子计算用 `background exec session` 起背景任务
 - **改动前**：先读对应模块的 `DESIGN.md`，确认接口契约（§8）
 - **文档分层**：`AGENTS.md` 只在项目根 + 大子项目根两级（当前是 `./AGENTS.md` + `backtest/AGENTS.md`）；更深的模块用 `DESIGN.md`，避免自动加载文件过多

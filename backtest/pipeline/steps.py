@@ -1407,6 +1407,7 @@ def run_pipeline(
         state = PipelineState.load(state_path)
         # Update config with any new overrides (e.g. changed start/end dates).
         state.config = config
+        state.clear_from_step(f"step{from_step}")
         if from_step > 5:
             # When resuming from step6+, step5 may have been skipped.
             # Warn if strategy kwargs were provided but step5 won't be re-run.

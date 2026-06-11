@@ -44,6 +44,9 @@ env/
 # Claude Code local
 .claude/settings.local.json
 
+# Local code intelligence indexes
+.codegraph/
+
 # 数据：大文件不入 git，但保留目录结构
 data/duckdb/*
 !data/duckdb/.gitkeep

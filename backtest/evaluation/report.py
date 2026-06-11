@@ -140,6 +140,7 @@ def evaluate(
         # Local import — load_benchmark touches MarketStorage which opens DuckDB.
         from backtest.evaluation.benchmark import (
             _BENCHMARK_ALIASES,
+            align_benchmark,
             compute_benchmark_metrics,
             compute_excess_curve,
             load_benchmark,
@@ -150,6 +151,7 @@ def evaluate(
         for code in all_codes:
             try:
                 nav = load_benchmark(code, start=start_str, end=end_str)
+                align_benchmark(artifacts.nav, nav)
                 alias = _rev_aliases.get(code, code)
                 bench_navs[alias] = nav
                 if code == benchmark:

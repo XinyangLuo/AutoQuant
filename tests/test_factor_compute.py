@@ -263,3 +263,39 @@ class TestApplyVariantPipeline:
         for _, sub in out.groupby("date"):
             assert abs(sub["value"].mean()) < 1e-9
             assert abs(sub["value"].std(ddof=0) - 1.0) < 0.05
+
+    def test_explicit_none_variant_is_pass_through(self):
+        from backtest.factor.compute import apply_variant_pipeline
+        from backtest.factor.registry import register
+        from backtest.factor.variants import DEFAULT_VARIANT, BARRA_IND_SIZE_VARIANT, NONE_VARIANT
+
+        assert DEFAULT_VARIANT == BARRA_IND_SIZE_VARIANT
+
+        @register(
+            "f_none_test",
+            name="none test", category="test",
+            data_sources=["market_daily"],
+            variant=NONE_VARIANT, frequency="D",
+        )
+        def _f(panel):
+            return panel.set_index(["date", "symbol"])["close"]
+
+        raw = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-02"]),
+            "symbol": ["A", "B", "C"],
+            "factor_id": ["f_none_test"] * 3,
+            "value": [1.0, None, 3.0],
+        })
+
+        class _MS:
+            def get_industry_panel_range(self, *args, **kwargs):
+                raise AssertionError("none variant should not read industry data")
+            def close(self):
+                pass
+
+        out = apply_variant_pipeline(raw, "f_none_test", market_storage=_MS())
+
+        assert out[["symbol", "value"]].to_dict("records") == [
+            {"symbol": "A", "value": 1.0},
+            {"symbol": "C", "value": 3.0},
+        ]

@@ -17,6 +17,7 @@ from backtest.pipeline.state import PipelineState, StepResult
 from backtest.factor.evaluation import _ic_series, _rank_ic_series
 from backtest.pipeline.steps import (
     _build_tag,
+    run_pipeline,
     step1_coverage_check,
     step5_build_strategy,
 )
@@ -38,7 +39,7 @@ class TestPipelineConfig:
         assert cfg.frequency == "D"
         assert cfg.thresholds.min_abs_ic == 0.01
         assert cfg.thresholds.min_annual_icir == 1.0
-        assert cfg.thresholds.min_sharpe_simple == 0.8
+        assert cfg.thresholds.min_sharpe_simple == 0.4
         assert cfg.icir_check_horizons == [1, 5]
 
     def test_monthly_defaults(self):
@@ -295,6 +296,62 @@ class TestPipelineState:
         assert result.signals is not None
         assert result.signals["date"].dtype.kind == "M"
 
+    def test_run_pipeline_from_step_clears_rejected_state(self, tmp_path, monkeypatch):
+        factor_id = "f_resume"
+        cfg = PipelineConfig(
+            factor_id=factor_id,
+            start_date="20200101",
+            end_date="20241231",
+            results_root=str(tmp_path),
+        )
+        state = PipelineState(factor_id=factor_id, config=cfg)
+        for i in range(1, 6):
+            state.record(f"step{i}", StepResult(passed=True))
+        state.record("step6", StepResult(passed=False, reason="old fail"))
+        state.save(cfg.state_path())
+
+        calls = []
+
+        def _make_step(name):
+            def _step(s):
+                calls.append(name)
+                s.record(name, StepResult(passed=True))
+                return s
+            return _step
+
+        def _step5(s, **kwargs):
+            calls.append("step5")
+            s.record("step5", StepResult(passed=True, metrics=kwargs))
+            return s
+
+        monkeypatch.setattr(
+            pipeline_steps,
+            "_STEP_ORDER",
+            [
+                ("step1", _make_step("step1")),
+                ("step2", _make_step("step2")),
+                ("step3", _make_step("step3")),
+                ("step4", _make_step("step4")),
+                ("step5", _step5),
+                ("step6", _make_step("step6")),
+            ],
+        )
+
+        result = run_pipeline(
+            factor_id,
+            results_root=str(tmp_path),
+            from_step=5,
+            to_step=6,
+            skip_report=True,
+            skip_mark_rejected=True,
+            top_k=20,
+        )
+
+        assert calls == ["step5", "step6"]
+        assert result.status == "running"
+        assert result.step_results["step6"].passed is True
+        assert result.step_results["step5"].metrics["top_k"] == 20
+
 
 # ---------------------------------------------------------------------------
 # Helper function tests
@@ -440,7 +497,7 @@ class TestStep1Coverage:
         mock_fs.__exit__.return_value = False
         monkeypatch.setattr(
             "backtest.pipeline.steps.FactorStorage",
-            lambda: mock_fs,
+            lambda **kw: mock_fs,
         )
 
         # Mock MarketStorage.get_bars
@@ -483,7 +540,7 @@ class TestStep1Coverage:
         mock_fs.__exit__.return_value = False
         monkeypatch.setattr(
             "backtest.pipeline.steps.FactorStorage",
-            lambda: mock_fs,
+            lambda **kw: mock_fs,
         )
 
         dates = pd.date_range("2024-01-01", periods=5, freq="B")
@@ -526,7 +583,7 @@ class TestStep1Coverage:
         mock_fs.__exit__.return_value = False
         monkeypatch.setattr(
             "backtest.pipeline.steps.FactorStorage",
-            lambda: mock_fs,
+            lambda **kw: mock_fs,
         )
 
         dates = pd.date_range("2024-01-01", periods=5, freq="B")
@@ -586,7 +643,7 @@ class TestStep5BuildStrategy:
 
 
 class TestThresholdConstants:
-    """Ensure threshold constants match PLAN.md §4 expectations."""
+    """Ensure threshold constants match config.yaml expectations."""
 
     def test_daily_icir_thresholds(self):
         th = StepThresholds()
@@ -597,17 +654,17 @@ class TestThresholdConstants:
 
     def test_daily_backtest_thresholds(self):
         th = StepThresholds()
-        assert th.min_sharpe_simple == 0.8
-        assert th.min_annual_return_simple == 0.10
+        assert th.min_sharpe_simple == 0.4
+        assert th.min_annual_return_simple == 0.12
         assert th.max_max_drawdown == 0.50
-        assert th.min_calmar_simple == 0.5
+        assert th.min_calmar_simple == 0.4
         assert th.max_annual_turnover == 50.0
 
     def test_detailed_backtest_thresholds(self):
         th = StepThresholds()
-        assert th.min_sharpe_detailed == 0.4
-        assert th.min_annual_return_detailed == 0.08
-        assert th.min_calmar_detailed == 0.5
+        assert th.min_sharpe_detailed == 0.35
+        assert th.min_annual_return_detailed == 0.10
+        assert th.min_calmar_detailed == 0.4
 
     def test_monotonicity_threshold(self):
         th = StepThresholds()

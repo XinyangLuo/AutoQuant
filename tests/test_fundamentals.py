@@ -46,10 +46,12 @@ def check_row(db_row: pd.Series, api_df: pd.DataFrame, numeric_cols: list[str]) 
     if api_df.empty:
         return ["API returned no data"]
 
-    # Keep only consolidated statements
-    api_df = api_df[api_df.get("report_type", "1").astype(str) == "1"]
+    # Match the same report_type as the DB row; production storage keeps
+    # Tushare's multiple statement report types instead of collapsing to 1.
+    report_type = str(db_row.get("report_type", "1"))
+    api_df = api_df[api_df.get("report_type", "1").astype(str) == report_type]
     if api_df.empty:
-        return ["API returned no consolidated (report_type=1) rows"]
+        return [f"API returned no report_type={report_type} rows"]
 
     match = api_df[
         (api_df["f_ann_date"] == db_row["f_ann_date"])
@@ -86,7 +88,7 @@ def sample_table(conn, table: str, numeric_cols: list[str], n: int) -> pd.DataFr
         return pd.DataFrame()
 
 
-def test_table(conn, table: str, label: str, api_func, numeric_cols: list[str], n: int) -> tuple[int, int, list]:
+def verify_table(conn, table: str, label: str, api_func, numeric_cols: list[str], n: int) -> tuple[int, int, list]:
     """Sample *n* rows from *table* and verify against *api_func*."""
     sample = sample_table(conn, table, numeric_cols, n)
     if sample.empty:
@@ -138,7 +140,7 @@ def main():
     all_failures = []
 
     for table, label, api_func, numeric_cols in configs:
-        passed, failed, failures = test_table(conn, table, label, api_func, numeric_cols, args.n)
+        passed, failed, failures = verify_table(conn, table, label, api_func, numeric_cols, args.n)
         total_passed += passed
         total_failed += failed
         all_failures.extend(failures)
