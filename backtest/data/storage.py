@@ -270,6 +270,39 @@ CREATE TABLE IF NOT EXISTS index_daily (
 """
 
 # ---------------------------------------------------------------------------
+# Schema: stock_auction_open / stock_auction_close
+# ---------------------------------------------------------------------------
+# Tushare pro.stk_auction_o / pro.stk_auction_c expose opening and closing
+# call-auction OHLCV. They are stored outside market_daily because their
+# semantics and availability differ from full-day OHLCV.
+# ---------------------------------------------------------------------------
+
+STOCK_AUCTION_COLUMNS = [
+    "date", "symbol",
+    "open", "high", "low", "close",
+    "volume", "amount", "vwap",
+]
+
+_STOCK_AUCTION_COL_DEFS = ",\n    ".join(
+    f"{c:8s} DOUBLE" for c in STOCK_AUCTION_COLUMNS[2:]
+)
+
+
+def _stock_auction_schema(table: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS {table} (
+    date      DATE,
+    symbol    VARCHAR,
+    {_STOCK_AUCTION_COL_DEFS},
+    PRIMARY KEY (date, symbol)
+)
+"""
+
+
+STOCK_AUCTION_OPEN_SCHEMA = _stock_auction_schema("stock_auction_open")
+STOCK_AUCTION_CLOSE_SCHEMA = _stock_auction_schema("stock_auction_close")
+
+# ---------------------------------------------------------------------------
 # Schema: sw_industry (申万行业归属历史, SW2021 体系)
 # ---------------------------------------------------------------------------
 # 同一 (symbol, level) 在不同时段可能属于不同行业,也可能多次进出同一行业。
@@ -366,6 +399,8 @@ class MarketStorage:
         self.conn.execute(CASHFLOW_SCHEMA)
         self.conn.execute(DIVIDEND_SCHEMA)
         self.conn.execute(INDEX_DAILY_SCHEMA)
+        self.conn.execute(STOCK_AUCTION_OPEN_SCHEMA)
+        self.conn.execute(STOCK_AUCTION_CLOSE_SCHEMA)
         self.conn.execute(SW_INDUSTRY_SCHEMA)
         self.conn.execute(INDEX_MEMBERS_SCHEMA)
         self.conn.execute(TRADE_CALENDAR_SCHEMA)
@@ -506,6 +541,13 @@ class MarketStorage:
     def get_max_date(self) -> str | None:
         """Return max date in market_daily as YYYYMMDD, or None if empty."""
         result = self.conn.execute("SELECT MAX(date) FROM market_daily").fetchone()
+        if result[0]:
+            return result[0].strftime("%Y%m%d")
+        return None
+
+    def get_min_date(self) -> str | None:
+        """Return min date in market_daily as YYYYMMDD, or None if empty."""
+        result = self.conn.execute("SELECT MIN(date) FROM market_daily").fetchone()
         if result[0]:
             return result[0].strftime("%Y%m%d")
         return None
@@ -1213,6 +1255,118 @@ class MarketStorage:
             ORDER BY date, symbol
         """
         return self.conn.execute(sql, params).fetchdf()
+
+    # -- stock call auction --------------------------------------------------
+
+    def _insert_stock_auction(self, df: pd.DataFrame, *, table: str) -> None:
+        self._upsert(
+            df,
+            table=table,
+            pk_cols=("date", "symbol"),
+            schema_cols=STOCK_AUCTION_COLUMNS,
+        )
+
+    def insert_stock_auction_open(self, df: pd.DataFrame) -> None:
+        self._insert_stock_auction(df, table="stock_auction_open")
+
+    def insert_stock_auction_close(self, df: pd.DataFrame) -> None:
+        self._insert_stock_auction(df, table="stock_auction_close")
+
+    def _get_max_stock_auction_date(self, table: str) -> str | None:
+        row = self.conn.execute(f"SELECT MAX(date) FROM {table}").fetchone()
+        if row and row[0]:
+            return row[0].strftime("%Y%m%d")
+        return None
+
+    def get_max_stock_auction_open_date(self) -> str | None:
+        return self._get_max_stock_auction_date("stock_auction_open")
+
+    def get_max_stock_auction_close_date(self) -> str | None:
+        return self._get_max_stock_auction_date("stock_auction_close")
+
+    def _get_stock_auction(
+        self,
+        *,
+        table: str,
+        date: str | None = None,
+        symbols: list[str] | str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        if isinstance(symbols, str):
+            symbols = [symbols]
+
+        if date:
+            start = date
+            end = date
+
+        if columns:
+            cols_sql = ", ".join(
+                f'"{c}"' for c in columns if c in STOCK_AUCTION_COLUMNS
+            )
+        else:
+            cols_sql = ", ".join(
+                f'"{c}"' for c in STOCK_AUCTION_COLUMNS if c not in ("date", "symbol")
+            )
+
+        conditions: list[str] = []
+        params: list = []
+        if start:
+            conditions.append("date >= strptime(?, '%Y%m%d')::DATE")
+            params.append(start)
+        if end:
+            conditions.append("date <= strptime(?, '%Y%m%d')::DATE")
+            params.append(end)
+        if symbols:
+            placeholders = ", ".join("?" for _ in symbols)
+            conditions.append(f"symbol IN ({placeholders})")
+            params.extend(symbols)
+
+        where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
+        sql = f"""
+            SELECT date, symbol, {cols_sql}
+            FROM {table}
+            {where_clause}
+            ORDER BY date, symbol
+        """
+        return self.conn.execute(sql, params).fetchdf()
+
+    def get_stock_auction_open(
+        self,
+        *,
+        date: str | None = None,
+        symbols: list[str] | str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        return self._get_stock_auction(
+            table="stock_auction_open",
+            date=date,
+            symbols=symbols,
+            start=start,
+            end=end,
+            columns=columns,
+        )
+
+    def get_stock_auction_close(
+        self,
+        *,
+        date: str | None = None,
+        symbols: list[str] | str | None = None,
+        start: str | None = None,
+        end: str | None = None,
+        columns: list[str] | None = None,
+    ) -> pd.DataFrame:
+        return self._get_stock_auction(
+            table="stock_auction_close",
+            date=date,
+            symbols=symbols,
+            start=start,
+            end=end,
+            columns=columns,
+        )
 
     # -- sw_industry ----------------------------------------------------------
 

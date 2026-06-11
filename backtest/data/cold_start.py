@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
 One-button cold start: backfill market_daily, fundamentals (income /
-balancesheet / cashflow), dividends, benchmark indices, index members, and
-SW industry mapping from scratch.
+balancesheet / cashflow), stock auction, dividends, benchmark indices, index
+members, and SW industry mapping from scratch.
 
 Phases run sequentially under one DB connection:
   0. trade_calendar — Tushare full calendar with week/month boundary flags
   1. market_daily   — per trade date OHLCV + adj + ST + limit + basic + margin + moneyflow
-  2. fundamentals   — per symbol full quarterly history (3 tables)
-  3. dividends      — per symbol full dividend history
-  4. index_daily    — per-index full OHLCV (CSI 300 / 500 / 1000 / 2000 / SSE / ChiNext)
-  5. index_members  — per-index monthly weight snapshots densified to trade dates
-  6. sw_industry    — SW2021 L1 + L2 industry membership
+  2. stock_auction  — opening and closing call-auction OHLCV
+  3. fundamentals   — per symbol full quarterly history (3 tables)
+  4. dividends      — per symbol full dividend history
+  5. index_daily    — per-index full OHLCV (CSI 300 / 500 / 1000 / 2000 / SSE / ChiNext)
+  6. index_members  — per-index monthly weight snapshots densified to trade dates
+  7. sw_industry    — SW2021 L1 + L2 industry membership
 
 All phases are resumable: rows already in DB are skipped.
 
@@ -38,6 +39,7 @@ from backtest.data.backfill.indices import (
     DEFAULT_INDICES as INDICES_DEFAULT,
     backfill_indices,
 )
+from backtest.data.backfill.stock_auction import backfill_stock_auction
 from backtest.data.backfill.sw_industry import backfill_sw_industry
 from backtest.data.backfill_trade_calendar import backfill_trade_calendar
 from backtest.data.fetcher.daily_fetcher import build_list_date_map, process_trade_date
@@ -117,28 +119,39 @@ def main():
         cold_start_market_daily(storage, stock_list=stock_list, recent_days=args.recent_days)
 
         if test_mode:
-            print("\n(test mode: skipping fina + dividends)")
+            print("\n(test mode: skipping stock_auction + fina + dividends + slow tables)")
             return
 
-        print("\n=== Phase 2: income + balancesheet + cashflow ===")
+        print("\n=== Phase 2: stock_auction ===")
+        counts = backfill_stock_auction(
+            storage=storage,
+            start=earliest_list_date,
+            end=today,
+        )
+        print(
+            "stock_auction: "
+            + ", ".join(f"{session}={rows:,}" for session, rows in counts.items())
+        )
+
+        print("\n=== Phase 3: income + balancesheet + cashflow ===")
         backfill_fundamentals(storage, stock_list=stock_list)
         for name in ("income_q", "balancesheet_q", "cashflow_q"):
             print_stats(name, storage.get_fundamentals_stats(name), date_col="f_ann_date", prefix="f_ann ")
 
-        print("\n=== Phase 3: dividends ===")
+        print("\n=== Phase 4: dividends ===")
         backfill_dividends(storage, stock_list=stock_list)
         print_stats("dividends", storage.get_dividend_stats(), prefix="ann ")
 
-        print("\n=== Phase 4: index_daily ===")
+        print("\n=== Phase 5: index_daily ===")
         backfill_indices(INDICES_DEFAULT)
 
-        print("\n=== Phase 5: index_members ===")
+        print("\n=== Phase 6: index_members ===")
         backfill_index_members(INDEX_MEMBERS_DEFAULT)
 
-        print("\n=== Phase 6: sw_industry ===")
+        print("\n=== Phase 7: sw_industry ===")
         backfill_sw_industry(["L1", "L2"])
 
-        print("\n=== Phase 7: cyq_chips ===")
+        print("\n=== Phase 8: cyq_chips ===")
         backfill_cyq_chips(
             symbols=stock_list["ts_code"].tolist(),
             start_date=earliest_list_date,

@@ -9,7 +9,7 @@
 ## 数据流
 
 ```
-market_daily / income_q / balancesheet_q / cashflow_q
+market_daily / stock_auction_open / stock_auction_close / income_q / balancesheet_q / cashflow_q
     ↓
 因子模块（因子定义、计算、登记、静态评估）
     ↓
@@ -24,7 +24,7 @@ market_daily / income_q / balancesheet_q / cashflow_q
 
 | 流向 | 提供方 | 消费方 | 形式 | 要点 |
 |---|---|---|---|---|
-| 原始数据 | 数据模块 | 因子/策略/引擎 | Python API (`get_panel` / `get_bars` / `get_fina_snapshot`) | 数据模块不感知上层逻辑 |
+| 原始数据 | 数据模块 | 因子/策略/引擎 | Python API (`get_panel` / `get_bars` / `get_stock_auction_open` / `get_stock_auction_close` / `get_fina_snapshot`) | 数据模块不感知上层逻辑 |
 | 因子宽表 | 因子模块 | 策略模块 | DataFrame `(date, symbol, f1, f2, ...)` | 策略只读因子值，不做计算 |
 | 目标持仓 | 策略模块 | 回测引擎 | DataFrame `(date, symbol, target_weight)` | 策略不关心成交细节 |
 | 交易日志 | 回测引擎 | 评测模块 | `trades.parquet` / `positions.parquet` / `nav.parquet` / `metrics.parquet` | 评测纯消费，不修改 |

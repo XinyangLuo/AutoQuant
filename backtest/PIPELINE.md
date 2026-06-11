@@ -721,6 +721,7 @@ conda activate AutoQuant
 # === 数据 ===
 python -m backtest.data.cold_start                       # 一键全量初始化
 python -m backtest.data.update_daily                     # 日更
+python -m backtest.data.backfill.stock_auction --start 20240101 --end 20240131  # 集合竞价回补
 
 # === 自动化流水线 ===
 python -m backtest.pipeline run-all f_xxx                # step1~step10 一键

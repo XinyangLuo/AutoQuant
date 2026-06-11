@@ -14,6 +14,9 @@ from backtest.data.fetcher.daily_fetcher import (
     merge_st_status,
     transform_daily,
 )
+from backtest.data.fetcher.auction_fetcher import transform_stock_auction
+from backtest.data.backfill.stock_auction import backfill_stock_auction
+from backtest.data.tushare_client import _find_project_root
 from backtest.data.storage import MarketStorage
 
 
@@ -47,6 +50,13 @@ def _meta(
         "end_type": "1",
         "update_flag": update_flag,
     }
+
+
+def test_tushare_client_finds_worktree_project_root():
+    root = _find_project_root()
+
+    assert (root / "AGENTS.md").exists()
+    assert (root / "environment.yml").exists()
 
 
 class TestMarketStorageFundamentals:
@@ -258,3 +268,199 @@ class TestDailyFetcherMerge:
         assert row1["mf_net_mf_vol"] == 500
         assert row1["mf_net_mf_amount"] == pytest.approx(60_000.0)
         assert pd.isna(row2["limit_up"])
+
+
+class TestAuctionData:
+    def test_transform_stock_auction_normalizes_fields_and_units(self):
+        raw = pd.DataFrame(
+            {
+                "trade_date": ["20240102", "20240102"],
+                "ts_code": ["000001.SZ", "000002.SZ"],
+                "open": [10.0, 20.0],
+                "high": [10.2, 20.2],
+                "low": [9.9, 19.9],
+                "close": [10.1, 20.1],
+                "vol": [12.0, 34.5],
+                "amount": [56.0, 78.25],
+                "vwap": [10.05, 20.05],
+            }
+        )
+
+        df = transform_stock_auction(raw)
+
+        assert df.columns.tolist() == [
+            "date", "symbol", "open", "high", "low", "close",
+            "volume", "amount", "vwap",
+        ]
+        assert df.iloc[0]["date"].strftime("%Y%m%d") == "20240102"
+        assert df.iloc[0]["symbol"] == "000001.SZ"
+        assert df.iloc[0]["volume"] == 12
+        assert df.iloc[1]["volume"] == pytest.approx(34.5)
+        assert df.iloc[0]["amount"] == pytest.approx(56.0)
+        assert df.iloc[1]["amount"] == pytest.approx(78.25)
+
+    def test_storage_upserts_and_queries_open_and_close_auction(self, tmp_market_storage):
+        storage = tmp_market_storage
+        open_df = pd.DataFrame(
+            {
+                "date": pd.to_datetime(["2024-01-02", "2024-01-02"]).date,
+                "symbol": ["000001.SZ", "000002.SZ"],
+                "open": [10.0, 20.0],
+                "high": [10.2, 20.2],
+                "low": [9.9, 19.9],
+                "close": [10.1, 20.1],
+                "volume": [1_200, 3_400],
+                "amount": [56_000.0, 78_000.0],
+                "vwap": [10.05, 20.05],
+            }
+        )
+        close_df = open_df.assign(close=[10.3, 20.3], vwap=[10.15, 20.15])
+
+        storage.insert_stock_auction_open(open_df)
+        storage.insert_stock_auction_close(close_df)
+        storage.insert_stock_auction_open(
+            pd.DataFrame(
+                {
+                    "date": pd.to_datetime(["2024-01-02"]).date,
+                    "symbol": ["000001.SZ"],
+                    "close": [10.11],
+                    "volume": [1_300],
+                }
+            )
+        )
+
+        open_rows = storage.get_stock_auction_open(
+            start="20240102", end="20240102", symbols=["000001.SZ"]
+        )
+        close_rows = storage.get_stock_auction_close(date="20240102")
+
+        assert len(open_rows) == 1
+        assert open_rows.iloc[0]["close"] == pytest.approx(10.11)
+        assert open_rows.iloc[0]["volume"] == 1_300
+        assert open_rows.iloc[0]["amount"] == pytest.approx(56_000.0)
+        assert len(close_rows) == 2
+        assert storage.get_max_stock_auction_open_date() == "20240102"
+        assert storage.get_max_stock_auction_close_date() == "20240102"
+
+    def test_backfill_stock_auction_writes_requested_sessions(
+        self, tmp_market_storage, monkeypatch
+    ):
+        import backtest.data.backfill.stock_auction as module
+
+        calls = []
+
+        def fake_trade_dates(start: str, end: str) -> list[str]:
+            assert start == "20240102"
+            assert end == "20240103"
+            return ["20240102", "20240103"]
+
+        def fake_fetch_open(trade_date: str) -> pd.DataFrame:
+            calls.append(("open", trade_date))
+            return pd.DataFrame(
+                {
+                    "date": pd.to_datetime([trade_date], format="%Y%m%d").date,
+                    "symbol": ["000001.SZ"],
+                    "volume": [100],
+                    "amount": [1_000.0],
+                }
+            )
+
+        def fake_fetch_close(trade_date: str) -> pd.DataFrame:
+            calls.append(("close", trade_date))
+            return pd.DataFrame(
+                {
+                    "date": pd.to_datetime([trade_date], format="%Y%m%d").date,
+                    "symbol": ["000001.SZ"],
+                    "volume": [200],
+                    "amount": [2_000.0],
+                }
+            )
+
+        monkeypatch.setattr(module, "get_trade_dates", fake_trade_dates)
+        monkeypatch.setattr(module, "fetch_stock_auction_open", fake_fetch_open)
+        monkeypatch.setattr(module, "fetch_stock_auction_close", fake_fetch_close)
+
+        counts = backfill_stock_auction(
+            storage=tmp_market_storage,
+            start="20240102",
+            end="20240103",
+        )
+
+        assert calls == [
+            ("open", "20240102"),
+            ("close", "20240102"),
+            ("open", "20240103"),
+            ("close", "20240103"),
+        ]
+        assert counts == {"open": 2, "close": 2}
+        assert len(tmp_market_storage.get_stock_auction_open()) == 2
+        assert len(tmp_market_storage.get_stock_auction_close()) == 2
+
+    def test_update_stock_auction_uses_independent_session_watermarks(
+        self, monkeypatch
+    ):
+        from datetime import datetime
+        import backtest.data.update_daily as module
+
+        calls = []
+
+        class FakeDatetime(datetime):
+            @classmethod
+            def now(cls):
+                return cls(2024, 1, 7)
+
+        class FakeStorage:
+            def get_max_stock_auction_open_date(self):
+                return "20240105"
+
+            def get_max_stock_auction_close_date(self):
+                return None
+
+            def get_min_date(self):
+                return "20240101"
+
+        def fake_backfill_stock_auction(*, storage, start, end, sessions):
+            calls.append((start, end, tuple(sessions)))
+            return {session: 1 for session in sessions}
+
+        monkeypatch.setattr(module, "datetime", FakeDatetime)
+        monkeypatch.setattr(module, "backfill_stock_auction", fake_backfill_stock_auction)
+
+        module.update_stock_auction(FakeStorage())
+
+        assert calls == [
+            ("20240106", "20240107", ("open",)),
+            ("20240101", "20240107", ("close",)),
+        ]
+
+    def test_cold_start_recent_days_skips_stock_auction(
+        self, tmp_market_storage, monkeypatch
+    ):
+        import sys
+        import backtest.data.cold_start as module
+
+        calls = []
+        stock_list = pd.DataFrame(
+            {"ts_code": ["000001.SZ"], "list_date": ["20200101"]}
+        )
+
+        monkeypatch.setattr(sys, "argv", ["cold_start", "--recent-days", "1"])
+        monkeypatch.setattr(module, "fetch_stock_list", lambda: stock_list)
+        monkeypatch.setattr(module, "MarketStorage", lambda: tmp_market_storage)
+        monkeypatch.setattr(module, "backfill_trade_calendar", lambda **kwargs: 1)
+        monkeypatch.setattr(
+            module,
+            "cold_start_market_daily",
+            lambda storage, *, stock_list, recent_days=None: calls.append(
+                ("market_daily", recent_days)
+            ),
+        )
+        monkeypatch.setattr(
+            module,
+            "backfill_stock_auction",
+            lambda **kwargs: calls.append(("stock_auction", kwargs)),
+        )
+
+        module.main()
+
+        assert calls == [("market_daily", 1)]

@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Incremental update for market_daily, income/balancesheet/cashflow, dividends,
-index_daily, and index_members.
+Incremental update for market_daily, stock auction, income/balancesheet/cashflow,
+dividends, index_daily, and index_members.
 
 Phases run sequentially under one DB connection:
   0. trade_calendar — append from MAX(cal_date)+1 to today
   1. market_daily   — from MAX(date)+1 to today, per trade date
-  2. fundamentals   — from MAX(f_ann_date) to today, per table (income / balancesheet / cashflow)
-  3. dividends      — from MAX(ann_date) to today, per trade date by ann_date
-  4. index_daily    — per-index MAX(date)+1 → today (benchmark OHLCV)
-  5. index_members  — per-index MAX(trade_date)+1 → today (densified monthly snapshots)
+  2. stock_auction  — open/close each from own MAX(date)+1 to today
+  3. fundamentals   — from MAX(f_ann_date) to today, per table (income / balancesheet / cashflow)
+  4. dividends      — from MAX(ann_date) to today, per trade date by ann_date
+  5. index_daily    — per-index MAX(date)+1 → today (benchmark OHLCV)
+  6. index_members  — per-index MAX(trade_date)+1 → today (densified monthly snapshots)
 
 ``sw_industry`` is a slow-moving table (industry assignments change rarely)
 and ``backfill/sw_industry.py`` does a full rebuild, so it is excluded from
@@ -27,6 +28,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from backtest.data._pipeline import update_by_ann_date
+from backtest.data.backfill.stock_auction import backfill_stock_auction
 from backtest.data.backfill.index_members import (
     DEFAULT_INDICES as INDEX_MEMBERS_DEFAULT,
     backfill_index_members,
@@ -122,6 +124,41 @@ def update_dividends(storage: MarketStorage) -> None:
     )
 
 
+def update_stock_auction(storage: MarketStorage) -> None:
+    """Incrementally update opening and closing call-auction tables."""
+    today = datetime.now().strftime("%Y%m%d")
+    min_market = storage.get_min_date()
+    if min_market is None:
+        print("stock_auction: market_daily is empty. Run cold_start first.")
+        return
+
+    configs = [
+        ("open", storage.get_max_stock_auction_open_date()),
+        ("close", storage.get_max_stock_auction_close_date()),
+    ]
+    counts: dict[str, int] = {}
+    for session, max_date in configs:
+        start = _next_day(max_date) if max_date else min_market
+        if start > today:
+            counts[session] = 0
+            continue
+        result = backfill_stock_auction(
+            storage=storage,
+            start=start,
+            end=today,
+            sessions=[session],
+        )
+        counts.update(result)
+
+    if all(v == 0 for v in counts.values()):
+        print("stock_auction: already up to date.")
+    else:
+        print(
+            "stock_auction: "
+            + ", ".join(f"{session}={rows:,}" for session, rows in counts.items())
+        )
+
+
 def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -150,26 +187,29 @@ def main(argv: list[str] | None = None):
         print("\n=== Phase 1: market_daily ===")
         update_market_daily(storage, stock_list=stock_list)
 
-        print("\n=== Phase 2: income + balancesheet + cashflow ===")
+        print("\n=== Phase 2: stock_auction ===")
+        update_stock_auction(storage)
+
+        print("\n=== Phase 3: income + balancesheet + cashflow ===")
         update_fundamentals(storage)
 
-        print("\n=== Phase 3: dividends ===")
+        print("\n=== Phase 4: dividends ===")
         update_dividends(storage)
 
-        print("\n=== Phase 4: index_daily ===")
+        print("\n=== Phase 5: index_daily ===")
         backfill_indices(INDICES_DEFAULT)
 
-        print("\n=== Phase 5: index_members ===")
+        print("\n=== Phase 6: index_members ===")
         backfill_index_members(INDEX_MEMBERS_DEFAULT)
 
-        print("\n=== Phase 6: cyq_chips ===")
+        print("\n=== Phase 7: cyq_chips ===")
         backfill_cyq_chips(
             symbols=stock_list["ts_code"].tolist(),
             sleep_sec=0.01,
         )
 
         if args.include_sw_industry:
-            print("\n=== Phase 7: sw_industry (full rebuild) ===")
+            print("\n=== Phase 8: sw_industry (full rebuild) ===")
             backfill_sw_industry(["L1", "L2"])
 
     print("\n" + "=" * 50)

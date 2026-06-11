@@ -1,5 +1,9 @@
 """Tushare data fetchers."""
 
+from backtest.data.fetcher.auction_fetcher import (
+    fetch_stock_auction_close,
+    fetch_stock_auction_open,
+)
 from backtest.data.fetcher.daily_fetcher import (
     fetch_adj_factor,
     fetch_daily,
