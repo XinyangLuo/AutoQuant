@@ -64,6 +64,21 @@
 - **后缀注意**：中证 2000 走 `.CSI`(中证指数公司),Tushare `pro.index_daily` 原生支持
 - **查询路径**:`get_index_bars(symbols, start, end)`(签名同 `get_bars`,读 `index_daily` 表)
 
+### `stock_auction_open` / `stock_auction_close`（股票集合竞价）
+
+- **数据源**：Tushare `pro.stk_auction_o`（开盘集合竞价，9:30 口径）/ `pro.stk_auction_c`（收盘集合竞价，15:00 口径）
+- **Schema**：`(date DATE, symbol VARCHAR, open / high / low / close / volume / amount / vwap DOUBLE)`
+- **主键**：`(date, symbol)`
+- **单位约定**：Tushare `vol` 为股、`amount` 为元；入库只做列名标准化，不做单位缩放。
+- **存储边界**：不扩入 `market_daily`。集合竞价是独立微观结构数据，来源、可用性和语义都不同于全日 OHLCV。
+- **入库脚本**：
+  - `python -m backtest.data.backfill.stock_auction --start 20240101 --end 20240131`
+  - `python -m backtest.data.backfill.stock_auction --start 20240101 --sessions open`
+- **日更**：`update_daily.py` Phase 2 调用 `backfill_stock_auction()`，按 `stock_auction_open` / `stock_auction_close` 各自水位分别补到今天；某一侧为空时从 `market_daily` 最早日期开始补。
+- **查询路径**：
+  - `get_stock_auction_open(date="20240102", symbols=[...])`
+  - `get_stock_auction_close(start="20240101", end="20240131", columns=[...])`
+
 ### `sw_industry`(申万行业归属历史, SW2021 体系)
 
 - **数据源**：Tushare `pro.index_classify`(行业代码 → 名称映射) + `pro.index_member`(成分股历史,**注意不是 `pro.index_member_all`** —— 后者只返回当前归属,丢失历史)
@@ -233,6 +248,7 @@ pro.income / pro.balancesheet / pro.cashflow
 | 表 | 增量方式 | 对齐依据 |
 |---|---|---|
 | `market_daily` | 按交易日历，从 `MAX(date)+1` 开始 | 交易日历 |
+| `stock_auction_open` / `stock_auction_close` | 按交易日历，两表各自从 `MAX(date)+1` 开始；空表从 `market_daily.MIN(date)` 开始 | 交易日历 |
 | `income_q` / `balancesheet_q` / `cashflow_q` | 按 `f_ann_date` 游标，从 `MAX(f_ann_date)` 起扫到今天 | 实际见报日（含修正） |
 | `dividends` | 每日查 `ex_date=today` 和 `ann_date=today` | 除权日/公告日 |
 | `index_daily` | 按 `(symbol, MAX(date)+1)` 起增量(per symbol) | 各指数自身最大日 |

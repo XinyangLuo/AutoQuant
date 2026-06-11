@@ -1,5 +1,6 @@
 """Tushare Pro API client with retry and rate limiting."""
 
+import os
 import time
 from pathlib import Path
 
@@ -8,10 +9,12 @@ import tushare as ts
 
 
 def _find_project_root() -> Path:
-    """Walk up from this file until we find the project root (contains .env)."""
+    """Walk up from this file until we find the project root."""
     p = Path(__file__).resolve()
     while p != p.parent:
-        if (p / ".env").exists():
+        if (p / ".env").exists() or (
+            (p / "AGENTS.md").exists() and (p / "environment.yml").exists()
+        ):
             return p
         p = p.parent
     raise RuntimeError("Project root not found")
@@ -22,8 +25,11 @@ _ENV_PATH = _PROJECT_ROOT / ".env"
 
 
 def _load_token() -> str:
+    env_token = os.getenv("TUSHARE_TOKEN")
+    if env_token:
+        return env_token
     if not _ENV_PATH.exists():
-        raise FileNotFoundError(f"{_ENV_PATH} not found")
+        return ""
     for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if line.startswith("TUSHARE_TOKEN="):

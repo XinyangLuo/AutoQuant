@@ -46,6 +46,7 @@ FEISHU_WEBHOOK=...       # 飞书推送（TBD）
 # 数据
 python -m backtest.data.cold_start                       # 一键全量初始化
 python -m backtest.data.update_daily                     # 日更（所有表）
+python -m backtest.data.backfill.stock_auction --start 20240101 --end 20240131  # 集合竞价回补
 
 # 因子 → 回测 → 入库
 python -m backtest.factor.backfill f_xxx                 # 回填因子到 work DB
@@ -133,6 +134,7 @@ DuckDB，三个物理库 + 八张表：
 | | `income_q` / `balancesheet_q` / `cashflow_q` | `(symbol, end_date, f_ann_date, update_flag, report_type)` | Tushare 原始三表，物理保留所有版本，查询时 `get_fina_snapshot(D)` 按 `f_ann_date <= D` + QUALIFY 取 PIT 快照 |
 | | `dividends` | `(symbol, end_date, ann_date, ex_date)` | 仅 `div_proc='实施'`，支持同一报告期多次分红 |
 | | `index_daily` | `(date, symbol)` | 6 大宽基指数 |
+| | `stock_auction_open` / `stock_auction_close` | `(date, symbol)` | 开盘/收盘集合竞价 OHLCV，来自 Tushare `stk_auction_o/c` |
 | | `index_members` | `(index_code, symbol, trade_date)` | 月度成分股权重 densify 到每个交易日；默认 4 大宽基（HS300/CSI500/CSI1000/CSI2000） |
 | | `sw_industry` | `(symbol, level, industry_code, in_date)` | SW2021 行业归属历史，L1/L2 |
 | | `trade_calendar` | `(date)` | 交易日历 |
