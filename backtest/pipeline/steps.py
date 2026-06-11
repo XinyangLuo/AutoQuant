@@ -137,7 +137,7 @@ def step1_coverage_check(state: PipelineState) -> PipelineState:
         else config.thresholds.max_missing_rate_pv
     )
 
-    with FactorStorage() as fs:
+    with FactorStorage(read_only=True) as fs:
         factor_df = fs.get_factor(config.factor_id, config.start_date, config.end_date)
 
     if factor_df.empty:
@@ -208,7 +208,7 @@ def step2_neutralization_check(state: PipelineState) -> PipelineState:
     """
     config = state.config
 
-    with FactorStorage() as fs:
+    with FactorStorage(read_only=True) as fs:
         factor_df = fs.get_factor(config.factor_id, config.start_date, config.end_date)
 
     if factor_df.empty:
@@ -644,7 +644,7 @@ def step5_build_strategy(
     state.strategy_config = strategy_config
 
     # Persist strategy config artifact
-    cfg_dir = Path(config.results_root) / config.factor_id
+    cfg_dir = config.results_dir()
     cfg_dir.mkdir(parents=True, exist_ok=True)
     cfg_path = cfg_dir / "strategy_config.json"
     # Save the full StrategyConfig dict so step7 can restore it in a later
@@ -740,7 +740,7 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
 
     # Persist signals so step7 can resume in a later process.
     tag = _build_tag(state)
-    signals_dir = Path(config.results_root) / config.factor_id / tag
+    signals_dir = config.results_dir() / tag
     signals_dir.mkdir(parents=True, exist_ok=True)
     signals_path = signals_dir / "signals.parquet"
     signals.to_parquet(signals_path, index=False)
@@ -837,7 +837,7 @@ def _backtest_gate(
     """
     config = state.config
     tag = _build_tag(state)
-    out_dir = Path(config.results_root) / config.factor_id / tag / sub_dir
+    out_dir = config.results_dir() / tag / sub_dir
     out_dir.mkdir(parents=True, exist_ok=True)
     sim_cfg = _load_simulation_config(overrides=config.simulation_overrides)
     result.save(str(out_dir), metadata={
@@ -939,11 +939,28 @@ def _build_tag(state: PipelineState) -> str:
     return _bt(state)
 
 
+def _setup_cjk_font() -> None:
+    """Configure matplotlib for CJK text rendering.  Idempotent; cheap to
+    call at the top of every plot-generation function."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.font_manager as fm
+    import matplotlib.pyplot as _plt
+    for _font in ("PingFang HK", "Heiti TC", "STHeiti", "Arial Unicode MS",
+                  "SimHei", "Noto Sans CJK SC", "WenQuanYi Micro Hei"):
+        try:
+            fm.findfont(_font, fallback_to_default=False)
+            _plt.rcParams["font.sans-serif"] = [_font, "DejaVu Sans"]
+            _plt.rcParams["axes.unicode_minus"] = False
+            break
+        except Exception:
+            continue
+
+
 def _gen_group_returns_plot(group_rets: dict, plots_dir: Path) -> None:
     """Generate group-returns bar chart from step4 monotonicity metrics."""
     try:
-        import matplotlib
-        matplotlib.use("Agg")
+        _setup_cjk_font()
         import matplotlib.pyplot as plt
 
         if not group_rets:
@@ -973,8 +990,7 @@ def _gen_group_returns_plot(group_rets: dict, plots_dir: Path) -> None:
 def _gen_ic_decay_plot(all_ic: dict, plots_dir: Path) -> None:
     """Generate IC decay overview chart from pre-computed IC metrics."""
     try:
-        import matplotlib
-        matplotlib.use("Agg")
+        _setup_cjk_font()
         import matplotlib.pyplot as plt
         import numpy as np
 
@@ -1044,8 +1060,7 @@ def _gen_backtest_nav_plot(
     just-written ``nav.parquet`` from disk.
     """
     try:
-        import matplotlib
-        matplotlib.use("Agg")
+        _setup_cjk_font()
         import matplotlib.pyplot as plt
 
         if nav_df is None or nav_df.empty or "nav" not in nav_df.columns:

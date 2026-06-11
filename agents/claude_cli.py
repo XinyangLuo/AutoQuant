@@ -180,6 +180,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 experiment = runner.run(
                     experiment,
                     from_step=args.from_step,
+                    to_step=args.to_step,
                     top_k=args.top_k,
                     top_pct=args.top_pct,
                     decay=args.decay,
@@ -545,8 +546,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep failed factor values in the pending factor DB for inspection",
     )
     run.add_argument(
-        "--from-step", type=int, default=1, choices=range(1, 6),
-        help="Start pipeline from this step (1-5). Use >1 to skip register+backfill.",
+        "--from-step", type=int, default=1, choices=range(1, 11),
+        help="Start pipeline from this step (1-10). Use >1 to skip register+backfill.",
+    )
+    run.add_argument(
+        "--to-step", type=int, default=None, choices=range(1, 11),
+        help="Stop pipeline after this step (1-10). Use 4 for factor-eval only.",
     )
     run.add_argument("--top-k", type=int, help="Override top_k for step5 strategy")
     run.add_argument("--top-pct", type=float, help="Override top_pct for step5 strategy")

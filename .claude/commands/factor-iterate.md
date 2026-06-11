@@ -83,15 +83,16 @@ KB 文件位于 `agents/knowledge_base/`，跨 run 积累知识：
 
 ```text
 results/
-  <run_id>/                                 ← 追踪文件与代码
+  <run_id>/                                 ← 追踪文件
     hypothesis.md
     trace.jsonl
-    factor.py                               ← 当前因子代码（仅在 factor_change="formula" 时更新）
-    config.yaml                             ← 当前策略配置
-  <factor_id>/                              ← 同一因子代码共享一个目录
-    factor_eval/                            ← step1-4 因子评估（同一因子共享，strategy_only 轮不重建）
-    decile_backtest/                        ← 十段分层/多空测试
-    <strategy>/                             ← 策略变体（step5-10）
+  <factor_id>/                              ← 同一因子代码共享
+    factor_eval/                            ← step1-4 因子评估（所有 universe 共享）
+      eval_summary.json
+      decile_backtest/                      ← 十档分层（含 decile PNG）
+      plots/                                ← IC 时序图、IC 衰减图、分组收益图
+    <universe>/                             ← universe 目录（default / hs300 / csi500 …）
+      <strategy>/                           ← 策略变体（step5-10）
       plots/
       simple/
       detailed/
@@ -110,9 +111,9 @@ results/
 
 **目录规则**：
 - `factor.py` 和 `factor_eval/` / `decile_backtest/` 仅在 `factor_change="formula"` 的轮次更新。`factor_change="params"` 的轮次**也必须重建** factor_eval / decile_backtest（因为窗口/horizon/variant 变化导致因子值完全不同）。只有 `strategy_only` 的轮次**不重建**这些目录，只新增策略变体目录。
-- 策略变体目录按 `{top_k}_{rebalance}_d{decay}` 命名（如 `top100_1d_d5`），由 pipeline 自动生成。
+- 策略变体目录由 pipeline 自动生成（如 `top100_1d_d5` 或 `top10pct_1d_d5`）。
 - `result.json` 与 `pipeline_report.md` 放在同一策略变体目录下。
-- `sweep` 组合目录必须是 `results/<factor_id>/sweep_runs/<strategy>/`，不得再嵌套 `<factor_id>/<strategy>`。
+- `sweep` 产出按 `results/<factor_id>/<universe>/<strategy>/` 组织，汇总到 `cross_universe.json`。
 
 ## Per-round Procedure
 
@@ -150,8 +151,8 @@ For each round:
 5. Write the factor code + config:
 
    **Round 1 或 factor_change="formula"**（因子代码变化）：
-   - 因子代码写入 `results/<run_id>/factor.py` **和** `alphas/exp/agent/<factor_id>/factor.py`
-   - 策略配置写入 `alphas/exp/agent/<factor_id>/config.yaml`，同时 copy 到 `results/<run_id>/config.yaml`
+   - 因子代码**只写入** `alphas/exp/agent/<factor_id>/factor.py`
+   - 策略配置写入 `alphas/exp/agent/<factor_id>/config.yaml`
 
    **factor_change="params" 或 strategy_only**（因子代码不变）：
    - **只更新** `alphas/exp/agent/<factor_id>/config.yaml`（改 decay/rebalance/top_k）
@@ -188,17 +189,21 @@ For each round:
    - **Repair 时**：如果 RC 的 `fix_level` 是 `strategy_only` 或 `both`，用 `strategy_params` 中的 `decay`/`rebalance`/`top_k` 更新 config.yaml；`fix_level=factor` 时用 `factor_params` 修改因子代码
 6. Run pipeline（区分两类修复）：
 
-   **Round 1 或 factor_change="formula"**（全量 pipeline）：
+   **Round 1 或 factor_change="formula"**（仅因子评估 step1~4）：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --factor-file results/<run_id>/factor.py
+     --factor-file alphas/exp/agent/<factor_id>/factor.py \
+     --to-step 4 --keep-work-db
    ```
-   Pipeline 自动将产物写入 `results/<factor_id>/factor_eval/`、`results/<factor_id>/decile_backtest/` 以及默认策略变体目录下。
+   - 只跑到 step4（ICIR + 单调性），**不跑默认策略回测**（step5~10）。
+   - `--keep-work-db` 保留因子值，后续 sweep 直接复用，避免重复 backfill。
+   - 如果 ICIR/单调性未过阈值 → 直接 RC，不浪费 step5~10。
+   - 如果 step1~4 通过 → 进入 Pre-RC sweep fast path（下一条），**不单独跑 default strategy**。
 
    **strategy_only**（仅策略变化）：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --factor-file results/<run_id>/factor.py \
+     --factor-file alphas/exp/agent/<factor_id>/factor.py \
      --from-step 5 \
      --top-k 200 --decay 10 --rebalance 5D
    ```
@@ -206,41 +211,42 @@ For each round:
 
    **factor_change="params"**（窗口/horizon/variant 等因子值变化）：仍需从 step1 重新运行，因为因子值已改变。
 
-   **Quick 模式（默认用于 strategy-only 参数扫描）**：
-   当因子公式已锁定、只需要比较策略参数时，使用 `--quick`（等价于 `--to-step 6`）跳过 detailed backtest / Ridge / residual，只跑到 simple backtest。这会快很多，且仍然生成包含 step1-6 的 `result.json` 和 `pipeline_report.md`。
+   **单点策略参数测试（用 `--to-step` 控制 stop 位置）**：
+   当只需要测一组特定参数时，用 `--to-step` 控制停在哪一步。
    ```bash
+   # 只跑 simple backtest（跳过 detailed / ridge / residual）
    conda activate AutoQuant && python -m agents.claude_cli run <factor_id> \
-     --factor-file results/<run_id>/factor.py \
-     --top-k 100 --decay 10 --rebalance 5D \
-     --quick
+     --factor-file alphas/exp/agent/<factor_id>/factor.py \
+     --from-step 5 --top-k 100 --decay 10 --rebalance 5D \
+     --to-step 6
    ```
 
    **两级 sweep（universe → strategy 参数网格）**：
    当强因子只卡在策略参数提取，或 RC 明确建议尝试多个参数组合时，不要逐个 `run`，直接用 `sweep`。系统先跑 base 因子 step1~4（统一 IC/单调性），然后**按 universe 串行、策略 combo 并行**扫参数网格。使用真实 factor_id，不创建 clone 目录。
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli sweep <factor_id> \
-     --factor-file results/<run_id>/factor.py \
+     --factor-file alphas/exp/agent/<factor_id>/factor.py \
      --workers 4
    ```
    - **Universe 维度**：默认覆盖 hs300 / csi500 / csi1000 / csi2000 四大宽基指数。串行执行避免 DB 争用。
    - **策略维度**：固定 `top_pct=10%`，按因子类型自动选 decay × rebalance 网格：
      - 量价/技术因子：`decay=5,10,15 × rebalance=1D,5D`（6 combo）
      - 基本面/财务因子：`decay=5 × rebalance=1M,3M`（2 combo）
-   - **默认跑 step5~7**（含 detailed backtest），相当于旧版 `--full`。全过则直接进 candidates/ 对应 universe 目录。
+   - **默认跑 step5~7**（含 detailed backtest）。全过则直接进 candidates/ 对应 universe 目录。
    - `--validate-top-n N`（默认 1）：每个 universe 保留 top N combo 的 full result。
-   - `--to-step 6`：退化为 quick 模式（只到 simple backtest）。
+   - `--to-step 6`：只到 simple backtest（跳过 detailed / ridge / residual）。
    - `--universes hs300=000300.SH,csi500=000905.SH`：自定义 universe 集合。
    - 结果写到 `results/<factor_id>/<universe>/<strategy_tag>/`，汇总到 `results/<factor_id>/cross_universe.json`。
 
    **Sweep 后的标准 workflow**：
-   1. 公式确定后先跑一次 `--quick` 确认 simple metrics 有信号；
+   1. 公式确定后先跑 `--to-step 4` 确认 step1-4 ICIR/单调性通过；
    2. 直接 `sweep --workers 4` 扫全量 universe × strategy 网格；
    3. Sweep 已内置 `--validate-top-n 1`，每条 universe 的最优 combo 自动跑完 step7 detailed；
    4. 如需手动测试单个参数组合，用 `run --from-step 5 --top-k ... --decay ... --rebalance ...`，不要从 step1 重跑；
    5. 只有完整 run `pass` 才进 `candidates/`。
 
 7. Read `result.json`（位于 `results/<factor_id>/<strategy>/result.json`）。
-   - 如果用了 `sweep`，每个组合的 `result.json` 路径以 `results/<factor_id>/sweep_summary.json` 中的 `result_path` / `full_result_path` 为准；sweep 不会创建 clone factor_id。
+   - 如果用了 `sweep`，结果汇总到 `results/<factor_id>/cross_universe.json`，各 combo 的 `result.json` 在 `results/<factor_id>/<universe>/<strategy>/` 下。
    - `result.json.report_path` 指向 pipeline 诊断报告。
    
 8. **If `result.json.status == "pass"`**：
@@ -261,10 +267,10 @@ For each round:
    则**不要启动 RC**，直接运行两级 universe × strategy sweep：
    ```bash
    conda activate AutoQuant && python -m agents.claude_cli sweep <factor_id> \
-     --factor-file results/<run_id>/factor.py \
+     --factor-file alphas/exp/agent/<factor_id>/factor.py \
      --workers 4
    ```
-   - 默认覆盖 hs300/csi500/csi1000/csi2000 四大宽基 + 自动按因子类型选 decay/rebalance 网格（量价：5,10,15 × 1D,5D；基本面：5 × 1M,3M），不再手动传 `--top-k/--decay/--rebalance`。
+   - 默认覆盖 default（全A，仅去 ST/新股/科创/北交）+ hs300/csi500/csi1000/csi2000 五个 universe。自动按因子类型选 decay/rebalance 网格（量价：5,10,15 × 1D,5D；基本面：5 × 1M,3M），不再手动传 `--top-k/--decay/--rebalance`。
    - 如果任一 universe 有 full `pass`，进入 Pass 收尾。
    - 如果全部 universe 无 pass，或 full 验证仍失败，再进入 RC，并把 `cross_universe.json` 注入 prompt。
 

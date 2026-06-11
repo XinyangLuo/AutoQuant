@@ -12,7 +12,7 @@ Directory layout::
 
     results/{factor_id}/
       hs300/
-        factor_eval/          # per-universe IC / decile
+        factor_eval/          # universe-independent IC / decile (shared)
         top10pct_1D_d5/       # strategy variant
           simple/
           detailed/
@@ -55,7 +55,8 @@ from backtest.pipeline.steps import (
 # Constants
 # ---------------------------------------------------------------------------
 
-UNIVERSES: dict[str, str] = {
+UNIVERSES: dict[str, str | None] = {
+    "default": None,       # 全A（仅去ST/新股/科创/北交，无指数限制）
     "hs300": "000300.SH",
     "csi500": "000905.SH",
     "csi1000": "000852.SH",
@@ -92,7 +93,7 @@ def _is_fundamental(factor_id: str) -> bool:
     return bool(_FINANCIAL_SOURCES & set(sources))
 
 
-def _get_combos(factor_id: str) -> list[tuple[int, str]]:
+def _get_decay_rebalance_combos(factor_id: str) -> list[tuple[int, str]]:
     """Return (decay, rebalance) combos appropriate for this factor type."""
     if _is_fundamental(factor_id):
         return _FUNDAMENTAL_COMBOS
@@ -149,9 +150,12 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     os.replace(str(tmp), str(path))
 
 
-def _combo_tag(decay: int, rebalance: str) -> str:
-    """Stable strategy-combo tag.  Always uses top_pct=0.1 (top10pct)."""
-    return f"top10pct_{rebalance.lower()}_d{decay}"
+def _combo_tag(combo: dict) -> str:
+    """Stable strategy-combo tag."""
+    d, r = combo["decay"], combo["rebalance"]
+    if "top_k" in combo:
+        return f"top{combo['top_k']}_{r.lower()}_d{d}"
+    return f"top{int(combo['top_pct'] * 100)}pct_{r.lower()}_d{d}"
 
 
 def _print_progress(message: str) -> None:
@@ -174,10 +178,7 @@ def _progress_line(
 ) -> str:
     params = result.get("params", {}) or {}
     metrics = result.get("metrics", {}) or {}
-    tag = result.get("combo_tag") or _combo_tag(
-        int(params.get("decay", 0)),
-        str(params.get("rebalance", "")),
-    )
+    tag = result.get("combo_tag") or _combo_tag(params)
     line = (
         f"{prefix} {done}/{total} done {tag} "
         f"status={result.get('status', 'unknown')} "
@@ -249,15 +250,14 @@ def _run_combo_worker(
     results_root: str,
     results_subdir: str,
     state_subdir: str,
-    universe_code: str,
+    universe_code: str | None,
     universe_name: str,
-    decay: int,
-    rebalance: str,
+    combo: dict,
     from_step: int,
     to_step: int | None,
 ) -> dict[str, Any]:
     """Worker: run one (universe × strategy) combo in isolation."""
-    tag = _combo_tag(decay, rebalance)
+    tag = _combo_tag(combo)
     generated_dir_p = Path(generated_dir)
     results_root_p = Path(results_root)
     combo_dir = results_root_p / state_subdir
@@ -279,17 +279,18 @@ def _run_combo_worker(
             state_subdir=state_subdir,
             generated_dir=generated_dir_p,
             factor_storage_read_only=True,
-            benchmark=universe_code,
+            benchmark=universe_code or "000300.SH",
         ) as runner:
             try:
-                kwargs: dict[str, Any] = {"from_step": from_step, "to_step": to_step}
-                if from_step <= 5:
-                    kwargs.update(
-                        top_pct=TOP_PCT,
-                        decay=decay,
-                        rebalance=rebalance,
-                        universe=universe_code,
-                    )
+                kwargs: dict[str, Any] = {
+                    "from_step": from_step, "to_step": to_step,
+                    "decay": combo["decay"], "rebalance": combo["rebalance"],
+                    "universe": universe_code,
+                }
+                if "top_k" in combo:
+                    kwargs["top_k"] = combo["top_k"]
+                else:
+                    kwargs["top_pct"] = combo["top_pct"]
                 experiment = runner.run(experiment, **kwargs)
                 feedback = evaluator.evaluate(experiment)
             except Exception as exc:
@@ -327,9 +328,7 @@ def _run_combo_worker(
         "error": error,
         "traceback": tb,
         "params": {
-            "top_pct": TOP_PCT,
-            "decay": decay,
-            "rebalance": rebalance,
+            **combo,
             "universe": universe_name,
         },
         "metrics": _clean_json(metrics),
@@ -433,7 +432,7 @@ def run_sweep(
     to_step: int | None = 7,
     workers: int = 4,
     validate_top_n: int = 1,
-    universes: dict[str, str] | None = None,
+    universes: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
     """Run a multi-universe strategy sweep.
 
@@ -467,12 +466,33 @@ def run_sweep(
     validate_transforms_imports(code)
     code = force_register_factor_id(code, factor_id)
 
-    combos = _get_combos(factor_id)
+    decay_rebalance_combos = _get_decay_rebalance_combos(factor_id)
     factor_type = "fundamental" if _is_fundamental(factor_id) else "price_volume"
+
+    # Default universe: top_k 100/200 (absolute number of stocks).
+    # Index universes: top_pct 10% (percentage of index constituents).
+    _default_top_ks = [100, 200]
+    _index_top_pct = 0.1
+
+    def _make_combos(uni_name: str) -> list[dict]:
+        if uni_name == "default":
+            return [
+                {"top_k": tk, "decay": d, "rebalance": r}
+                for tk in _default_top_ks
+                for d, r in decay_rebalance_combos
+            ]
+        return [
+            {"top_pct": _index_top_pct, "decay": d, "rebalance": r}
+            for d, r in decay_rebalance_combos
+        ]
+
+    total_combos = sum(
+        len(_make_combos(name)) for name in universes
+    )
     _print_progress(
         f"Preparing {factor_id} ({factor_type}): "
-        f"{len(universes)} universes × {len(combos)} strategy combos = "
-        f"{len(universes) * len(combos)} total"
+        f"{len(universes)} universes, {total_combos} total strategy combos"
+        f" (default: top_k={_default_top_ks}, index: top_pct={_index_top_pct})"
     )
 
     # --- Phase A: base step1~step4 (universe-independent) -------------------
@@ -503,18 +523,20 @@ def run_sweep(
     universe_results: dict[str, dict[str, Any]] = {}
 
     for uni_name, uni_code in universes.items():
+        uni_label = uni_code if uni_code else "全A"
+        uni_combos = _make_combos(uni_name)
         _print_progress(
-            f"--- Universe: {uni_name} ({uni_code}) "
+            f"--- Universe: {uni_name} ({uni_label}) "
             f"[{list(universes.keys()).index(uni_name) + 1}/{len(universes)}] ---"
         )
 
         # Seed per-combo state for this universe.
         uni_subdir = f"{factor_id}/{uni_name}"
-        combo_state_subdirs: dict[tuple[int, str], str] = {}
-        for decay, rebalance in combos:
-            tag = _combo_tag(decay, rebalance)
+        combo_state_subdirs: dict[str, str] = {}
+        for combo in uni_combos:
+            tag = _combo_tag(combo)
             state_subdir = f"{uni_subdir}/{tag}"
-            combo_state_subdirs[(decay, rebalance)] = state_subdir
+            combo_state_subdirs[tag] = state_subdir
             _seed_combo_state(
                 base_state=base_state,
                 factor_id=factor_id,
@@ -525,7 +547,7 @@ def run_sweep(
 
         # Run all combos for this universe in parallel.
         results: list[dict[str, Any]] = []
-        max_workers = min(workers, len(combos)) if combos else 1
+        max_workers = min(workers, len(uni_combos)) if uni_combos else 1
         stop_step = to_step if to_step is not None else 10
 
         with ProcessPoolExecutor(max_workers=max_workers) as executor:
@@ -537,33 +559,29 @@ def run_sweep(
                     str(generated_dir),
                     str(results_root),
                     uni_subdir,
-                    combo_state_subdirs[(decay, rebalance)],
+                    combo_state_subdirs[tag],
                     uni_code,
                     uni_name,
-                    decay,
-                    rebalance,
+                    combo,
                     5,
                     to_step,
-                ): (decay, rebalance)
-                for decay, rebalance in combos
+                ): tag
+                for combo in uni_combos
+                for tag in [_combo_tag(combo)]
             }
             for future in as_completed(futures):
-                decay, rebalance = futures[future]
+                tag = futures[future]
                 try:
                     payload = future.result()
                 except Exception as exc:
-                    tag = _combo_tag(decay, rebalance)
                     payload = {
                         "factor_id": factor_id,
                         "combo_tag": tag,
                         "universe": uni_name,
-                        "universe_code": uni_code,
+                        "universe_code": uni_code or "",
                         "status": "error",
                         "error": f"{type(exc).__name__}: {exc}",
                         "params": {
-                            "top_pct": TOP_PCT,
-                            "decay": decay,
-                            "rebalance": rebalance,
                             "universe": uni_name,
                         },
                         "metrics": {},
@@ -571,11 +589,11 @@ def run_sweep(
                         "report_path": None,
                         "results_root": str(results_root),
                         "results_subdir": uni_subdir,
-                        "state_subdir": combo_state_subdirs[(decay, rebalance)],
+                        "state_subdir": combo_state_subdirs.get(tag, ""),
                     }
                 results.append(payload)
                 _print_progress(
-                    _progress_line(uni_name, len(results), len(combos), payload),
+                    _progress_line(uni_name, len(results), len(uni_combos), payload),
                 )
 
         # --- Phase C: validate top combos for this universe (step7 full) -----
@@ -592,6 +610,14 @@ def run_sweep(
                     full_futures = {}
                     for result in top_results:
                         params = result["params"]
+                        full_combo = {
+                            "decay": int(params.get("decay", 5)),
+                            "rebalance": str(params.get("rebalance", "1D")),
+                        }
+                        if "top_k" in params:
+                            full_combo["top_k"] = int(params["top_k"])
+                        elif "top_pct" in params:
+                            full_combo["top_pct"] = float(params["top_pct"])
                         full_futures[
                             executor.submit(
                                 _run_combo_worker,
@@ -603,8 +629,7 @@ def run_sweep(
                                 result["state_subdir"],
                                 uni_code,
                                 uni_name,
-                                params["decay"],
-                                params["rebalance"],
+                                full_combo,
                                 7,
                                 None,
                             )
@@ -646,7 +671,7 @@ def run_sweep(
         best = _select_best(results, 1)
         universe_results[uni_name] = {
             "universe_code": uni_code,
-            "n_combos": len(combos),
+            "n_combos": len(uni_combos),
             "n_results": len(results),
             "best": best[0] if best else None,
             "all_results": results,
