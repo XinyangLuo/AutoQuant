@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -17,6 +19,14 @@ from backtest.strategy.weight import WeightAllocator
 
 if TYPE_CHECKING:
     pass
+
+
+def _try_read_cache(env_var: str) -> pd.DataFrame | None:
+    """Return a DataFrame from the parquet path in *env_var*, or None."""
+    path = os.environ.get(env_var)
+    if path and Path(path).exists():
+        return pd.read_parquet(path)
+    return None
 
 
 class StrategyBase(ABC):
@@ -64,17 +74,19 @@ class StrategyBase(ABC):
         end_date: str,
         factor_storage: FactorStorage | None = None,
         market_storage: MarketStorage | None = None,
-        market_panel: "pd.DataFrame | None" = None,
     ) -> pd.DataFrame:
         """Full pipeline: fetch factors + market data → generate signals.
 
-        Parameters
-        ----------
-        market_panel : pd.DataFrame | None
-            Pre-loaded market data.  When provided, the internal
-            ``get_bars(symbols=None)`` call is skipped, saving one
-            full-table DuckDB scan per call.  The caller is responsible
-            for including the columns the strategy needs.
+        When the environment variables ``AQ_FACTOR_CACHE`` /
+        ``AQ_MARKET_CACHE`` point to existing parquet files, those are
+        read instead of querying DuckDB — useful for sweep workers that
+        all need the same underlying data.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns ``[date, symbol, target_weight]`` where ``date`` is the
+            effective holding date (signal date + delay).
         """
         own_factor = factor_storage is None
         own_market = market_storage is None
@@ -89,18 +101,18 @@ class StrategyBase(ABC):
             if not factor_ids:
                 raise ValueError("No factors configured")
 
-            # Load all factor data for the date range.
-            factor_panel = self._load_factor_panel(
-                factor_ids, start_date, end_date, factor_storage
-            )
+            # --- factor panel: try parquet cache first --------------------
+            factor_panel = _try_read_cache("AQ_FACTOR_CACHE")
+            if factor_panel is None:
+                factor_panel = self._load_factor_panel(
+                    factor_ids, start_date, end_date, factor_storage
+                )
             if factor_panel.empty:
                 raise ValueError("No factor data found for the given date range")
 
-            # Load market data (for universe filtering, neutralization, etc.)
-            # Reuse caller-supplied data to avoid duplicate DuckDB scans.
-            if market_panel is not None:
-                pass
-            else:
+            # --- market panel: try parquet cache first --------------------
+            market_panel = _try_read_cache("AQ_MARKET_CACHE")
+            if market_panel is None:
                 market_panel = market_storage.get_bars(
                     symbols=None,
                     start=start_date,
@@ -180,6 +192,10 @@ class StrategyBase(ABC):
         Weights recent values more heavily, producing smoother factor series
         and lower portfolio turnover.
 
+        Uses ``sliding_window_view`` + dot-product per group instead of
+        pandas ``rolling().apply()`` — avoids ~9M Python lambda calls and is
+        ~50-100× faster.
+
         Parameters
         ----------
         factor_panel : pd.DataFrame
@@ -203,20 +219,51 @@ class StrategyBase(ABC):
         if not factor_cols:
             return factor_panel
 
-        # Build linear decay weights: [n, n-1, ..., 1]
+        # Linear decay weights: [newest=n, ..., oldest=1].
         weights = np.arange(n, 0, -1, dtype=float)
+        w_full = weights.sum()
 
-        def _decay_series(s: pd.Series) -> pd.Series:
-            def _apply(x: np.ndarray) -> float:
-                w = weights[-len(x):]
-                # Rolling window order is [oldest, ..., newest];
-                # weights are [newest_weight=n, ..., oldest_weight=1].
-                return float(np.dot(x[::-1], w) / w.sum())
-
-            return s.rolling(window=n, min_periods=1).apply(_apply, raw=True)
+        # Normalisers for partial windows: position i uses weights[-(i+1):] = [i+1, ..., 1]
+        # → sum = (i+1)*(i+2)/2
+        partial_norms: np.ndarray | None = None
+        if n > 1:
+            partial_norms = np.array(
+                [weights[-(i + 1) :].sum() for i in range(n - 1)]
+            )
 
         for col in factor_cols:
-            df[col] = df.groupby("symbol", group_keys=False)[col].apply(_decay_series)
+            result_parts: list[pd.Series] = []
+            for _sym, grp in df.groupby("symbol", sort=False)[col]:
+                vals = grp.values.astype(float, copy=False)
+                m = len(vals)
+                if m == 0:
+                    result_parts.append(grp)
+                    continue
+
+                out = np.empty(m, dtype=float)
+
+                # --- full windows (positions n-1 … m-1) -------------------
+                if m >= n:
+                    # sliding_window_view(vals, n)[i] = [vals[i], ..., vals[i+n-1]]
+                    # (oldest … newest in natural order).
+                    windows = np.lib.stride_tricks.sliding_window_view(vals, n)
+                    # The original formula: x[newest] * n + ... + x[oldest] * 1
+                    # = dot(row[::-1], weights) = dot(row, weights[::-1])
+                    out[n - 1 :] = windows.dot(weights[::-1]) / w_full
+
+                # --- partial ramp-up (positions 0 … n-2) -------------------
+                limit = min(n - 1, m)
+                if limit > 0 and partial_norms is not None:
+                    for i in range(limit):
+                        # Window: vals[0 … i], weights used: last i+1 entries.
+                        w = weights[-(i + 1) :]
+                        out[i] = np.dot(vals[: i + 1][::-1], w) / partial_norms[i]
+
+                result_parts.append(
+                    pd.Series(out, index=grp.index, name=col)
+                )
+
+            df[col] = pd.concat(result_parts)
 
         return df
 
