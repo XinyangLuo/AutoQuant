@@ -11,11 +11,11 @@ Use this project skill to turn research PDFs into structured AutoQuant factor hy
 
 1. Read `AGENTS.md`, `agents/AGENTS.md`, and `references/workflow.md`.
 2. If the user did not provide a PDF path, list `research_papers/*.pdf` and present a numbered menu. Wait for the user to choose.
-3. Extract text with the configured `mcp-pdf` server when available. If unavailable, use a local PDF text extractor and record the fallback in `manifest.json`.
+3. Prefer native multimodal PDF reading when the current Codex/GPT session supports direct PDF inputs. If unavailable, use the configured `mcp-pdf` server; if that is unavailable, use a local PDF text extractor. Record the chosen method in `manifest.json`.
 4. Enumerate all single-factor ideas before ranking or filtering.
 5. Verify data availability with `conda activate AutoQuant && python -m agents.codex_cli schema --sources ...`.
 6. Query `agents/knowledge_base/` through `agents.kb_query` when useful for duplicate, anti-pattern, or SOTA context.
-7. Write one batch under `agents/pdf_hypotheses/<YYYYMMDD_HHMMSS_slug>/` with `manifest.json`, optional `extracted.md`, and selected `NN_<factor_slug>_hypothesis.md` files.
+7. Write one batch under `agents/pdf_hypotheses/<YYYYMMDD_HHMMSS_slug>/` with `manifest.json`, optional `extracted.md`/`evidence.md`, and selected `NN_<factor_slug>_hypothesis.md` files.
 8. Show a ranking table with expected return metrics and green/yellow/red iteration priority, then show a numbered menu of generated hypothesis files. Tell the user they can continue later by saying which number to iterate, without copying paths.
 
 ## Boundaries

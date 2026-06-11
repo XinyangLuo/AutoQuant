@@ -22,10 +22,13 @@ a. 全部分析
 
 ## 2. PDF 提取
 
-- 优先使用项目 `.mcp.json` 配置的 `mcp-pdf` 能力提取 markdown。
-- 如果当前会话没有可用 PDF MCP 工具，可使用本地 Python PDF 文本提取库作为 fallback，但必须在 `manifest.json.source.extraction_method` 中记录。
+- 优先使用当前 Codex/GPT 会话的原生多模态 PDF 阅读能力（例如 GPT-5.5 支持直接读取 PDF 输入时），覆盖正文、表格、图、脚注和扫描件页面。记录页码、章节或图表位置，便于复核。
+- 如果当前会话没有可用原生多模态 PDF 输入，再使用项目 `.mcp.json` 配置的 `mcp-pdf` 能力提取 markdown。
+- 如果原生多模态与 PDF MCP 都不可用，可使用本地 Python PDF 文本提取库作为 fallback。
+- 必须在 `manifest.json.source.extraction_method` 中记录实际方法：`native_multimodal` / `mcp-pdf` / `local_text_extractor`。
+- 原生多模态读取时，如果无法导出完整逐页文本，写入 `evidence.md` 或 `extracted.md` 保存可复核的页码、图表/表格依据和关键摘录；不得只依赖未落盘的模型记忆。
 - 超长 PDF 先读取元信息或目录，再按章节处理；最终分析仍需覆盖全篇。
-- 只有当提取文本对复核有价值或使用 fallback 时，才把全文写入批次目录的 `extracted.md`。
+- 只有当完整提取文本对复核有价值或使用文本 fallback 时，才把全文写入批次目录的 `extracted.md`。
 
 ## 3. 因子穷举与筛选
 
@@ -60,6 +63,7 @@ agents/pdf_hypotheses/
 └── <YYYYMMDD_HHMMSS_slug>/
     ├── manifest.json
     ├── extracted.md
+    ├── evidence.md
     ├── 01_<factor_slug>_hypothesis.md
     ├── 02_<factor_slug>_hypothesis.md
     └── ...
@@ -69,7 +73,8 @@ agents/pdf_hypotheses/
 
 - 顶层 `agents/pdf_hypotheses/` 不生成 `.json` 或 `.md`。
 - `manifest.json` 必须生成。
-- `extracted.md` 可选。
+- `extracted.md` 可选，用于保存完整或接近完整的文本提取结果。
+- `evidence.md` 可选，用于保存原生多模态读取时的页码、图表/表格依据和关键摘录。
 - 只为用户选择或默认高优候选生成 `NN_<factor_slug>_hypothesis.md`。
 - 文件名使用 ASCII slug；hypothesis 正文可以包含中文。
 
@@ -82,7 +87,7 @@ agents/pdf_hypotheses/
     "pdf_paths": ["research_papers/example.pdf"],
     "pdf_title": "研报标题",
     "extraction_ts": "2026-06-12T10:00:00+08:00",
-    "extraction_method": "mcp-pdf"
+    "extraction_method": "native_multimodal"
   },
   "summary": {
     "total_factors_found": 0,
