@@ -16,7 +16,7 @@ Use this project skill to turn research PDFs into structured AutoQuant factor hy
 5. Verify data availability with `conda activate AutoQuant && python -m agents.codex_cli schema --sources ...`.
 6. Query `agents/knowledge_base/` through `agents.kb_query` when useful for duplicate, anti-pattern, or SOTA context.
 7. Write one batch under `agents/pdf_hypotheses/<YYYYMMDD_HHMMSS_slug>/` with `manifest.json`, optional `extracted.md`, and selected `NN_<factor_slug>_hypothesis.md` files.
-8. Show a numbered menu of generated hypothesis files. Tell the user they can continue later by saying which number to iterate, without copying paths.
+8. Show a ranking table with expected return metrics and green/yellow/red iteration priority, then show a numbered menu of generated hypothesis files. Tell the user they can continue later by saying which number to iterate, without copying paths.
 
 ## Boundaries
 
