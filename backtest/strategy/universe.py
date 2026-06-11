@@ -18,16 +18,37 @@ class UniverseFilter:
       3. Board filter (CYB 30xxxx / KCB 68xxxx)
       4. Index membership filter
       5. Liquidity filter (min market cap / avg amount)
+
+    Callers that process many dates (e.g. ``generate_signals``) should call
+    ``warmup()`` once before the loop and pass the returned map via the
+    ``trade_date_to_idx`` parameter to avoid redundant calendar queries.
     """
 
     def __init__(self, config: UniverseConfig):
         self.config = config
+
+    @staticmethod
+    def warmup(
+        start_date: str,
+        end_date: str,
+    ) -> dict[str, int]:
+        """Pre-compute date→trading-day-index map for the whole range.
+
+        Call once before a batch of ``filter()`` calls so the New-IPO
+        filter doesn't rebuild the calendar on every invocation.
+
+        Returns a dict that can be passed to ``filter(trade_date_to_idx=...)``.
+        """
+        dates = get_trade_dates(start_date, end_date)
+        return {d: i for i, d in enumerate(dates)}
 
     def filter(
         self,
         date: str,
         panel: pd.DataFrame,
         market_storage: MarketStorage | None = None,
+        *,
+        trade_date_to_idx: dict[str, int] | None = None,
     ) -> pd.DataFrame:
         """Filter a cross-section panel to the tradable universe.
 
@@ -36,10 +57,14 @@ class UniverseFilter:
         date : str
             Trade date in YYYYMMDD format.
         panel : pd.DataFrame
-            Cross-section from ``MarketStorage.get_panel(date)``.
-            Expected columns: ``symbol, is_st, list_date, circ_mv, amount``.
+            Cross-section.  Expected columns: ``symbol, is_st, list_date,
+            circ_mv, amount``.
         market_storage : MarketStorage | None
-            Used for index-membership queries when ``config.index_members`` is set.
+            Used for index-membership queries when ``config.index_members``
+            is set.
+        trade_date_to_idx : dict[str, int] | None
+            Pre-computed date→index map from ``warmup()``.  Avoids
+            redundant ``get_trade_dates`` calls inside the New-IPO filter.
 
         Returns
         -------
@@ -57,25 +82,39 @@ class UniverseFilter:
         # 2. New IPO filter
         if self.config.exclude_new_ipo_days and "list_date" in df.columns:
             df = df[df["list_date"].notna()]
-            # Compute exact trading days since listing using the trade calendar.
-            min_list_date = df["list_date"].min()
-            if pd.notna(min_list_date):
-                min_list_date_str = pd.to_datetime(min_list_date).strftime("%Y%m%d")
-                all_trade_dates = get_trade_dates(min_list_date_str, date)
-                date_to_idx = {d: i for i, d in enumerate(all_trade_dates)}
-                if date in date_to_idx:
-                    current_idx = date_to_idx[date]
-                    list_indices = (
-                        pd.to_datetime(df["list_date"]).dt.strftime("%Y%m%d")
-                        .map(date_to_idx)
+            if df.empty:
+                return df
+            if trade_date_to_idx is not None and date in trade_date_to_idx:
+                current_idx = trade_date_to_idx[date]
+                list_indices = (
+                    pd.to_datetime(df["list_date"]).dt.strftime("%Y%m%d")
+                    .map(trade_date_to_idx)
+                )
+                trading_days = current_idx - list_indices
+                df = df[
+                    (trading_days >= self.config.exclude_new_ipo_days)
+                    | trading_days.isna()
+                ]
+            else:
+                # Fallback: compute calendar on the fly (legacy path).
+                min_list_date = df["list_date"].min()
+                if pd.notna(min_list_date):
+                    min_list_date_str = pd.to_datetime(min_list_date).strftime(
+                        "%Y%m%d"
                     )
-                    # Stocks whose list_date is not in the calendar (e.g. before
-                    # calendar start) get NaN — keep them (conservative).
-                    trading_days = current_idx - list_indices
-                    df = df[
-                        (trading_days >= self.config.exclude_new_ipo_days)
-                        | trading_days.isna()
-                    ]
+                    all_trade_dates = get_trade_dates(min_list_date_str, date)
+                    _date_to_idx = {d: i for i, d in enumerate(all_trade_dates)}
+                    if date in _date_to_idx:
+                        current_idx = _date_to_idx[date]
+                        list_indices = (
+                            pd.to_datetime(df["list_date"]).dt.strftime("%Y%m%d")
+                            .map(_date_to_idx)
+                        )
+                        trading_days = current_idx - list_indices
+                        df = df[
+                            (trading_days >= self.config.exclude_new_ipo_days)
+                            | trading_days.isna()
+                        ]
 
         # 3. Board filter — driven by config flags.  When *index_members* is
         #    set, _build_universe() defaults to include_kcb=True, include_bse=True

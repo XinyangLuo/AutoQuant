@@ -809,9 +809,20 @@ def _load_market_data(
         + pd.Timedelta(days=_MARKET_BUFFER_DAYS)
     ).strftime("%Y%m%d")
     symbols = signals["symbol"].unique().tolist()
+
+    # Only request columns actually used by the simulators.
+    # limit_up / limit_down are required by DetailedSimulator.validate_columns().
+    columns = [
+        "close", "open", "high", "low", "adj_factor",
+        "volume", "amount", "turnover_rate", "circ_mv",
+        "is_st", "list_date", "st_status",
+        "limit_up", "limit_down",
+    ]
+
     with MarketStorage(read_only=True) as ms:
         market_data = ms.get_bars(
             symbols=symbols, start=config.start_date, end=market_end,
+            columns=columns,
         )
         if with_dividends:
             dividends = ms.get_dividends(

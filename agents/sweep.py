@@ -255,8 +255,18 @@ def _run_combo_worker(
     rebalance: str,
     from_step: int,
     to_step: int | None,
+    factor_cache: str = "",
+    market_cache: str = "",
 ) -> dict[str, Any]:
     """Worker: run one (universe × strategy) combo in isolation."""
+    # Set cache paths in this worker's own environment so
+    # StrategyBase.run() picks them up regardless of the
+    # multiprocessing start method (fork vs spawn).
+    if factor_cache:
+        os.environ["AQ_FACTOR_CACHE"] = factor_cache
+    if market_cache:
+        os.environ["AQ_MARKET_CACHE"] = market_cache
+
     tag = _combo_tag(decay, rebalance)
     generated_dir_p = Path(generated_dir)
     results_root_p = Path(results_root)
@@ -420,6 +430,63 @@ def _run_base_steps(
 
 
 # ---------------------------------------------------------------------------
+# Shared data cache (avoids redundant DuckDB queries across workers)
+# ---------------------------------------------------------------------------
+
+_CACHE_ENV_FACTOR = "AQ_FACTOR_CACHE"
+_CACHE_ENV_MARKET = "AQ_MARKET_CACHE"
+
+
+def _warm_shared_cache(
+    factor_id: str,
+    cfg: "AgentConfig",
+    results_root: Path,
+) -> tuple[str, str]:
+    """Pre-load factor + market panels and write to parquet so every
+    worker reads fast local files instead of hitting DuckDB.
+
+    Returns (factor_cache_path, market_cache_path) so callers can pass
+    them explicitly to workers — env vars are unreliable across
+    ``ProcessPoolExecutor`` on spawn-based platforms (macOS).
+    """
+    import os as _os
+
+    cache_dir = results_root / factor_id / ".cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    # --- factor panel ---
+    factor_cache = cache_dir / "factor_panel.parquet"
+    if not factor_cache.exists():
+        from backtest.factor.storage import FactorStorage
+        from backtest.strategy.base import StrategyBase
+
+        with FactorStorage(read_only=True) as fs:
+            factor_panel = StrategyBase._load_factor_panel(
+                [factor_id], cfg.start_date, cfg.end_date, fs,
+            )
+        factor_panel.to_parquet(factor_cache, index=False)
+
+    # --- full market panel (all symbols) ---
+    market_cache = cache_dir / "market_panel.parquet"
+    if not market_cache.exists():
+        from backtest.data.storage import MarketStorage
+
+        with MarketStorage(read_only=True) as ms:
+            market_panel = ms.get_bars(
+                symbols=None,
+                start=cfg.start_date,
+                end=cfg.end_date,
+                columns=[
+                    "close", "open", "high", "low", "circ_mv", "amount",
+                    "is_st", "list_date", "limit_up", "limit_down",
+                ],
+            )
+        market_panel.to_parquet(market_cache, index=False)
+
+    return str(factor_cache), str(market_cache)
+
+
+# ---------------------------------------------------------------------------
 # Main sweep entry point
 # ---------------------------------------------------------------------------
 
@@ -499,6 +566,11 @@ def run_sweep(
         base_state = PipelineState.load(results_root / factor_id / "pipeline_state.json")
     _print_progress("Base factor passed step1-step4")
 
+    # --- Pre-warm shared data cache for all workers --------------------------
+    _print_progress("Pre-loading shared factor + market data for worker cache ...")
+    factor_cache_path, market_cache_path = _warm_shared_cache(factor_id, cfg, results_root)
+    _print_progress("Shared cache ready")
+
     # --- Phase B: per-universe sweep (serial universes) ---------------------
     universe_results: dict[str, dict[str, Any]] = {}
 
@@ -544,6 +616,8 @@ def run_sweep(
                     rebalance,
                     5,
                     to_step,
+                    factor_cache_path,
+                    market_cache_path,
                 ): (decay, rebalance)
                 for decay, rebalance in combos
             }
@@ -607,6 +681,8 @@ def run_sweep(
                                 params["rebalance"],
                                 7,
                                 None,
+                                factor_cache_path,
+                                market_cache_path,
                             )
                         ] = result["combo_tag"]
                     for future in as_completed(full_futures):

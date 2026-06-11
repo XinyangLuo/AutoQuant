@@ -41,29 +41,48 @@ class SingleFactorStrategy(StrategyBase):
         if factor_id not in factor_panel.columns:
             raise ValueError(f"Factor {factor_id} not found in factor panel")
 
+        # Pre-compute trading-day index map for the New-IPO filter so
+        # UniverseFilter.filter() doesn't call get_trade_dates() per date.
+        trade_date_to_idx = self.universe_filter.warmup(
+            rebalance_dates[0], rebalance_dates[-1],
+        )
+
         signal_rows: list[dict] = []
 
-        for date_str in rebalance_dates:
-            date = pd.Timestamp(date_str)
+        # Batch: subset both panels to rebalance dates once, then group.
+        reb_dates_set = frozenset(pd.to_datetime(d) for d in rebalance_dates)
+        reb_factor = factor_panel[
+            factor_panel["date"].isin(reb_dates_set)
+        ].dropna(subset=[factor_id])
+        reb_market = market_panel[
+            market_panel["date"].isin(reb_dates_set)
+        ]
 
-            day_factors = factor_panel[factor_panel["date"] == date].copy()
-            day_factors = day_factors.dropna(subset=[factor_id])
-            if day_factors.empty:
+        if reb_factor.empty:
+            return pd.DataFrame(columns=["date", "symbol", "target_weight"])
+
+        # Single merge for all rebalance dates.
+        merged_all = reb_factor.merge(
+            reb_market, on=["date", "symbol"], how="left",
+        )
+
+        ascending = self.factor_config.direction == "asc"
+        factor_col = factor_id if self.config.weighting.method == "factor_value" else None
+
+        for date, grp in merged_all.groupby("date", sort=False):
+            date_str = date.strftime("%Y%m%d")
+            if date_str not in rebalance_dates:
                 continue
 
-            day_market = market_panel[market_panel["date"] == date].copy()
-            merged = day_factors.merge(day_market, on=["date", "symbol"], how="left")
-
-            filtered = self.universe_filter.filter(date_str, merged)
+            filtered = self.universe_filter.filter(
+                date_str, grp, trade_date_to_idx=trade_date_to_idx,
+            )
             if filtered.empty:
                 continue
 
             factor_values = filtered.set_index("symbol")[factor_id]
-
-            ascending = self.factor_config.direction == "asc"
             sorted_scores = factor_values.sort_values(ascending=ascending)
 
-            factor_col = factor_id if self.config.weighting.method == "factor_value" else None
             rows = build_signals(
                 date,
                 sorted_scores,
