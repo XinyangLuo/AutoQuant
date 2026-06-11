@@ -47,6 +47,9 @@ env/
 # Local code intelligence indexes
 .codegraph/
 
+# Local git worktrees
+.worktrees
+
 # 数据：大文件不入 git，但保留目录结构
 data/duckdb/*
 !data/duckdb/.gitkeep
