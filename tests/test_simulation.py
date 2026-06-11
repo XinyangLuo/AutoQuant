@@ -337,6 +337,28 @@ class TestSimpleSimulator:
         # C 无数据，收益为0，只有 A 贡献
         assert nav[1] == pytest.approx(1.05, abs=1e-6)
 
+    def test_does_not_require_dense_pivot_matrix(self, monkeypatch):
+        """SimpleSimulator computes sparse long-form returns without pivoting."""
+        sim = SimpleSimulator()
+        signals = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"] * 2),
+            "symbol": ["A", "A", "A", "B", "B", "B"],
+            "target_weight": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        })
+        market = self._make_market_data()
+
+        def _fail_pivot(self, *args, **kwargs):
+            raise AssertionError("SimpleSimulator should not build a dense pivot matrix")
+
+        monkeypatch.setattr(pd.DataFrame, "pivot", _fail_pivot)
+
+        result = sim.run(signals, market)
+
+        nav = result.nav_df["nav"].values
+        assert nav[0] == pytest.approx(1.0, abs=1e-6)
+        assert nav[1] == pytest.approx(1.05, abs=1e-6)
+        assert nav[2] == pytest.approx(0.9975, abs=1e-6)
+
 
 class TestDetailedSimulator:
     """Test event-driven detailed backtest."""

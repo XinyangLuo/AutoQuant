@@ -402,10 +402,7 @@ def _get_all_regressor_ids(
     library: FactorLibrary,
 ) -> list[str]:
     """Return all admitted factor IDs in the library, excluding *factor_id*."""
-    others = library.get_factors_long(start=None, end=None, exclude=factor_id)
-    if others.empty:
-        return []
-    return sorted(others["factor_id"].unique().tolist())
+    return sorted(fid for fid in library.get_existing_factor_ids() if fid != factor_id)
 
 
 def _load_all_admitted_regressors(
@@ -420,15 +417,11 @@ def _load_all_admitted_regressors(
     Returns an empty DataFrame (no columns beyond date/symbol) if the
     library has no admitted factors.
     """
-    others = library.get_factors_long(start=start, end=end, exclude=factor_id)
-    if others.empty:
+    regressors = _get_all_regressor_ids(factor_id, library)
+    if not regressors:
         return pd.DataFrame(columns=["date", "symbol"])
 
-    wide = others.pivot(
-        index=["date", "symbol"], columns="factor_id", values="value"
-    ).reset_index()
-    wide.columns.name = None
-    return wide
+    return library.get_factors_wide(regressors, start=start, end=end)
 
 
 def _load_forward_returns_for_check(
@@ -478,7 +471,7 @@ def _residual_rank_icirs(
     dict[int, dict]
         ``{horizon: {"icir", "ic_mean", "ic_std", "ic_positive_ratio", "ic_count"}}``.
     """
-    from backtest.factor.evaluation import _compute_ic_stats, _rank_ic_series
+    from backtest.factor.evaluation import _compute_daily_ic, _compute_ic_stats
 
     merged = residuals.merge(returns_df, on=["date", "symbol"], how="inner")
 
@@ -495,10 +488,10 @@ def _residual_rank_icirs(
             }
             continue
 
-        ic_series = merged.groupby("date").apply(
-            lambda g: _rank_ic_series(g["residual"], g[ret_col]),
-            include_groups=False,
-        )
+        ic_series = _compute_daily_ic(
+            merged.rename(columns={"residual": "value"}),
+            ret_col,
+        )["rank_ic"]
         results[h] = _compute_ic_stats(ic_series)
 
     return results

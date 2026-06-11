@@ -446,7 +446,8 @@ lib.insert_factors()       → UPSERT into library
 | compute.py | data/storage.py | `get_bars()`, `get_panel()`, `get_fina_snapshot_range()` |
 | backfill.py | data/storage.py | `get_max_date()` (market_daily 边界) |
 | evaluation.py | data/storage.py | `get_bars()` (计算未来收益率) |
-| evaluation.py | factor/storage.py | `FactorStorage.get_factor()` + `FactorLibrary.get_factors_long()` |
+| evaluation.py | factor/storage.py | `FactorStorage.get_factor()` + `FactorLibrary.get_factors_long()`（相似因子诊断） |
+| admission_check.py | factor/storage.py | `FactorStorage.get_factor()` + `FactorLibrary.get_existing_factor_ids()` + `FactorLibrary.get_factors_wide()`（Ridge / residual ICIR） |
 
 ## 端到端流程
 
@@ -481,4 +482,3 @@ lib.insert_factors()       → UPSERT into library
             │ 清 work │ │          │
             └────────┘ └──────────┘
 ```
-

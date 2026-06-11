@@ -125,49 +125,66 @@ def _compute_daily_ic(
     pass for Pearson IC, and ``groupby().rank()`` + second agg for RankIC.
     Avoids ~12K Python-lambda calls per ``evaluate()`` invocation.
     """
-    v = merged["value"]
-    r = merged[ret_col]
-    g = merged.groupby("date")
+    tmp = merged[["date", "value", ret_col]].dropna(subset=["value", ret_col]).copy()
+    tmp["date"] = pd.to_datetime(tmp["date"])
+    all_dates = pd.Index(pd.to_datetime(merged["date"].drop_duplicates())).sort_values()
+    daily = pd.DataFrame(index=all_dates)
+    if tmp.empty:
+        daily["ic"] = np.nan
+        daily["rank_ic"] = np.nan
+        return daily
 
     # --- Pearson IC via single groupby-agg ---------------------------------
     # IC = cov(v, r) / (std(v) * std(r))
-    # cov = mean(v * r) - mean(v) * mean(r)
-    merged_tmp = merged[["date"]].copy()
-    merged_tmp["v"] = v
-    merged_tmp["r"] = r
-    merged_tmp["vr"] = v * r
-    agg = merged_tmp.groupby("date").agg(
-        v_mean=("v", "mean"), r_mean=("r", "mean"),
-        vr_mean=("vr", "mean"),
-        v_std=("v", "std"), r_std=("r", "std"),
+    # The sums form is equivalent to np.corrcoef on pairwise-valid rows and
+    # avoids the population/sample-ddof mismatch of mean-cov / sample-std.
+    calc = tmp.rename(columns={"value": "v", ret_col: "r"})
+    calc["vv"] = calc["v"] * calc["v"]
+    calc["rr"] = calc["r"] * calc["r"]
+    calc["vr"] = calc["v"] * calc["r"]
+    agg = calc.groupby("date").agg(
+        v_sum=("v", "sum"), r_sum=("r", "sum"),
+        vv_sum=("vv", "sum"), rr_sum=("rr", "sum"),
+        vr_sum=("vr", "sum"),
         n=("v", "count"),
     )
-    agg["cov"] = agg["vr_mean"] - agg["v_mean"] * agg["r_mean"]
-    denom_pearson = agg["v_std"] * agg["r_std"]
-    daily = pd.DataFrame(index=agg.index)
-    daily["ic"] = np.where(
+    cov_num = agg["vr_sum"] - agg["v_sum"] * agg["r_sum"] / agg["n"]
+    v_ss = agg["vv_sum"] - agg["v_sum"] * agg["v_sum"] / agg["n"]
+    r_ss = agg["rr_sum"] - agg["r_sum"] * agg["r_sum"] / agg["n"]
+    denom_pearson = np.sqrt(v_ss * r_ss)
+    daily["ic"] = pd.Series(np.where(
         (denom_pearson > 0) & (agg["n"] >= 3),
-        agg["cov"].values / denom_pearson.values,
+        cov_num.values / denom_pearson.values,
         np.nan,
-    )
+    ), index=agg.index).reindex(daily.index)
 
     # --- RankIC (Spearman) via group-rank + same formula -------------------
-    merged_tmp["v_rank"] = v.groupby(merged["date"]).rank()
-    merged_tmp["r_rank"] = r.groupby(merged["date"]).rank()
-    merged_tmp["vr_rank"] = merged_tmp["v_rank"] * merged_tmp["r_rank"]
-    rank_agg = merged_tmp.groupby("date").agg(
-        v_mean=("v_rank", "mean"), r_mean=("r_rank", "mean"),
-        vr_mean=("vr_rank", "mean"),
-        v_std=("v_rank", "std"), r_std=("r_rank", "std"),
+    calc["v_rank"] = calc.groupby("date")["v"].rank(method="average")
+    calc["r_rank"] = calc.groupby("date")["r"].rank(method="average")
+    calc["vv_rank"] = calc["v_rank"] * calc["v_rank"]
+    calc["rr_rank"] = calc["r_rank"] * calc["r_rank"]
+    calc["vr_rank"] = calc["v_rank"] * calc["r_rank"]
+    rank_agg = calc.groupby("date").agg(
+        v_sum=("v_rank", "sum"), r_sum=("r_rank", "sum"),
+        vv_sum=("vv_rank", "sum"), rr_sum=("rr_rank", "sum"),
+        vr_sum=("vr_rank", "sum"),
         n=("v_rank", "count"),
     )
-    rank_agg["cov"] = rank_agg["vr_mean"] - rank_agg["v_mean"] * rank_agg["r_mean"]
-    denom_rank = rank_agg["v_std"] * rank_agg["r_std"]
-    daily["rank_ic"] = np.where(
-        (denom_rank > 0) & (rank_agg["n"] >= 3),
-        rank_agg["cov"].values / denom_rank.values,
-        np.nan,
+    rank_cov_num = (
+        rank_agg["vr_sum"] - rank_agg["v_sum"] * rank_agg["r_sum"] / rank_agg["n"]
     )
+    rank_v_ss = (
+        rank_agg["vv_sum"] - rank_agg["v_sum"] * rank_agg["v_sum"] / rank_agg["n"]
+    )
+    rank_r_ss = (
+        rank_agg["rr_sum"] - rank_agg["r_sum"] * rank_agg["r_sum"] / rank_agg["n"]
+    )
+    denom_rank = np.sqrt(rank_v_ss * rank_r_ss)
+    daily["rank_ic"] = pd.Series(np.where(
+        (denom_rank > 0) & (rank_agg["n"] >= 3),
+        rank_cov_num.values / denom_rank.values,
+        np.nan,
+    ), index=rank_agg.index).reindex(daily.index)
 
     return daily
 
@@ -579,13 +596,7 @@ def evaluate(
         if ret_col not in merged.columns:
             continue
 
-        daily = merged.groupby("date").apply(
-            lambda g: pd.Series({
-                "ic": _ic_series(g["value"], g[ret_col]),
-                "rank_ic": _rank_ic_series(g["value"], g[ret_col]),
-            }),
-            include_groups=False,
-        )
+        daily = _compute_daily_ic(merged, ret_col)
 
         ic_metrics[h] = _compute_ic_stats(daily["ic"])
         rank_ic_metrics[h] = _compute_ic_stats(daily["rank_ic"])

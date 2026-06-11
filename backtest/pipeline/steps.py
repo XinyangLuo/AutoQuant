@@ -763,12 +763,16 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
             columns=["close", "open", "high", "low", "adj_factor", "circ_mv", "amount",
                      "is_st", "list_date", "limit_up", "limit_down"],
         )
-    market_for_strategy = market_panel[
-        market_panel["date"] <= pd.to_datetime(config.end_date)
-    ]
+        market_for_strategy = market_panel[
+            market_panel["date"] <= pd.to_datetime(config.end_date)
+        ]
 
-    signals = strategy.run(config.start_date, config.end_date,
-                           market_panel=market_for_strategy)
+        signals = strategy.run(
+            config.start_date,
+            config.end_date,
+            market_storage=ms,
+            market_panel=market_for_strategy,
+        )
     state.signals = signals
 
     if signals.empty:
@@ -1183,7 +1187,11 @@ def step8_ridge_r2(state: PipelineState) -> PipelineState:
     config = state.config
 
     try:
-        ridge_result = ridge_r2_check(config.factor_id)
+        ridge_result = ridge_r2_check(
+            config.factor_id,
+            start=config.start_date,
+            end=config.end_date,
+        )
     except Exception as exc:
         return _reject(state, "step8", f"Ridge check failed: {exc}")
 
@@ -1240,6 +1248,11 @@ def step9_residual_icir(state: PipelineState) -> PipelineState:
             start=config.start_date,
             end=config.end_date,
             precomputed_residuals=precomputed,
+            precomputed_n_regressors=(
+                state.ridge_result.n_regressors
+                if (precomputed is not None and state.ridge_result)
+                else -1
+            ),
         )
     except (ValueError, KeyError, InsufficientOverlapError,
             CandidateNotBackfilledError) as exc:

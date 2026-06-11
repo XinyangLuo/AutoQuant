@@ -137,6 +137,98 @@ class TestConfig:
         config.validate()  # 不抛错
 
 
+class TestStrategyRun:
+    def test_run_accepts_preloaded_panels(self, monkeypatch):
+        """Pipeline callers can reuse preloaded factor/market panels."""
+        from backtest.strategy.config import (
+            FactorConfig,
+            SelectionConfig,
+            StrategyConfig,
+            UniverseConfig,
+            WeightingConfig,
+        )
+        import backtest.strategy.base as strategy_base
+        import backtest.strategy.universe as strategy_universe
+        from backtest.strategy.strategies.single_factor import SingleFactorStrategy
+
+        dates = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+        factor_panel = pd.DataFrame({
+            "date": list(dates[:2]) * 3,
+            "symbol": ["A", "A", "B", "B", "C", "C"],
+            "f_test": [3.0, 3.1, 2.0, 2.1, 1.0, 1.1],
+        })
+        market_panel = pd.DataFrame({
+            "date": list(dates) * 3,
+            "symbol": ["A", "A", "A", "B", "B", "B", "C", "C", "C"],
+            "close": [10.0, 10.1, 10.2, 20.0, 20.1, 20.2, 30.0, 30.1, 30.2],
+            "open": [10.0, 10.1, 10.2, 20.0, 20.1, 20.2, 30.0, 30.1, 30.2],
+            "high": [10.0, 10.1, 10.2, 20.0, 20.1, 20.2, 30.0, 30.1, 30.2],
+            "low": [10.0, 10.1, 10.2, 20.0, 20.1, 20.2, 30.0, 30.1, 30.2],
+            "circ_mv": [1_000_000.0] * 9,
+            "amount": [100_000_000.0] * 9,
+            "is_st": [0] * 9,
+            "list_date": ["20000101"] * 9,
+            "limit_up": [11.0, 11.1, 11.2, 21.0, 21.1, 21.2, 31.0, 31.1, 31.2],
+            "limit_down": [9.0, 9.1, 9.2, 19.0, 19.1, 19.2, 29.0, 29.1, 29.2],
+        })
+
+        class RaisingFactorStorage:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("factor storage should not be opened")
+
+        class RaisingMarketStorage:
+            def __init__(self, *args, **kwargs):
+                raise AssertionError("market storage should not be opened")
+
+        monkeypatch.setattr(strategy_base, "FactorStorage", RaisingFactorStorage)
+        monkeypatch.setattr(strategy_base, "MarketStorage", RaisingMarketStorage)
+        monkeypatch.setattr(
+            strategy_base,
+            "get_rebalance_dates",
+            lambda start, end, freq: ["20240102", "20240103"],
+        )
+        monkeypatch.setattr(
+            strategy_base,
+            "get_trade_dates",
+            lambda start, end: ["20240102", "20240103", "20240104"],
+        )
+        monkeypatch.setattr(
+            strategy_universe,
+            "get_trade_dates",
+            lambda start, end: ["20240102", "20240103", "20240104"],
+        )
+
+        cfg = StrategyConfig(
+            name="preloaded",
+            rebalance_freq="1D",
+            delay=1,
+            universe=UniverseConfig(
+                exclude_st=False,
+                exclude_new_ipo_days=0,
+                include_cyb=True,
+                include_kcb=True,
+                include_bse=True,
+                min_market_cap=None,
+                min_avg_amount=None,
+            ),
+            factors=[FactorConfig(id="f_test", direction="desc")],
+            selection=SelectionConfig(method="topk", top_k=1),
+            weighting=WeightingConfig(method="equal"),
+            decay=None,
+        )
+
+        signals = SingleFactorStrategy(cfg).run(
+            "20240102",
+            "20240104",
+            factor_panel=factor_panel,
+            market_panel=market_panel,
+        )
+
+        assert not signals.empty
+        assert set(signals["symbol"]) == {"A"}
+        assert signals["target_weight"].eq(1.0).all()
+
+
 class TestUniverseFilter:
     """Test universe filtering logic."""
 
@@ -267,6 +359,52 @@ class TestUniverseFilter:
         # D: excluded (cap too small)
         # E: pass
         assert set(result["symbol"]) == {"A.SZ", "C.SH", "E.SH"}
+
+    def test_precomputed_avg_amount_matches_storage_filter(self, monkeypatch):
+        """Precomputed 20-day amount uses the same threshold as DB lookback."""
+        from backtest.strategy.universe import UniverseFilter
+        from backtest.strategy.config import UniverseConfig
+        import backtest.data.trade_calendar as trade_calendar
+
+        panel = pd.DataFrame({
+            "symbol": ["A.SZ", "B.SZ", "C.SZ"],
+            "avg_amount_20": [100.0, 9.0, 50.0],
+            "_avg_amount_20_n": [5, 5, 5],
+        })
+
+        bars = pd.DataFrame({
+            "date": pd.to_datetime(
+                ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"] * 2
+                + ["2024-01-04", "2024-01-05"]
+            ),
+            "symbol": ["A.SZ"] * 5 + ["B.SZ"] * 5 + ["C.SZ"] * 2,
+            "amount": [100.0] * 5 + [9.0] * 5 + [50.0, 50.0],
+        })
+
+        class FakeMarketStorage:
+            def get_bars(self, symbols, start, end, columns):
+                assert symbols == ["A.SZ", "B.SZ", "C.SZ"]
+                assert start == "20240101"
+                assert end == "20240105"
+                assert columns == ["amount"]
+                return bars
+
+        monkeypatch.setattr(
+            trade_calendar,
+            "get_trade_dates",
+            lambda start, end: ["20240101", "20240102", "20240103", "20240104", "20240105"],
+        )
+
+        uf = UniverseFilter(UniverseConfig(min_avg_amount=10.0))
+        storage_result = uf.filter(
+            "20240105",
+            panel.drop(columns=["avg_amount_20", "_avg_amount_20_n"]),
+            market_storage=FakeMarketStorage(),
+        )
+        precomputed_result = uf.filter("20240105", panel, market_storage=None)
+
+        assert list(precomputed_result["symbol"]) == list(storage_result["symbol"])
+        assert list(precomputed_result["symbol"]) == ["A.SZ", "C.SZ"]
 
 
 class TestWeightAllocator:

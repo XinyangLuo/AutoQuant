@@ -99,6 +99,16 @@ strategy = MyStrategy(config)
 signals = strategy.run("20200101", "20241231")
 ```
 
+`run()` 支持传入预加载的 `factor_panel` / `market_panel`，供 Pipeline 或参数 sweep 复用同一份 DataFrame，避免重复 DuckDB 查询：
+
+```python
+signals = strategy.run(
+    "20200101", "20241231",
+    factor_panel=factor_panel,
+    market_panel=market_panel,
+)
+```
+
 ### Universe 筛选
 
 `UniverseFilter` 在选股前过滤可交易标的：
@@ -108,6 +118,8 @@ signals = strategy.run("20200101", "20241231")
 3. **板块过滤**：创业板（30xxxx）、科创板（68xxxx）、北交所（8xxxxx.BJ / 4xxxxx.BJ）可选开关
 4. **指数成分股过滤**：查 `index_members` 表（`MarketStorage.get_index_members`，月度快照已 densify 到每个交易日）
 5. **流动性过滤**：最小流通市值、最小20日平均成交额
+
+`UniverseFilter` 支持预计算的 `avg_amount_20` 列快路径；缺少预计算列时回退到旧的 `MarketStorage.get_bars(columns=["amount"])` 查询路径。两条路径的过滤口径一致：交易日窗口不足 5 天时跳过过滤，满 5 天后按每只股票最近最多 20 条可用 `amount` 均值比较阈值。
 
 **指数 Universe 支持**：四大宽基指数均可作为 universe 使用，将选股范围限定在指数成分股内：
 

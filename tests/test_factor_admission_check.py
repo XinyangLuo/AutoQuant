@@ -12,6 +12,8 @@ from backtest.factor.admission_check import (
     TIER_REJECT,
     TIER_SMART_BETA,
     _classify,
+    _get_all_regressor_ids,
+    _load_all_admitted_regressors,
     _pooled_r2,
     _ridge_fit,
     ridge_r2_check,
@@ -139,6 +141,48 @@ class TestPooledR2:
         })
         with pytest.raises(ValueError, match="Too few overlapping rows"):
             _pooled_r2(cand, reg, alpha=1.0)
+
+
+class TestRegressorLoading:
+    def test_get_all_regressor_ids_uses_column_metadata_only(self):
+        class FakeLibrary:
+            def get_existing_factor_ids(self):
+                return {"f_candidate", "f_a", "f_b"}
+
+            def get_factors_long(self, *args, **kwargs):
+                raise AssertionError("should not materialize all library factors")
+
+        assert _get_all_regressor_ids("f_candidate", FakeLibrary()) == ["f_a", "f_b"]
+
+    def test_load_all_admitted_regressors_reads_wide_once(self):
+        expected = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-02", "2024-01-02"]),
+            "symbol": ["A", "B"],
+            "f_a": [1.0, 2.0],
+            "f_b": [3.0, 4.0],
+        })
+
+        class FakeLibrary:
+            def get_existing_factor_ids(self):
+                return {"f_candidate", "f_a", "f_b"}
+
+            def get_factors_wide(self, factor_ids, start=None, end=None):
+                assert factor_ids == ["f_a", "f_b"]
+                assert start == "20240101"
+                assert end == "20240131"
+                return expected.copy()
+
+            def get_factors_long(self, *args, **kwargs):
+                raise AssertionError("should not load long factors and pivot")
+
+        result = _load_all_admitted_regressors(
+            "f_candidate",
+            "20240101",
+            "20240131",
+            FakeLibrary(),
+        )
+
+        pd.testing.assert_frame_equal(result, expected)
 
 
 class TestRidgeR2CheckIntegration:

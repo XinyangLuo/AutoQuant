@@ -159,7 +159,13 @@ class UniverseFilter:
             df = df[df["circ_mv"] * 10_000 >= self.config.min_market_cap]
 
         if self.config.min_avg_amount:
-            df = self._filter_by_avg_amount(df, date, market_storage)
+            if "avg_amount_20" in df.columns:
+                lookback_col = "_avg_amount_20_n"
+                if lookback_col in df.columns and df[lookback_col].max() < 5:
+                    return df.reset_index(drop=True)
+                df = df[df["avg_amount_20"] >= self.config.min_avg_amount]
+            else:
+                df = self._filter_by_avg_amount(df, date, market_storage)
 
         return df.reset_index(drop=True)
 

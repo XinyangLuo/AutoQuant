@@ -38,34 +38,30 @@ class SimpleSimulator:
         BacktestResult
             只有 nav_df，trades/snapshots 为空
         """
-        # 1. 计算复权价格并 pivot 成 wide 收益矩阵 R[T, N]。
+        # 1. 计算长表 forward return，避免 materialise dense date × symbol 矩阵。
         required = {"date", "symbol", "close", "adj_factor"}
         validate_columns(market_data, required, label="market_data")
         df = market_data.copy()
+        df["date"] = pd.to_datetime(df["date"])
         df["adj_price"] = compute_adj_price(df, self.config.price_type)
-        adj_price_wide = df.pivot(index="date", columns="symbol", values="adj_price")
-        returns_wide = adj_price_wide.shift(-1) / adj_price_wide - 1.0
+        df = df.sort_values(["symbol", "date"])
+        df["forward_return"] = (
+            df.groupby("symbol", sort=False)["adj_price"].shift(-1)
+            / df["adj_price"]
+            - 1.0
+        )
+        returns_long = df[["date", "symbol", "forward_return"]]
 
-        # 2. 构建 date/symbol → 整数索引映射。
-        all_dates = returns_wide.index
-        all_symbols = returns_wide.columns
-        date_to_idx = {pd.Timestamp(d): i for i, d in enumerate(all_dates)}
-        sym_to_idx = {s: i for i, s in enumerate(all_symbols)}
-        R = returns_wide.values  # [T, N] numpy array
-        T = len(all_dates)
+        all_dates = pd.Index(sorted(df["date"].drop_duplicates()))
+        if all_dates.empty:
+            return BacktestResult(initial_cash=self.config.initial_cash)
 
-        # 3. 将 signals 映射为整数索引数组。
-        s_dates = signals["date"].values
-        s_symbols = signals["symbol"].values
-        s_weights = signals["target_weight"].values
-
-        t_idx = np.array([date_to_idx.get(pd.Timestamp(d), -1) for d in s_dates],
-                         dtype=np.intp)
-        s_idx = np.array([sym_to_idx.get(s, -1) for s in s_symbols],
-                         dtype=np.intp)
-
-        valid = (t_idx >= 0) & (s_idx >= 0)
-        if not valid.any():
+        # 2. 将 signals 与长表收益按 (date, symbol) 对齐。缺失行情/末日收益
+        #    与旧 sparse dense-matrix 路径一致，按 0 处理。
+        sig = signals[["date", "symbol", "target_weight"]].copy()
+        sig["date"] = pd.to_datetime(sig["date"])
+        merged = sig.merge(returns_long, on=["date", "symbol"], how="left")
+        if merged.empty:
             nav_df = pd.DataFrame({
                 "date": list(all_dates),
                 "nav": 1.0,
@@ -73,25 +69,23 @@ class SimpleSimulator:
             })
             return BacktestResult(nav_df=nav_df, initial_cash=self.config.initial_cash)
 
-        t_idx = t_idx[valid]
-        s_idx = s_idx[valid]
-        w = s_weights[valid].astype(float)
-
-        # 4. 稀疏点积：只对有效 (date, symbol) 取值。
-        #    Sanitise both weight and return — a single NaN in w×r
-        #    cascades through bincount → cumprod → entire NAV.
-        r = R[t_idx, s_idx]
-        np.nan_to_num(r, copy=False, nan=0.0)
+        w = merged["target_weight"].to_numpy(dtype=float)
+        r = merged["forward_return"].to_numpy(dtype=float)
         np.nan_to_num(w, copy=False, nan=0.0)
+        np.nan_to_num(r, copy=False, nan=0.0)
+        merged["weighted_return"] = w * r
 
-        # 5. 按日累加 daily_return[t] = Σ w × r。
-        daily_return = np.bincount(t_idx, weights=w * r, minlength=T).astype(float)
+        daily_return = (
+            merged.groupby("date", sort=False)["weighted_return"]
+            .sum()
+            .reindex(all_dates, fill_value=0.0)
+            .astype(float)
+        )
 
-        # 6. signals 的 date 是持仓生效日，returns_wide[t] 是 t -> t+1。
+        # 3. signals 的 date 是持仓生效日，forward_return 是 t -> t+1。
         #    净值行 date=t 应代表 t 日收盘后的组合状态，因此 t -> t+1
         #    的收益要体现在下一条净值记录上，首日 NAV 固定为 1.0。
-        dr_series = pd.Series(daily_return, index=all_dates)
-        realised_return = dr_series.shift(1).fillna(0.0)
+        realised_return = daily_return.shift(1).fillna(0.0)
         nav_series = cumulate_nav(realised_return)
 
         nav_df = pd.DataFrame({

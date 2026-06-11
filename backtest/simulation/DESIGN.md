@@ -100,7 +100,8 @@ class SimulationConfig:
 ```python
 class SimpleSimulator:
     def run(self, signals, market_data) -> BacktestResult
-    # 向量化：weight × adj_close.pct_change()，cumprod 得净值
+    # 向量化：长表 forward return 与 signals 按 (date, symbol) 对齐，
+    # 按日聚合 weight × return 后 cumprod 得净值；不构造 date × symbol dense pivot
 ```
 
 ### DetailedSimulator

@@ -9,6 +9,7 @@ import pytest
 from backtest.factor.evaluation import (
     EvaluationResult,
     _compute_forward_returns,
+    _compute_daily_ic,
     _compute_ic_stats,
     _corr_with_existing,
     _group_returns,
@@ -68,6 +69,56 @@ class TestRankICSeries:
         r = pd.Series([1.0, 2.0, 2.0, 3.0])
         expected = f.rank(method="average").corr(r.rank(method="average"))
         assert _rank_ic_series(f, r) == pytest.approx(expected, abs=1e-6)
+
+
+class TestComputeDailyIC:
+    def test_matches_reference_per_date_ic_and_rank_ic(self):
+        df = pd.DataFrame({
+            "date": pd.to_datetime(
+                ["2024-01-02"] * 5 + ["2024-01-03"] * 5 + ["2024-01-04"] * 5
+            ),
+            "symbol": [f"S{i}" for i in range(5)] * 3,
+            "value": [
+                1.0, 2.0, 3.0, 4.0, 5.0,
+                5.0, 4.0, np.nan, 2.0, 1.0,
+                1.0, 1.0, 2.0, 3.0, 5.0,
+            ],
+            "ret_1": [
+                1.0, 1.5, 3.0, 3.5, 5.0,
+                1.0, 2.0, 3.0, 4.0, np.nan,
+                5.0, 4.0, 3.0, 2.0, 1.0,
+            ],
+        })
+
+        expected = df.groupby("date").apply(
+            lambda g: pd.Series({
+                "ic": _ic_series(g["value"], g["ret_1"]),
+                "rank_ic": _rank_ic_series(g["value"], g["ret_1"]),
+            }),
+            include_groups=False,
+        )
+
+        result = _compute_daily_ic(df, "ret_1")
+
+        pd.testing.assert_series_equal(result["ic"], expected["ic"])
+        pd.testing.assert_series_equal(result["rank_ic"], expected["rank_ic"])
+
+    def test_accepts_string_dates(self):
+        df = pd.DataFrame({
+            "date": ["2024-01-02"] * 3,
+            "symbol": ["A", "B", "C"],
+            "value": [1.0, 2.0, 3.0],
+            "ret_1": [1.0, 2.0, 4.0],
+        })
+
+        result = _compute_daily_ic(df, "ret_1")
+
+        assert result["ic"].iloc[0] == pytest.approx(
+            _ic_series(df["value"], df["ret_1"])
+        )
+        assert result["rank_ic"].iloc[0] == pytest.approx(
+            _rank_ic_series(df["value"], df["ret_1"])
+        )
 
 
 class TestComputeICStats:

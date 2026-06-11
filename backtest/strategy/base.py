@@ -74,13 +74,16 @@ class StrategyBase(ABC):
         end_date: str,
         factor_storage: FactorStorage | None = None,
         market_storage: MarketStorage | None = None,
+        factor_panel: pd.DataFrame | None = None,
+        market_panel: pd.DataFrame | None = None,
     ) -> pd.DataFrame:
         """Full pipeline: fetch factors + market data → generate signals.
 
         When the environment variables ``AQ_FACTOR_CACHE`` /
         ``AQ_MARKET_CACHE`` point to existing parquet files, those are
-        read instead of querying DuckDB — useful for sweep workers that
-        all need the same underlying data.
+        read instead of querying DuckDB. Callers may also pass preloaded
+        ``factor_panel`` / ``market_panel`` directly to reuse data already
+        loaded in a surrounding pipeline step.
 
         Returns
         -------
@@ -88,13 +91,13 @@ class StrategyBase(ABC):
             Columns ``[date, symbol, target_weight]`` where ``date`` is the
             effective holding date (signal date + delay).
         """
-        own_factor = factor_storage is None
-        own_market = market_storage is None
+        own_factor = factor_storage is None and factor_panel is None
+        own_market = market_storage is None and market_panel is None
 
         try:
-            if factor_storage is None:
+            if factor_storage is None and factor_panel is None:
                 factor_storage = FactorStorage(read_only=True)
-            if market_storage is None:
+            if market_storage is None and market_panel is None:
                 market_storage = MarketStorage(read_only=True)
 
             factor_ids = [f.id for f in self.config.factors]
@@ -102,7 +105,8 @@ class StrategyBase(ABC):
                 raise ValueError("No factors configured")
 
             # --- factor panel: try parquet cache first --------------------
-            factor_panel = _try_read_cache("AQ_FACTOR_CACHE")
+            if factor_panel is None:
+                factor_panel = _try_read_cache("AQ_FACTOR_CACHE")
             if factor_panel is None:
                 factor_panel = self._load_factor_panel(
                     factor_ids, start_date, end_date, factor_storage
@@ -111,7 +115,8 @@ class StrategyBase(ABC):
                 raise ValueError("No factor data found for the given date range")
 
             # --- market panel: try parquet cache first --------------------
-            market_panel = _try_read_cache("AQ_MARKET_CACHE")
+            if market_panel is None:
+                market_panel = _try_read_cache("AQ_MARKET_CACHE")
             if market_panel is None:
                 market_panel = market_storage.get_bars(
                     symbols=None,
@@ -120,7 +125,6 @@ class StrategyBase(ABC):
                     columns=["close", "open", "high", "low", "circ_mv", "amount",
                              "is_st", "list_date", "limit_up", "limit_down"],
                 )
-
             rebalance_dates = get_rebalance_dates(
                 start_date, end_date, self.config.rebalance_freq
             )

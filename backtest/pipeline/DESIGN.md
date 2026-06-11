@@ -292,6 +292,13 @@ python -m backtest.pipeline run f_001 \
 | step9 | `residual_icir_check()` |
 | step10 | `generate_pipeline_report()`；人工再调用 `backtest.factor.admission.admit()` |
 
+效率约定：
+
+- step6 预加载一次 market panel，并通过 `StrategyBase.run(..., market_panel=...)` 复用到信号生成与 `SimpleSimulator`，避免策略层重复查询 DuckDB。
+- `UniverseFilter` 支持 `avg_amount_20` 预计算列快路径；没有该列时保留原有查询路径，避免改变现有 pipeline 选股结果。
+- `SimpleSimulator` 使用长表 forward return 与 signals 聚合，不构造 `date × symbol` dense pivot。
+- step8/step9 的 library 因子集合通过列元数据获取，回归输入用 wide panel 读取；不要为了拿 factor_id 或构造回归矩阵先把整个 library 展开成长表。
+
 ## Agent 交互模式
 
 ```python
