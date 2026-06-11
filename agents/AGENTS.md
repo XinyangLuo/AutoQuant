@@ -10,13 +10,13 @@
 研报 PDF (research_papers/)
     |
     v
-/pdf-hypothesis                 ← P2.A.4：MCP 文本提取 → 因子穷举 → hypothesis.md
+pdf-hypothesis skill            ← MCP 文本提取 → 因子穷举 → 批次目录 + hypothesis 菜单
     |
     v
-用户审阅 hypothesis.md
+用户选择编号（不需要复制路径）
     |
     v
-/factor-iterate --hypothesis   ← 原有入口，也可直接自然语言
+factor-iterate skill            ← 读取选中 hypothesis，也可直接自然语言
     |
     v
 Codex（决策层）
@@ -43,11 +43,13 @@ Codex（分析层）
 ### 交互式因子研究
 
 ```
-/factor-iterate 成交额放量后短期反转，尤其在小盘股里更强
-/factor-iterate max_rounds=5 data_sources=market_daily,income_q 低估值盈利改善动量
+用户：迭代这个因子想法：成交额放量后短期反转，尤其在小盘股里更强
+用户：分析 research_papers/xxx.pdf，提取可迭代的单因子
+用户：用刚才第 1 个 hypothesis 继续迭代
+用户：拒绝一个失败因子
 ```
 
-详见 `.codex/commands/factor-iterate.md`。
+交互入口由 `.codex/skills/` 下的三个独立 Codex skill 提供：`pdf-hypothesis`、`factor-iterate`、`reject-factor`。跨 skill 衔接通过“遍历候选 → 编号菜单 → 用户选择 → skill 读取选中项”完成。
 
 ### 命令行工具
 
@@ -105,13 +107,16 @@ agents/
 │   ├── successful_patterns.json  #   成功模式 → SOTA 基准
 │   └── failed_attempts.jsonl #   失败实验索引（append-only）
 └── pdf_hypotheses/           # PDF→hypothesis 中间产物（gitignore）
-    └── <slug>/               #   每次提取一个子目录
-        └── *_hypothesis.md
+    └── <YYYYMMDD_HHMMSS_slug>/  # 每次 PDF 分析一个批次目录
+        ├── manifest.json
+        ├── extracted.md         # 可选
+        └── NN_<factor_slug>_hypothesis.md
 
 .codex/
-├── commands/
-│   ├── factor-iterate.md     # /factor-iterate 命令
-│   └── pdf-hypothesis.md     # /pdf-hypothesis 命令（P2.A.4）
+├── skills/
+│   ├── factor-iterate/       # 因子迭代 skill
+│   ├── pdf-hypothesis/       # PDF hypothesis skill
+│   └── reject-factor/        # 失败因子 reject skill
 ├── prompts/
 │   ├── shared/
 │   │   ├── role.md           # FC/RC/HG 角色定义
@@ -250,7 +255,7 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 
 ## 7. Multi-Agent 自动因子挖掘（Codex Subagent 模式）
 
-> 本章为摘要；详细机制以 [`agents/DESIGN.md`](DESIGN.md) 和 `.codex/commands/` 下的命令文件为准。
+> 本章为摘要；详细机制以 [`agents/DESIGN.md`](DESIGN.md) 和 `.codex/skills/` 下的三个独立 skill 为准。
 
 ### 7.1 核心思路
 
@@ -263,10 +268,10 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 - ~~bandit 方向选择~~ → 方向选择由父进程（Codex 对话）直接完成
 - ~~codex_cli kb-query / run-index 子命令~~ → 用 Read + jq 代替
 
-### 7.2 Phase 1（当前）：增强 `/factor-iterate` + KB 驱动修复
+### 7.2 Phase 1（当前）：增强 `factor-iterate` skill + KB 驱动修复
 
 ```
-/ factor-iterate "成交额放量后短期反转，小盘股更强"
+用户：迭代这个因子想法：成交额放量后短期反转，小盘股更强
   │
   ├─ Round 1..N:
   │   ├─ [Factor Coder]  生成/修复代码 → codex_cli run
@@ -282,7 +287,7 @@ Agent 层不重复实现任何回测逻辑，全部委托给 `backtest/`：
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `agents/knowledge_base/` | 新建 | 3 个 JSON 文件（空 schema + 手动 bootstrap） |
-| `.codex/commands/factor-iterate.md` | 改 | 集成 RC subagent + KB 查询 |
+| `.codex/skills/factor-iterate/` | 改 | 集成 RC subagent + KB 查询 |
 | `agents/codex_cli.py` | 不改 | |
 | `agents/` 其他模块 | 不改 | |
 

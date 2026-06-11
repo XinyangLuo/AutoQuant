@@ -1,89 +1,93 @@
-# /reject-factor
+# Reject Factor Workflow
 
-清理并归档一个失败的因子实验。执行正式的 `reject` 流程：清理 work DB、标记 registry、删除临时代码目录，并提示检查 KB 记录。
+本 workflow 用于正式拒绝并归档失败因子。它是独立 skill：只做 reject、清理、归档和 KB 检查，不做 PDF hypothesis 或因子迭代。
 
-## Usage
+## 1. 候选发现
 
-```text
-/reject-factor f_auto_20260602_001
-/reject-factor                                         # 无参数 → 列出 pending/rejected 因子供选择
-/reject-factor f_auto_xxx --keep-code                  # 只清理 DB 和 registry，保留 alphas/exp/agent/ 代码
+如果用户没有提供 `factor_id`，先发现候选并展示编号菜单：
+
+1. 运行 admission status：
+
+```bash
+conda activate AutoQuant && python -m backtest.factor.admission status
 ```
 
-## Operating Rules
+2. 遍历 `alphas/exp/agent/` 下的 `f_auto_*` 目录。
+3. 遍历 `results/` 下的 `f_auto_*` 目录，排除 `results/candidates/` 和 `results/rejected/`。
+4. 合并候选，按状态优先级排序：pending/failed、仅有代码、仅有 results、already rejected。
 
-执行任何删除或移动前，先向用户确认本次 reject 的 `factor_id`、是否保留代码、以及将移动的 results 目录。确认后再运行 `rm` / `mv` 等 destructive 命令。
-
-1. **调用 admission reject**：
-   ```bash
-   conda activate AutoQuant && python -m backtest.factor.admission reject <factor_id> \
-     --notes "Abandoned after N rounds: <final_failure_type>"
-   ```
-   这会：
-   - 从 `data/duckdb/factors_pending.duckdb` 删除该因子列
-   - 在 `data/factor_library/registry.json` 中标记 `status="rejected"`
-   - 记录 `admission_history`（含 notes 和 strategy_config）
-
-2. **删除临时代码**（除非 `--keep-code`）：
-   ```bash
-   rm -rf alphas/exp/agent/<factor_id>/
-   ```
-   这移除：
-   - `alphas/exp/agent/<factor_id>/factor.py`
-   - `alphas/exp/agent/<factor_id>/config.yaml`
-
-3. **归档 results 目录**：
-   如果 `results/<factor_id>/` 存在，移入统一归档目录：
-   ```bash
-   mkdir -p results/rejected
-   mv results/<factor_id>/ results/rejected/ 2>/dev/null || true
-   ```
-   同时清理对应的 `results/<factor_id>_run_xxx/` 追踪目录（如有）。
-
-4. **KB 记录检查**（交互式确认）：
-   检查以下文件是否已包含该因子的记录，如未记录则提示用户：
-   - `agents/knowledge_base/failed_attempts.jsonl`
-   - `agents/knowledge_base/anti_patterns.json`（如 RC 输出了 `new_anti_pattern`）
-
-   检查命令：
-   ```bash
-   grep -q '<factor_id>' agents/knowledge_base/failed_attempts.jsonl && echo "✅ failed_attempts" || echo "❌ failed_attempts missing"
-   grep -q '<factor_id>' agents/knowledge_base/anti_patterns.json && echo "✅ anti_patterns" || echo "❌ anti_patterns missing"
-   ```
-
-5. **保留归档**：
-   `results/rejected/<factor_id>/` 保留完整实验档案：
-   - `trace.jsonl` — 迭代记录
-   - `*/pipeline_report.md` — 诊断报告
-   - `*/plots/` — 图表
-   - `*/result.json` — 结构化结果
-
-6. **最终输出**：
-   | 操作 | 状态 |
-   |------|------|
-   | work DB 清理 | ✅ / ❌ |
-   | registry 标记 rejected | ✅ / ❌ |
-   | 临时代码删除 | ✅ / ❌ (保留) |
-   | results 移入 rejected/ | ✅ / ❌ |
-   | KB 记录检查 | ✅ 已记录 / ⚠️ 未记录 |
-   | rejected/ 归档保留 | ✅ |
-
-## Implementation Notes
-
-- `admission reject` **只能对未 admitted 的因子执行**。如果因子已被 admit，会报错，此时应使用 `unadmit` 而非 `reject`。
-- `--keep-code` 用于需要保留代码供后续参考的场景（如提取部分逻辑到新因子）。
-- 如果用户未提供 `factor_id`，列出所有 `status != "admitted"` 的因子供选择：
-  ```bash
-  conda activate AutoQuant && python -m backtest.factor.admission status
-  ```
-
-## Example
+菜单格式：
 
 ```text
-/reject-factor f_auto_20260602_001
-→ conda activate AutoQuant && python -m backtest.factor.admission reject f_auto_20260602_001 --notes "Abandoned after 6 rounds: backtest_fail. Alpha trapped in LS spread."
-→ rm -rf alphas/exp/agent/f_auto_20260602_001/
-→ mkdir -p results/rejected && mv results/f_auto_20260602_001/ results/rejected/
-→ grep KB files for presence
-→ print summary table
+可 reject 的因子：
+1. f_auto_20260612_001 | pending | code yes | results yes | KB fail record yes
+2. f_auto_20260610_003 | code only | code yes | results no | KB fail record no
 ```
+
+不要要求用户手写 factor_id；用户只需选择编号。
+
+## 2. 操作确认
+
+选择因子后，展示确认摘要并等待用户明确确认：
+
+```text
+将执行：
+- admission reject: f_auto_xxx
+- code: 删除 alphas/exp/agent/f_auto_xxx/   # 或保留
+- results: 移动 results/f_auto_xxx/ 到 results/rejected/f_auto_xxx/
+- run traces: 移动匹配的 results/*f_auto_xxx*run*/ 到 results/rejected/
+- KB: 检查 failed_attempts.jsonl 和 anti_patterns.json
+```
+
+用户明确确认前，不得运行 DB reject、`rm`、`mv` 或其他 destructive 操作。
+
+## 3. Reject 与清理
+
+执行 admission reject：
+
+```bash
+conda activate AutoQuant && python -m backtest.factor.admission reject <factor_id> \
+  --notes "<concise English notes>"
+```
+
+代码目录：
+
+- 默认删除 `alphas/exp/agent/<factor_id>/`。
+- 如果用户要求保留代码，则跳过删除并在总结中标注。
+
+结果归档：
+
+```bash
+mkdir -p results/rejected
+mv results/<factor_id>/ results/rejected/<factor_id>/
+```
+
+如果存在匹配 run trace 目录，也移动到 `results/rejected/`。不要覆盖已有归档；如目标已存在，追加时间戳后缀。
+
+## 4. KB 检查
+
+检查：
+
+```bash
+grep -q '<factor_id>' agents/knowledge_base/failed_attempts.jsonl
+grep -q '<factor_id>' agents/knowledge_base/anti_patterns.json
+```
+
+- `failed_attempts.jsonl` 缺失时，提示该失败没有沉淀到 KB。
+- `anti_patterns.json` 缺失不一定是错误；只有 RC 发现新反模式时才应存在。
+
+## 5. 最终输出
+
+用表格汇总：
+
+| 操作 | 状态 |
+|------|------|
+| admission reject | done / skipped / failed |
+| work DB 清理 | done / failed |
+| registry 标记 rejected | done / failed |
+| 临时代码 | deleted / kept / missing |
+| results 归档 | archived / missing / failed |
+| KB failed_attempts | present / missing |
+| KB anti_patterns | present / not required / missing |
+
+如果 reject 失败是因为因子已 admitted，停止并提示用户需要先走 unadmit 流程；不要强行清理 admitted 因子。

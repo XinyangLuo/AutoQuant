@@ -1,28 +1,30 @@
 ---
 name: factor-iterate
-description: Run AutoQuant interactive A-share factor research and iteration. Use when the user asks to iterate, generate, repair, sweep, or evaluate a factor idea, mentions factor-iterate, provides a natural-language alpha hypothesis, or wants to continue from an agents/pdf_hypotheses hypothesis.md file.
+description: Run AutoQuant interactive A-share factor research and iteration. Use when the user asks to iterate, generate, repair, sweep, or evaluate a factor idea, provides a natural-language alpha hypothesis, or wants to continue from a PDF-derived hypothesis selection.
 ---
 
 # Factor Iterate
 
-Use this project skill to execute the AutoQuant factor research loop inside this repository.
+Use this project skill to execute the AutoQuant factor research loop.
 
 ## Workflow
 
-1. Read `AGENTS.md`, `agents/AGENTS.md`, and the detailed workflow in `references/workflow.md`.
-2. For code changes, also read the relevant `DESIGN.md` before editing.
-3. Use `conda activate AutoQuant` before Python commands.
-4. Use `python -m agents.codex_cli` for schema, run, trace, KB update, and sweep commands.
-5. Write generated factor code only under `alphas/exp/agent/<factor_id>/`.
-6. Preserve the round trace in `results/<run_id>/trace.jsonl`.
-7. Do not relax pipeline thresholds to pass a factor; improve the factor or strategy instead.
+1. Read `AGENTS.md`, `agents/AGENTS.md`, `agents/FACTOR_CODE_GUIDE.md`, and `references/workflow.md`.
+2. If the user provided a natural-language factor idea or explicit formula, start the iteration from that input.
+3. If the user says to continue from a PDF result, a previous selection, "the latest", or a numbered hypothesis, discover candidates under `agents/pdf_hypotheses/` and present numbered menus instead of asking for a path.
+4. When a hypothesis is selected, read the chosen `*_hypothesis.md`; prefer metadata from the sibling `manifest.json` when present.
+5. Query schema before writing code with `conda activate AutoQuant && python -m agents.codex_cli schema --sources ...`.
+6. Write factor code and config only under `alphas/exp/agent/<factor_id>/`.
+7. Run the pipeline through `python -m agents.codex_cli run` or `sweep`, preserve trace in `results/<run_id>/trace.jsonl`, and update KB on pass/fail.
+8. Stop when the factor passes, the maximum rounds are exhausted, or the repair direction is abandoned.
 
-## Inputs
+## Boundaries
 
-- Natural-language hypothesis, for example "成交额放量后短期反转，小盘股更强".
-- Explicit formula or parameterized request.
-- `--hypothesis agents/pdf_hypotheses/.../*_hypothesis.md`.
+- This skill may read PDF-derived hypothesis files, but it must not extract PDFs.
+- Do not ask the user to hardcode `agents/pdf_hypotheses/...` paths unless they voluntarily provide one.
+- Do not relax pipeline thresholds to pass a factor.
+- Do not automatically admit a passed factor; leave admission as a separate human decision.
 
 ## Reference
 
-Load `references/workflow.md` when executing the workflow. It contains the full migrated `/factor-iterate` procedure, run directory rules, RC handling, sweep fast path, trace schema, and pass/abandon cleanup.
+`references/workflow.md` contains input resolution, hypothesis menus, per-round rules, pipeline commands, trace/KB handling, and pass/abandon cleanup.

@@ -61,10 +61,10 @@ python -m backtest.evaluation <result_dir>               # 8 子图 + summary
 python -m agents.codex_cli schema --sources market_daily       # 查询可用列名
 python -m agents.codex_cli run f_auto_xxx --factor-file alphas/exp/agent/f_auto_xxx/factor.py  # 单轮执行 + feedback/trace/KB
 
-# 交互式因子研究（Codex slash command）
-# /factor-iterate "..."                                          # 见 .codex/commands/factor-iterate.md
-# /pdf-hypothesis research_papers/xxx.pdf                        # 研报 PDF → hypothesis.md
-# /factor-iterate --hypothesis agents/pdf_hypotheses/...        # hypothesis → 迭代
+# 交互式因子研究（Codex skills）
+# 说“迭代这个因子想法：...”                         # factor-iterate：自然语言 → 代码 → 回测
+# 说“分析 research_papers/xxx.pdf 的因子”            # pdf-hypothesis：研报 PDF → hypothesis 菜单
+# 说“用刚才第 1 个继续迭代”                          # factor-iterate：遍历 pdf_hypotheses 后读取选中项
 
 # 测试
 pytest tests/
@@ -97,7 +97,7 @@ AutoQuant/
 │   ├── PIPELINE.md          # 端到端使用手册（最重要的文档）
 │   └── AGENTS.md            # 回测系统总览
 ├── alphas/                  # 私有 alpha 代码（gitignored）
-├── research_papers/         # 研报 PDF（gitignored，/pdf-hypothesis 输入源）
+├── research_papers/         # 研报 PDF（gitignored，pdf-hypothesis 输入源）
 ├── agents/                  # Agent 投研系统（Codex subagent 模式）
 │   ├── codex_cli.py         # 单轮执行 CLI（schema + run）
 │   ├── runner.py            # AutoQuantFactorRunner（对接 backtest 流水线）
@@ -109,7 +109,7 @@ AutoQuant/
 │   ├── FACTOR_CODE_GUIDE.md # LLM 因子代码参考手册
 │   ├── AGENTS.md            # Agent 系统总览
 │   ├── knowledge_base/      # 跨 run 本地知识库（gitignore）
-│   └── pdf_hypotheses/      # PDF→hypothesis 中间产物（gitignore）
+│   └── pdf_hypotheses/      # PDF→hypothesis 批次产物（gitignore，manifest + hypothesis）
 ├── tests/                   # pytest 套件
 ├── trading/                 # 交易模块骨架（待 fill）
 ├── data/                    # 数据根
@@ -153,7 +153,7 @@ DuckDB，三个物理库 + 八张表：
 
 **Codex subagent 模式**：不再维护独立的 Python agent 循环。Codex 直接承担决策、代码生成、结果分析。Python 侧保留执行层与轻量文件 IPC（CLI、runner、trace、KB、sweep 等），负责将因子代码送入 backtest 流水线并返回结构化 JSON。
 
-交互式因子研究通过 `/factor-iterate` slash command 触发，批量无人值守场景可通过 Codex 的 Agent / Cron 工具编排。
+交互式因子研究通过 `factor-iterate` Codex skill 触发，批量无人值守场景可通过 Codex 的 Agent / Cron 工具编排。PDF hypothesis 与因子迭代之间通过编号菜单衔接，不要求用户复制本地路径。
 
 执行层复用回测系统 API：`compute_factor`、`evaluate`、`SingleFactorStrategy`、`Simple/DetailedSimulator`。
 
@@ -198,6 +198,7 @@ DuckDB，三个物理库 + 八张表：
   - `.codex/skills/factor-iterate/SKILL.md`
   - `.codex/skills/pdf-hypothesis/SKILL.md`
   - `.codex/skills/reject-factor/SKILL.md`
+  三个 skill 彼此独立；需要从 PDF hypothesis 继续或 reject 某个因子时，先遍历本地候选并展示编号菜单，让用户只做选择。
 - **耗时任务**：回测、批量抓取、批量因子计算用 `background exec session` 起背景任务
 - **改动前**：先读对应模块的 `DESIGN.md`，确认接口契约（§8）
 - **文档先行与一致性**：功能新增/行为变更/跨模块接口调整时，先更新相关层级文档固化目标、边界、数据契约与验收口径；`DESIGN.md` 是模块设计锚点，但 `AGENTS.md`、`PIPELINE.md`、`README.md`、skill 文档等已有约定也必须同步维护，确认文档与目标一致后再改代码，避免文档和实现漂移

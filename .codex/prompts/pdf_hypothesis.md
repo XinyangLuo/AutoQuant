@@ -1,9 +1,9 @@
 # PDF Hypothesis Generator Prompt
 
-> **Status**: 新建 — 配合 `/pdf-hypothesis` slash command 使用。
+> **Status**: 配合 `pdf-hypothesis` Codex skill 使用。
 >
 > 本文件包含从研报 PDF 文本生成因子 hypothesis 的完整 prompt，复用 HG 的 role + output schema。
-> 在 `/pdf-hypothesis` 流程的 Step 2~4 中注入。
+> 在 `pdf-hypothesis` workflow 的 PDF 文本提取、因子穷举和静态评审阶段注入。
 
 ## Prompt Composition
 
@@ -134,9 +134,9 @@ Return a top-level JSON object:
 
 ## Integration Notes
 
-此 prompt 在 `/pdf-hypothesis` 的 Step 2~4 中使用：
+此 prompt 在 `pdf-hypothesis` skill 中使用：
 
 1. **Step 2**：阅读 PDF 文本 → 将提取的 markdown 文本注入 `{extracted_pdf_text}`
 2. **Step 3**：调用 `codex_cli schema` → 将列名列表注入 `{Available Data Sources}` section
 3. **Step 4**：读取 KB → 注入反模式/成功模式 → 输出完整 JSON
-4. **Step 5**：父进程解析 JSON → 用户审阅 → 可选转入 `/factor-iterate`
+4. **Step 5**：父进程解析 JSON → 生成批次目录和 hypothesis 菜单 → 用户可选编号交给 `factor-iterate` skill 继续
