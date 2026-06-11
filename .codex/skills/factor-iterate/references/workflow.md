@@ -96,6 +96,18 @@ conda activate AutoQuant && python -m agents.codex_cli sweep <factor_id> \
 
 强因子但策略参数失败时，优先使用 sweep；不要手动逐个组合重复跑 step1-step4。
 
+### Pre-RC Strategy Sweep Fast Path
+
+当 step1-step4 已经通过、但 step5-step7 的策略参数或组合表现不足时，优先运行 sweep 并校验最优组合：
+
+```bash
+conda activate AutoQuant && python -m agents.codex_cli sweep <factor_id> \
+  --factor-file alphas/exp/agent/<factor_id>/factor.py \
+  --validate-top-n 3
+```
+
+如果 sweep 仍在进行或尚未验证 top candidates，不要启动 RC。Sweep 只复用原始因子代码和 pipeline state，不会创建 `alphas/exp/agent/<factor_id>_sw_*` 这类 clone 因子目录。
+
 ## 6. Trace 与 KB
 
 Trace 写入 `results/<run_id>/trace.jsonl`。每条记录包含 round、status、failure_type、关键 metrics、code_summary、tried_params、RC 诊断和 fix strategy。

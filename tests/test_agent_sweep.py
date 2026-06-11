@@ -254,7 +254,9 @@ def test_seed_combo_state_copies_only_step1_to_step4(tmp_path):
 
 
 def test_factor_iterate_prompt_prefers_pre_rc_sweep():
-    prompt = Path(".codex/commands/factor-iterate.md").read_text(encoding="utf-8")
+    prompt = Path(".codex/skills/factor-iterate/references/workflow.md").read_text(
+        encoding="utf-8"
+    )
     assert "Pre-RC Strategy Sweep Fast Path" in prompt
     assert "不要启动 RC" in prompt
     assert "--validate-top-n" in prompt
