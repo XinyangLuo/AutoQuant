@@ -246,7 +246,7 @@ python -m agents.codex_cli run <factor_id> --run-dir <dir>
 ### 5.2 `pdf-hypothesis` 数据流
 
 ```
-PDF → MCP pdfplumber 提取 → 因子穷举 → [HO] 评审排序
+PDF → 原生多模态阅读 / MCP pdfplumber 提取 / 本地文本提取 → 因子穷举 → [HO] 评审排序
     ↓
 批次目录 manifest.json + hypothesis 菜单
     ↓

@@ -10,7 +10,7 @@
 研报 PDF (research_papers/)
     |
     v
-pdf-hypothesis skill            ← MCP 文本提取 → 因子穷举 → 批次目录 + hypothesis 菜单
+pdf-hypothesis skill            ← 原生多模态/MCP 文本提取 → 因子穷举 → 批次目录 + hypothesis 菜单
     |
     v
 用户选择编号（不需要复制路径）
@@ -36,7 +36,7 @@ Codex（分析层）
     |-- 决策：修复 / 调参 / 换方向 / 停止
 ```
 
-**阅读网页/PDF 等能力**通过 Codex 的 MCP tools / skills 扩展，不在 Python 层实现。PDF 阅读走 `mcp-pdf`（pdfplumber / pymupdf 文本提取），不依赖模型原生多模态。详见 `DESIGN.md` §4.5。
+**阅读网页/PDF 等能力**通过 Codex 的原生多模态能力、MCP tools 或 skills 扩展，不在 Python 层实现。PDF 阅读优先使用当前 Codex/GPT 会话可用的原生多模态 PDF 输入；不可用时走 `mcp-pdf`（pdfplumber / pymupdf 文本提取）；再不可用时才退回本地文本提取。详见 `DESIGN.md` §5.2。
 
 ## 2. 使用方式
 
