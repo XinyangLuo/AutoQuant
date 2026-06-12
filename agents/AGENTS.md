@@ -157,7 +157,8 @@ agents/
 - **参数网格**（按因子类型自动选择）：
   - 量价因子：decay ∈ {5, 10, 15} × rebalance ∈ {1D, 5D}（6 组合）
   - 基本面因子：decay ∈ {5} × rebalance ∈ {1M, 3M}（2 组合）
-- **并行**：universe 之间串行，同一 universe 内 strategy 组合并行
+- **执行**：默认 quick scan 只跑 step6，同一 universe 内所有 strategy 组合共享预加载 factor/market panel，并通过 `SimpleSimulator.run_batch()` 批量计算；`--validate-top-n` 再对最优组合从 step7 继续详细验证
+- **兼容**：显式 `--to-step 7` 或更高时使用旧的逐 combo worker 路径
 - **输出**：每个 universe 选出最优 strategy，最终生成 `cross_universe.json` 跨 universe 比较
 
 目录结构：

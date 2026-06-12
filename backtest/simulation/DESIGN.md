@@ -102,6 +102,10 @@ class SimpleSimulator:
     def run(self, signals, market_data) -> BacktestResult
     # 向量化：长表 forward return 与 signals 按 (date, symbol) 对齐，
     # 按日聚合 weight × return 后 cumprod 得净值；不构造 date × symbol dense pivot
+
+    def run_batch(self, signals, market_data, strategy_col="combo_tag") -> dict[str, BacktestResult]
+    # 参数 sweep 快路径：signals 在普通 [date, symbol, target_weight] 外增加策略维度列，
+    # 一次计算 forward return，按 (strategy_col, date) 稀疏聚合；不构造 strategy × date × symbol dense cube
 ```
 
 ### DetailedSimulator

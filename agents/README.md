@@ -152,6 +152,8 @@ python -m agents.kb_query --category volume_reversal --limit 3
 python -m backtest.factor.admission admit f_auto_001
 ```
 
+`sweep` 默认 quick scan 跑到 step6：每个 universe 内的策略组合共享同一份 factor/market panel，并用批量 simple backtest 生成各自的 `signals.parquet`、`simple/nav.parquet`、`result.json`。`--validate-top-n` 会对最优组合从 step7 继续跑详细回测；只有显式传 `--to-step 7` 或更高时才回到逐 combo worker 路径。
+
 ## Knowledge Base
 
 KB 位于 `agents/knowledge_base/`，同样是 gitignored 本地运行时状态：

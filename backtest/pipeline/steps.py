@@ -928,12 +928,47 @@ def _load_market_data(
     return market_data
 
 
+def _summarize_backtest_result(
+    result: "BacktestResult",
+    *,
+    bench_navs: dict[str, pd.Series] | None = None,
+) -> dict:
+    """Summarise a result, optionally reusing already-loaded benchmarks."""
+    if bench_navs is None:
+        return result.summary()
+    if result.nav_df is None or result.nav_df.empty or len(result.nav_df) < 2:
+        return {}
+
+    from backtest.evaluation.loader import BacktestArtifacts
+    from backtest.evaluation.metrics import compute_all_metrics
+
+    dates = pd.to_datetime(result.nav_df["date"])
+    artifacts = BacktestArtifacts(
+        result_dir=Path("."),
+        nav=result.nav_df,
+        positions=result.positions_df,
+        trades=result.trades_df,
+        metrics=result.metrics_df,
+        metadata={},
+        initial_cash=result.initial_cash,
+        start=dates.min(),
+        end=dates.max(),
+    )
+    return compute_all_metrics(
+        artifacts,
+        bench_nav=bench_navs.get("hs300"),
+        bench_navs=bench_navs,
+    )
+
+
 def _backtest_gate(
     state: PipelineState,
     result: "BacktestResult",
     step: str,
     sub_dir: str,
     threshold_map: dict[str, str],
+    *,
+    bench_navs: dict[str, pd.Series] | None = None,
 ) -> PipelineState:
     """Persist result, check thresholds, record pass/reject.
 
@@ -953,7 +988,7 @@ def _backtest_gate(
     })
     state.artifacts[sub_dir + "_bt"] = str(out_dir)
 
-    metrics = result.summary()
+    metrics = _summarize_backtest_result(result, bench_navs=bench_navs)
     if step == "step6":
         state.simple_bt_metrics = metrics
     else:

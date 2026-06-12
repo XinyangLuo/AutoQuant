@@ -637,8 +637,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Root for all result artifacts",
     )
     sweep.add_argument(
-        "--to-step", type=int, default=7,
-        help="Stop after this pipeline step (default 7 = detailed backtest)",
+        "--to-step", type=int, default=6,
+        help="Stop quick scan after this pipeline step (default 6 = simple backtest)",
     )
     sweep.add_argument(
         "--workers", type=int, default=4,

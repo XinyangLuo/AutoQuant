@@ -359,6 +359,59 @@ class TestSimpleSimulator:
         assert nav[1] == pytest.approx(1.05, abs=1e-6)
         assert nav[2] == pytest.approx(0.9975, abs=1e-6)
 
+    def test_run_batch_matches_individual_sparse_runs(self):
+        """Batch simple backtest is numerically identical to per-combo runs."""
+        sim = SimpleSimulator()
+        market = self._make_market_data()
+        combo_a = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"] * 2),
+            "symbol": ["A", "A", "A", "B", "B", "B"],
+            "target_weight": [0.7, 0.7, 0.7, 0.3, 0.3, 0.3],
+            "combo_tag": ["combo_a"] * 6,
+        })
+        combo_b = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"] * 2),
+            "symbol": ["A", "A", "A", "B", "B", "B"],
+            "target_weight": [0.2, 0.4, 0.6, 0.8, 0.6, 0.4],
+            "combo_tag": ["combo_b"] * 6,
+        })
+        signals = pd.concat([combo_a, combo_b], ignore_index=True)
+
+        actual = sim.run_batch(signals, market, strategy_col="combo_tag")
+
+        assert set(actual) == {"combo_a", "combo_b"}
+        for tag in sorted(actual):
+            single_signals = (
+                signals[signals["combo_tag"] == tag]
+                .drop(columns=["combo_tag"])
+                .reset_index(drop=True)
+            )
+            expected = sim.run(single_signals, market)
+            pd.testing.assert_frame_equal(
+                actual[tag].nav_df.reset_index(drop=True),
+                expected.nav_df.reset_index(drop=True),
+            )
+
+    def test_run_batch_does_not_require_dense_pivot_matrix(self, monkeypatch):
+        """Batch path keeps the sparse long-form contract and avoids pivot."""
+        sim = SimpleSimulator()
+        market = self._make_market_data()
+        signals = pd.DataFrame({
+            "date": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"] * 2),
+            "symbol": ["A", "A", "A", "B", "B", "B"],
+            "target_weight": [0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+            "combo_tag": ["combo_a"] * 3 + ["combo_b"] * 3,
+        })
+
+        def _fail_pivot(self, *args, **kwargs):
+            raise AssertionError("SimpleSimulator.run_batch should not build a dense pivot matrix")
+
+        monkeypatch.setattr(pd.DataFrame, "pivot", _fail_pivot)
+
+        result = sim.run_batch(signals, market, strategy_col="combo_tag")
+
+        assert sorted(result) == ["combo_a", "combo_b"]
+
 
 class TestDetailedSimulator:
     """Test event-driven detailed backtest."""

@@ -295,6 +295,8 @@ python -m backtest.pipeline run f_001 \
 效率约定：
 
 - step6 预加载一次 market panel，并通过 `StrategyBase.run(..., market_panel=...)` 复用到信号生成与 `SimpleSimulator`，避免策略层重复查询 DuckDB。
+- Agent sweep 的默认 quick scan 只跑到 step6：同一 universe 下所有 strategy combo 共享 factor/market panel，signals 增加 `combo_tag` 后调用 `SimpleSimulator.run_batch()`，再把每个 combo 的 state/signals/simple BT/result artifacts 写回原目录结构。
+- sweep 的 detailed validation 只对 `--validate-top-n` 选出的组合从 step7 继续；显式传 `--to-step 7` 或更高时保留旧的逐 combo worker 路径。
 - `UniverseFilter` 支持 `avg_amount_20` 预计算列快路径；没有该列时保留原有查询路径，避免改变现有 pipeline 选股结果。
 - `SimpleSimulator` 使用长表 forward return 与 signals 聚合，不构造 `date × symbol` dense pivot。
 - step8/step9 的 library 因子集合通过列元数据获取，回归输入用 wide panel 读取；不要为了拿 factor_id 或构造回归矩阵先把整个 library 展开成长表。

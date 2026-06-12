@@ -95,3 +95,89 @@ class SimpleSimulator:
         })
 
         return BacktestResult(nav_df=nav_df, initial_cash=self.config.initial_cash)
+
+    def run_batch(
+        self,
+        signals: pd.DataFrame,
+        market_data: pd.DataFrame,
+        *,
+        strategy_col: str = "combo_tag",
+    ) -> dict[str, BacktestResult]:
+        """Run multiple sparse target-weight streams against one market panel.
+
+        ``signals`` is the regular long-form signal table plus one strategy
+        identifier column.  The method computes market forward returns once,
+        aligns every signal row to those returns, and aggregates by
+        ``(strategy_col, date)``.  It intentionally avoids materialising a
+        strategy × date × symbol dense weight cube.
+        """
+        required_market = {"date", "symbol", "close", "adj_factor"}
+        validate_columns(market_data, required_market, label="market_data")
+        required_signals = {"date", "symbol", "target_weight", strategy_col}
+        validate_columns(signals, required_signals, label="signals")
+
+        df = market_data.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df["adj_price"] = compute_adj_price(df, self.config.price_type)
+        df = df.sort_values(["symbol", "date"])
+        df["forward_return"] = (
+            df.groupby("symbol", sort=False)["adj_price"].shift(-1)
+            / df["adj_price"]
+            - 1.0
+        )
+        returns_long = df[["date", "symbol", "forward_return"]]
+
+        all_dates = pd.Index(sorted(df["date"].drop_duplicates()))
+        if all_dates.empty:
+            return {}
+
+        sig = signals[[strategy_col, "date", "symbol", "target_weight"]].copy()
+        sig["date"] = pd.to_datetime(sig["date"])
+        strategies = list(pd.unique(sig[strategy_col]))
+        if not strategies:
+            return {}
+
+        merged = sig.merge(returns_long, on=["date", "symbol"], how="left")
+        if merged.empty:
+            flat_nav = pd.DataFrame({
+                "date": list(all_dates),
+                "nav": 1.0,
+                "daily_return": 0.0,
+            })
+            return {
+                str(strategy): BacktestResult(
+                    nav_df=flat_nav.copy(),
+                    initial_cash=self.config.initial_cash,
+                )
+                for strategy in strategies
+            }
+
+        w = merged["target_weight"].to_numpy(dtype=float)
+        r = merged["forward_return"].to_numpy(dtype=float)
+        np.nan_to_num(w, copy=False, nan=0.0)
+        np.nan_to_num(r, copy=False, nan=0.0)
+        merged["weighted_return"] = w * r
+
+        daily_return = (
+            merged.groupby([strategy_col, "date"], sort=False)["weighted_return"]
+            .sum()
+            .unstack(strategy_col)
+            .reindex(all_dates, fill_value=0.0)
+            .reindex(columns=strategies, fill_value=0.0)
+            .astype(float)
+        )
+        realised_return = daily_return.shift(1).fillna(0.0)
+        nav_frame = cumulate_nav(realised_return)
+
+        results: dict[str, BacktestResult] = {}
+        for strategy in strategies:
+            nav_df = pd.DataFrame({
+                "date": list(all_dates),
+                "nav": nav_frame[strategy].values,
+                "daily_return": realised_return[strategy].values,
+            })
+            results[str(strategy)] = BacktestResult(
+                nav_df=nav_df,
+                initial_cash=self.config.initial_cash,
+            )
+        return results

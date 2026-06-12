@@ -51,14 +51,20 @@ from agents.runner import AutoQuantFactorRunner
 from backtest.factor.registry import get_factor_meta
 from backtest.factor.storage import FactorStorage
 from backtest.pipeline.config import PipelineConfig
-from backtest.pipeline.state import PipelineState
+from backtest.pipeline.state import PipelineState, StepResult
 from backtest.pipeline.steps import (
     FULL_MARKET_UNIVERSE,
+    _backtest_gate,
+    _bt_threshold_map,
+    _load_simulation_config,
     step1_coverage_check,
     step2_neutralization_check,
     step3_icir_check,
     step4_monotonicity_check,
+    step5_build_strategy,
 )
+from backtest.simulation.simple import SimpleSimulator
+from backtest.strategy.strategies.single_factor import SingleFactorStrategy
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -595,6 +601,312 @@ def _warm_shared_cache(
     return str(factor_cache), str(market_cache)
 
 
+def _read_cached_panel(path: str) -> pd.DataFrame:
+    df = pd.read_parquet(path)
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+    return df
+
+
+def _load_benchmark_navs(
+    start: str,
+    end: str,
+) -> dict[str, pd.Series]:
+    """Load default benchmark NAVs once for a batch of Step6 summaries."""
+    import warnings
+
+    from backtest.evaluation.benchmark import _BENCHMARK_ALIASES, load_benchmark
+
+    navs: dict[str, pd.Series] = {}
+    for alias, code in _BENCHMARK_ALIASES.items():
+        try:
+            navs[alias] = load_benchmark(code, start=start, end=end)
+        except Exception as exc:  # noqa: BLE001
+            warnings.warn(
+                f"Failed to load benchmark {code} ({alias}) for sweep batch: {exc}",
+                stacklevel=2,
+            )
+    return navs
+
+
+def _experiment_from_state(
+    *,
+    factor_id: str,
+    factor_code: str,
+    state: PipelineState,
+) -> AutoQuantFactorExperiment:
+    experiment = AutoQuantFactorExperiment(factor_id=factor_id, factor_code=factor_code)
+    experiment.status = "quick_pass" if state.status == "quick_pass" else "rejected"
+    experiment.step_results = {
+        name: {"passed": sr.passed, "reason": sr.reason, "metrics": sr.metrics}
+        for name, sr in state.step_results.items()
+    }
+    experiment.simple_bt_metrics = state.simple_bt_metrics
+    return experiment
+
+
+def _payload_from_state(
+    *,
+    factor_id: str,
+    factor_code: str,
+    state: PipelineState,
+    combo: StrategyCombo,
+    universe_name: str,
+    universe_code: str | None,
+    results_root: Path,
+    results_subdir: str,
+    state_subdir: str,
+    status_override: str | None = None,
+) -> dict[str, Any]:
+    evaluator = AutoQuantFactorEvaluator()
+    experiment = _experiment_from_state(
+        factor_id=factor_id,
+        factor_code=factor_code,
+        state=state,
+    )
+    feedback = evaluator.evaluate(experiment)
+
+    tag = combo.tag
+    result_path = results_root / state_subdir / "result.json"
+    report_path = state.artifacts.get("report")
+    if report_path:
+        result_path = Path(report_path).parent / "result.json"
+
+    if status_override is not None:
+        status = status_override
+    elif state.status == "quick_pass":
+        status = "quick_pass"
+    elif state.status == "ready_for_review":
+        status = "pass"
+    else:
+        status = "fail"
+
+    payload = {
+        "factor_id": factor_id,
+        "combo_tag": tag,
+        "universe": universe_name,
+        "universe_code": universe_code,
+        "status": status,
+        "error": None,
+        "traceback": None,
+        "params": combo.params(universe_name),
+        "metrics": _clean_json(feedback.metrics),
+        "result_path": str(result_path),
+        "report_path": report_path,
+        "results_root": str(results_root),
+        "results_subdir": results_subdir,
+        "state_subdir": state_subdir,
+        "results_dir": str(results_root / state_subdir),
+    }
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(result_path, payload)
+    return payload
+
+
+def _persist_signals_artifact(
+    state: PipelineState,
+    combo: StrategyCombo,
+    signals: pd.DataFrame,
+) -> None:
+    signals_dir = state.config.results_dir() / combo.tag
+    signals_dir.mkdir(parents=True, exist_ok=True)
+    signals_path = signals_dir / "signals.parquet"
+    signals.to_parquet(signals_path, index=False)
+    state.artifacts["signals"] = str(signals_path)
+    state.signals = signals
+
+
+def _run_universe_step6_batch(
+    *,
+    factor_id: str,
+    factor_code: str,
+    results_root: Path,
+    results_subdir: str,
+    universe_code: str | None,
+    universe_name: str,
+    combos: list[StrategyCombo],
+    combo_state_subdirs: dict[StrategyCombo, str],
+    factor_cache_path: str,
+    market_cache_path: str,
+) -> list[dict[str, Any]]:
+    """Run all Step6 strategy combos for one universe in one process."""
+    factor_panel = _read_cached_panel(factor_cache_path)
+    market_panel = _read_cached_panel(market_cache_path)
+    if market_panel.empty:
+        raise RuntimeError("Shared market cache is empty; cannot run sweep Step6 batch.")
+
+    states: dict[str, PipelineState] = {}
+    tagged_signals: list[pd.DataFrame] = []
+    early_payloads: list[dict[str, Any]] = []
+
+    from backtest.data.storage import MarketStorage
+
+    with MarketStorage(read_only=True) as market_storage:
+        for combo in combos:
+            state_subdir = combo_state_subdirs[combo]
+            state = PipelineState.load(results_root / state_subdir / "pipeline_state.json")
+            if universe_name != "default" and universe_code is not None:
+                state.config.benchmark = universe_code
+            state = step5_build_strategy(
+                state,
+                top_k=combo.top_k,
+                top_pct=combo.top_pct,
+                decay=combo.decay,
+                rebalance=combo.rebalance,
+                universe=(
+                    FULL_MARKET_UNIVERSE
+                    if universe_name == "default"
+                    else universe_code
+                ),
+            )
+            state.save(state.config.state_path())
+
+            strategy = SingleFactorStrategy(state.strategy_config)
+            end_ts = pd.to_datetime(state.config.end_date)
+            market_for_strategy = market_panel[market_panel["date"] <= end_ts]
+            signals = strategy.run(
+                state.config.start_date,
+                state.config.end_date,
+                market_storage=market_storage,
+                factor_panel=factor_panel,
+                market_panel=market_for_strategy,
+            )
+            _persist_signals_artifact(state, combo, signals)
+            states[combo.tag] = state
+
+            if signals.empty:
+                state.record(
+                    "step6",
+                    StepResult(passed=False, reason="Strategy produced no signals."),
+                )
+                state.save(state.config.state_path())
+                early_payloads.append(_payload_from_state(
+                    factor_id=factor_id,
+                    factor_code=factor_code,
+                    state=state,
+                    combo=combo,
+                    universe_name=universe_name,
+                    universe_code=universe_code,
+                    results_root=results_root,
+                    results_subdir=results_subdir,
+                    state_subdir=state_subdir,
+                ))
+                continue
+
+            tagged = signals.copy()
+            tagged["combo_tag"] = combo.tag
+            tagged_signals.append(tagged)
+
+    if not tagged_signals:
+        return early_payloads
+
+    combined_signals = pd.concat(tagged_signals, ignore_index=True)
+    signal_symbols = set(combined_signals["symbol"].unique())
+    market_data = market_panel[market_panel["symbol"].isin(signal_symbols)]
+    first_state = next(iter(states.values()))
+    sim_cfg = _load_simulation_config(
+        overrides=first_state.config.simulation_overrides,
+    )
+    sim = SimpleSimulator(sim_cfg)
+    batch_results = sim.run_batch(combined_signals, market_data, strategy_col="combo_tag")
+
+    nav_date_ranges = [
+        pd.to_datetime(result.nav_df["date"])
+        for result in batch_results.values()
+        if result.nav_df is not None and not result.nav_df.empty
+    ]
+    if nav_date_ranges:
+        bench_start = min(dates.min() for dates in nav_date_ranges).strftime("%Y%m%d")
+        bench_end = max(dates.max() for dates in nav_date_ranges).strftime("%Y%m%d")
+    else:
+        market_dates = pd.to_datetime(market_data["date"])
+        bench_start = market_dates.min().strftime("%Y%m%d")
+        bench_end = market_dates.max().strftime("%Y%m%d")
+    bench_navs = _load_benchmark_navs(bench_start, bench_end)
+    payloads_by_tag = {p["combo_tag"]: p for p in early_payloads}
+    for combo in combos:
+        if combo.tag in payloads_by_tag:
+            continue
+        state = states[combo.tag]
+        result = batch_results.get(combo.tag)
+        if result is None:
+            state.record(
+                "step6",
+                StepResult(passed=False, reason="Batch simulator produced no result."),
+            )
+        else:
+            state = _backtest_gate(
+                state,
+                result,
+                "step6",
+                "simple",
+                _bt_threshold_map("_simple"),
+                bench_navs=bench_navs,
+            )
+            if state.step_results.get("step6") and state.step_results["step6"].passed:
+                state.status = "quick_pass"
+        state.save(state.config.state_path())
+        payloads_by_tag[combo.tag] = _payload_from_state(
+            factor_id=factor_id,
+            factor_code=factor_code,
+            state=state,
+            combo=combo,
+            universe_name=universe_name,
+            universe_code=universe_code,
+            results_root=results_root,
+            results_subdir=results_subdir,
+            state_subdir=combo_state_subdirs[combo],
+        )
+
+    return [payloads_by_tag[combo.tag] for combo in combos]
+
+
+def _run_universe_step5_only(
+    *,
+    factor_id: str,
+    factor_code: str,
+    results_root: Path,
+    results_subdir: str,
+    universe_code: str | None,
+    universe_name: str,
+    combos: list[StrategyCombo],
+    combo_state_subdirs: dict[StrategyCombo, str],
+) -> list[dict[str, Any]]:
+    """Run only strategy config construction for explicit ``--to-step 5``."""
+    payloads: list[dict[str, Any]] = []
+    for combo in combos:
+        state_subdir = combo_state_subdirs[combo]
+        state = PipelineState.load(results_root / state_subdir / "pipeline_state.json")
+        if universe_name != "default" and universe_code is not None:
+            state.config.benchmark = universe_code
+        state = step5_build_strategy(
+            state,
+            top_k=combo.top_k,
+            top_pct=combo.top_pct,
+            decay=combo.decay,
+            rebalance=combo.rebalance,
+            universe=(
+                FULL_MARKET_UNIVERSE
+                if universe_name == "default"
+                else universe_code
+            ),
+        )
+        state.save(state.config.state_path())
+        payloads.append(_payload_from_state(
+            factor_id=factor_id,
+            factor_code=factor_code,
+            state=state,
+            combo=combo,
+            universe_name=universe_name,
+            universe_code=universe_code,
+            results_root=results_root,
+            results_subdir=results_subdir,
+            state_subdir=state_subdir,
+            status_override="partial",
+        ))
+    return payloads
+
+
 # ---------------------------------------------------------------------------
 # Main sweep entry point
 # ---------------------------------------------------------------------------
@@ -606,7 +918,7 @@ def run_sweep(
     generated_dir: Path,
     results_root: Path,
     *,
-    to_step: int | None = 7,
+    to_step: int | None = 6,
     workers: int = 4,
     validate_top_n: int = 1,
     universes: dict[str, str | None] | None = None,
@@ -623,7 +935,8 @@ def run_sweep(
     results_root : Path
         Root for all result artifacts.
     to_step : int | None
-        Stop after this step (default 7 = detailed backtest).
+        Stop the quick scan after this step (default 6 = simple backtest).
+        Values above 6 use the legacy per-combo worker path.
     workers : int
         Max parallel workers *per universe*.
     validate_top_n : int
@@ -709,59 +1022,99 @@ def run_sweep(
                 state_subdir=state_subdir,
             )
 
-        # Run all combos for this universe in parallel.
+        # Run all combos for this universe.  The default quick scan stops at
+        # step6 and uses a single sparse batch simple backtest.  Explicit
+        # deeper scans keep the legacy per-combo worker path.
         results: list[dict[str, Any]] = []
-        max_workers = min(workers, len(combos)) if combos else 1
         stop_step = to_step if to_step is not None else 10
 
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    _run_combo_worker,
-                    factor_id,
-                    code,
-                    str(generated_dir),
-                    str(results_root),
-                    uni_subdir,
-                    combo_state_subdirs[combo],
-                    uni_code,
-                    uni_name,
-                    combo.top_k,
-                    combo.top_pct,
-                    combo.decay,
-                    combo.rebalance,
-                    5,
-                    to_step,
-                    factor_cache_path,
-                    market_cache_path,
-                ): combo
-                for combo in combos
-            }
-            for future in as_completed(futures):
-                combo = futures[future]
-                try:
-                    payload = future.result()
-                except Exception as exc:
-                    tag = combo.tag
-                    payload = {
-                        "factor_id": factor_id,
-                        "combo_tag": tag,
-                        "universe": uni_name,
-                        "universe_code": uni_code,
-                        "status": "error",
-                        "error": f"{type(exc).__name__}: {exc}",
-                        "params": combo.params(uni_name),
-                        "metrics": {},
-                        "result_path": None,
-                        "report_path": None,
-                        "results_root": str(results_root),
-                        "results_subdir": uni_subdir,
-                        "state_subdir": combo_state_subdirs[combo],
-                    }
+        if stop_step < 5:
+            raise ValueError("Strategy sweep starts at step5; to_step must be >= 5.")
+
+        if stop_step == 5:
+            step5_payloads = _run_universe_step5_only(
+                factor_id=factor_id,
+                factor_code=code,
+                results_root=results_root,
+                results_subdir=uni_subdir,
+                universe_code=uni_code,
+                universe_name=uni_name,
+                combos=combos,
+                combo_state_subdirs=combo_state_subdirs,
+            )
+            for payload in step5_payloads:
                 results.append(payload)
                 _print_progress(
                     _progress_line(uni_name, len(results), len(combos), payload),
                 )
+        elif stop_step == 6:
+            batch_payloads = _run_universe_step6_batch(
+                factor_id=factor_id,
+                factor_code=code,
+                results_root=results_root,
+                results_subdir=uni_subdir,
+                universe_code=uni_code,
+                universe_name=uni_name,
+                combos=combos,
+                combo_state_subdirs=combo_state_subdirs,
+                factor_cache_path=factor_cache_path,
+                market_cache_path=market_cache_path,
+            )
+            for payload in batch_payloads:
+                results.append(payload)
+                _print_progress(
+                    _progress_line(uni_name, len(results), len(combos), payload),
+                )
+        else:
+            max_workers = min(workers, len(combos)) if combos else 1
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        _run_combo_worker,
+                        factor_id,
+                        code,
+                        str(generated_dir),
+                        str(results_root),
+                        uni_subdir,
+                        combo_state_subdirs[combo],
+                        uni_code,
+                        uni_name,
+                        combo.top_k,
+                        combo.top_pct,
+                        combo.decay,
+                        combo.rebalance,
+                        5,
+                        to_step,
+                        factor_cache_path,
+                        market_cache_path,
+                    ): combo
+                    for combo in combos
+                }
+                for future in as_completed(futures):
+                    combo = futures[future]
+                    try:
+                        payload = future.result()
+                    except Exception as exc:
+                        tag = combo.tag
+                        payload = {
+                            "factor_id": factor_id,
+                            "combo_tag": tag,
+                            "universe": uni_name,
+                            "universe_code": uni_code,
+                            "status": "error",
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "params": combo.params(uni_name),
+                            "metrics": {},
+                            "result_path": None,
+                            "report_path": None,
+                            "results_root": str(results_root),
+                            "results_subdir": uni_subdir,
+                            "state_subdir": combo_state_subdirs[combo],
+                        }
+                    results.append(payload)
+                    _print_progress(
+                        _progress_line(uni_name, len(results), len(combos), payload),
+                    )
 
         # --- Phase C: validate top combos for this universe (step7 full) -----
         if validate_top_n > 0:

@@ -3,13 +3,21 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from agents import sweep as sweep_mod
 from agents.experiment import AutoQuantFactorExperiment
 from backtest.pipeline.config import PipelineConfig
 from backtest.pipeline._report import _bt_metrics_table
 from backtest.pipeline.state import PipelineState, StepResult
-from backtest.pipeline.steps import _MARKET_CACHE_MEM, _read_market_cache_for_step6, step5_build_strategy
+from backtest.pipeline.steps import (
+    _MARKET_CACHE_MEM,
+    _load_simulation_config,
+    _read_market_cache_for_step6,
+    _summarize_backtest_result,
+    step5_build_strategy,
+)
+from backtest.simulation.simple import SimpleSimulator
 
 
 class _ImmediateFuture:
@@ -108,6 +116,146 @@ def _write_factor_file(path: Path) -> None:
     )
 
 
+def _synthetic_benchmark_navs(timestamps: pd.DatetimeIndex) -> dict[str, pd.Series]:
+    n_dates = len(timestamps)
+    return {
+        "hs300": pd.Series([1.0 + i * 0.001 for i in range(n_dates)], index=timestamps),
+        "csi500": pd.Series([1.0 + i * 0.0008 for i in range(n_dates)], index=timestamps),
+        "csi1000": pd.Series([1.0 + i * 0.0006 for i in range(n_dates)], index=timestamps),
+        "csi2000": pd.Series([1.0 + i * 0.0004 for i in range(n_dates)], index=timestamps),
+    }
+
+
+def _install_synthetic_batch_env(
+    monkeypatch,
+    tmp_path: Path,
+    factor_id: str = "f_test_sweep",
+    *,
+    n_symbols: int = 6,
+    n_dates: int = 10,
+    market_extra_dates: int = 0,
+    index_members: dict[str, set[str]] | None = None,
+) -> tuple[list[str], list[str]]:
+    """Install deterministic panels/calendars for sweep Step6 tests."""
+    market_timestamps = pd.bdate_range(
+        "2020-01-01",
+        periods=n_dates + market_extra_dates,
+    )
+    trade_dates = [
+        d.strftime("%Y%m%d")
+        for d in market_timestamps[:n_dates]
+    ]
+    timestamps = pd.to_datetime(trade_dates)
+    base_symbols = [
+        "000001.SZ",
+        "000002.SZ",
+        "000003.SZ",
+        "000004.SZ",
+        "300001.SZ",
+        "688001.SH",
+        "000005.SZ",
+        "000006.SZ",
+        "000007.SZ",
+        "000008.SZ",
+        "000009.SZ",
+        "000010.SZ",
+    ]
+    symbols = base_symbols[:n_symbols]
+
+    market_rows: list[dict] = []
+    factor_rows: list[dict] = []
+    for d_idx, date in enumerate(market_timestamps):
+        for s_idx, symbol in enumerate(symbols):
+            close = 10.0 + s_idx + d_idx * (0.20 + s_idx * 0.03)
+            is_st = symbol == "000003.SZ"
+            is_new = symbol == "000004.SZ"
+            is_illiquid = symbol == "000002.SZ"
+            market_rows.append({
+                "date": date,
+                "symbol": symbol,
+                "close": close,
+                "open": close,
+                "high": close * 1.01,
+                "low": close * 0.99,
+                "adj_factor": 1.0,
+                "circ_mv": 100_000 + s_idx * 10_000,
+                "amount": 30_000_000.0,
+                "avg_amount_20": 5_000_000.0 if is_illiquid else 30_000_000.0,
+                "_avg_amount_20_n": 20,
+                "is_st": 1 if is_st else 0,
+                "list_date": "20200106" if is_new else "20180101",
+                "limit_up": close * 1.1,
+                "limit_down": close * 0.9,
+            })
+    for d_idx, date in enumerate(timestamps):
+        for s_idx, symbol in enumerate(symbols):
+            if not (d_idx == 2 and symbol == symbols[0]):
+                factor_rows.append({
+                    "date": date,
+                    "symbol": symbol,
+                    factor_id: float(s_idx * 10 + d_idx),
+                })
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir()
+    factor_cache = cache_dir / "factor_panel.parquet"
+    market_cache = cache_dir / "market_panel.parquet"
+    pd.DataFrame(factor_rows).to_parquet(factor_cache, index=False)
+    pd.DataFrame(market_rows).to_parquet(market_cache, index=False)
+
+    def _warm_shared_cache(_factor_id, _cfg, _results_root):
+        return str(factor_cache), str(market_cache)
+
+    def _between(start: str, end: str) -> list[str]:
+        return [d for d in trade_dates if start <= d <= end]
+
+    def _rebalance(start: str, end: str, freq: str) -> list[str]:
+        dates = _between(start, end)
+        if freq == "5D":
+            return dates[::5]
+        if freq in {"1M", "3M"}:
+            return dates[:1]
+        return dates
+
+    class _Conn:
+        def execute(self, *_args, **_kwargs):
+            return self
+
+        def fetchall(self):
+            return [("index_members",)]
+
+    class _SyntheticMarketStorage:
+        conn = _Conn()
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def close(self):
+            return None
+
+        def get_index_members(self, _index_code: str, date: str) -> set[str]:
+            if index_members is not None:
+                return index_members.get(date, set())
+            return set(symbols)
+
+    bench_navs = _synthetic_benchmark_navs(timestamps)
+
+    monkeypatch.setattr(sweep_mod, "_warm_shared_cache", _warm_shared_cache)
+    monkeypatch.setattr(sweep_mod, "_load_benchmark_navs", lambda *_args, **_kwargs: bench_navs, raising=False)
+    monkeypatch.setattr("backtest.data.storage.MarketStorage", _SyntheticMarketStorage)
+    monkeypatch.setattr("backtest.strategy.base.get_trade_dates", _between)
+    monkeypatch.setattr("backtest.strategy.base.get_rebalance_dates", _rebalance)
+    monkeypatch.setattr("backtest.strategy.universe.get_trade_dates", _between)
+
+    return trade_dates, symbols
+
+
 def test_pipeline_report_backtest_table_includes_csi2000_column():
     lines = _bt_metrics_table({
         "annual_return": 0.10,
@@ -122,6 +270,15 @@ def test_pipeline_report_backtest_table_includes_csi2000_column():
 
 
 def test_sweep_does_not_create_clone_factor_dirs(tmp_path, monkeypatch):
+    _install_synthetic_batch_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sweep_mod,
+        "_get_strategy_combos",
+        lambda _factor_id, _universe_name: [
+            sweep_mod.StrategyCombo(decay=0, rebalance="1D", top_k=2),
+            sweep_mod.StrategyCombo(decay=3, rebalance="5D", top_k=3),
+        ],
+    )
     monkeypatch.setattr(sweep_mod, "ProcessPoolExecutor", _ImmediateExecutor)
     monkeypatch.setattr(sweep_mod, "as_completed", _fake_as_completed)
     monkeypatch.setattr(sweep_mod, "AutoQuantFactorRunner", _DummyRunner)
@@ -146,20 +303,193 @@ def test_sweep_does_not_create_clone_factor_dirs(tmp_path, monkeypatch):
     assert results["n_universes"] == 1
     assert not list(generated_dir.glob("f_test_sweep_sw_*"))
     assert results["best_overall"]["universe"] == "default"
-    assert results["best_overall"]["combo_tag"] == "top100_1d_d5"
-    assert results["best_overall"]["top_k"] == 100
-    assert results["universes"]["default"]["n_combos"] == 12
-    assert {r["params"].get("top_k") for r in results["universes"]["default"]["all_results"]} == {100, 200}
+    assert results["best_overall"]["combo_tag"] in {"top2_1d_d0", "top3_5d_d3"}
+    assert results["best_overall"]["top_k"] in {2, 3}
+    assert results["universes"]["default"]["n_combos"] == 2
+    assert {r["params"].get("top_k") for r in results["universes"]["default"]["all_results"]} == {2, 3}
     assert all(
         "top_pct" not in r["params"]
         for r in results["universes"]["default"]["all_results"]
     )
+    for result in results["universes"]["default"]["all_results"]:
+        state_path = tmp_path / "results" / result["state_subdir"] / "pipeline_state.json"
+        assert state_path.exists()
+        state = PipelineState.load(state_path)
+        assert state.step_results["step5"].passed is True
+        assert state.step_results["step6"].passed is True
+        assert "signals" in state.artifacts
+        assert "simple_bt" in state.artifacts
+        nav_path = Path(state.artifacts["simple_bt"]) / "nav.parquet"
+        assert nav_path.exists()
     candidate_dir = tmp_path / "results" / "candidates" / "f_test_sweep"
     assert (candidate_dir / "factor.py").exists()
     assert (candidate_dir / "result.json").exists()
     assert (candidate_dir / "pipeline_report.md").exists()
     assert (candidate_dir / "plots" / "nav.png").exists()
     assert not list((tmp_path / "results" / "f_test_sweep").glob("**/f_test_sweep_sw_*"))
+
+
+def test_sweep_batch_step6_matches_single_combo_reference(tmp_path, monkeypatch):
+    trade_dates, _symbols = _install_synthetic_batch_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sweep_mod,
+        "_get_strategy_combos",
+        lambda _factor_id, _universe_name: [
+            sweep_mod.StrategyCombo(decay=0, rebalance="1D", top_k=2),
+        ],
+    )
+    monkeypatch.setattr(sweep_mod, "ProcessPoolExecutor", _ImmediateExecutor)
+    monkeypatch.setattr(sweep_mod, "as_completed", _fake_as_completed)
+    monkeypatch.setattr(sweep_mod, "AutoQuantFactorRunner", _DummyRunner)
+
+    generated_dir = tmp_path / "alphas" / "exp" / "agent"
+    generated_dir.mkdir(parents=True)
+    factor_dir = generated_dir / "f_test_sweep"
+    factor_dir.mkdir()
+    factor_file = factor_dir / "factor.py"
+    _write_factor_file(factor_file)
+
+    results = sweep_mod.run_sweep(
+        factor_id="f_test_sweep",
+        factor_file=factor_file,
+        generated_dir=generated_dir,
+        results_root=tmp_path / "results",
+        workers=2,
+        validate_top_n=0,
+        universes={"default": None},
+    )
+
+    payload = results["universes"]["default"]["all_results"][0]
+    state = PipelineState.load(tmp_path / "results" / payload["state_subdir"] / "pipeline_state.json")
+    signals = pd.read_parquet(state.artifacts["signals"])
+    market_panel = pd.read_parquet(tmp_path / "cache" / "market_panel.parquet")
+    market_panel["date"] = pd.to_datetime(market_panel["date"])
+    market_data = market_panel[market_panel["symbol"].isin(signals["symbol"].unique())]
+
+    sim = SimpleSimulator(
+        _load_simulation_config(overrides=state.config.simulation_overrides)
+    )
+    expected = sim.run(signals, market_data)
+    actual_nav = pd.read_parquet(Path(state.artifacts["simple_bt"]) / "nav.parquet")
+    pd.testing.assert_frame_equal(
+        actual_nav.reset_index(drop=True),
+        expected.nav_df.reset_index(drop=True),
+    )
+
+    bench_navs = _synthetic_benchmark_navs(pd.to_datetime(trade_dates))
+    expected_metrics = _summarize_backtest_result(expected, bench_navs=bench_navs)
+    persisted_metrics = state.step_results["step6"].metrics
+    for key in (
+        "sharpe",
+        "annual_return",
+        "max_drawdown",
+        "calmar",
+        "excess_sharpe_hs300",
+        "excess_annual_return_hs300",
+        "excess_max_drawdown_hs300",
+        "excess_calmar_hs300",
+    ):
+        actual_value = persisted_metrics[key]
+        expected_value = expected_metrics[key]
+        if pd.isna(expected_value):
+            assert pd.isna(actual_value)
+        else:
+            assert actual_value == pytest.approx(expected_value)
+
+
+def test_sweep_batch_step6_loads_benchmarks_through_market_buffer(tmp_path, monkeypatch):
+    loaded_ranges: list[tuple[str, str]] = []
+
+    _install_synthetic_batch_env(
+        monkeypatch,
+        tmp_path,
+        n_dates=23,
+        market_extra_dates=5,
+    )
+    market_panel = pd.read_parquet(tmp_path / "cache" / "market_panel.parquet")
+    expected_start = pd.to_datetime(market_panel["date"]).min().strftime("%Y%m%d")
+    expected_end = pd.to_datetime(market_panel["date"]).max().strftime("%Y%m%d")
+
+    def _recording_benchmark_loader(start: str, end: str) -> dict[str, pd.Series]:
+        loaded_ranges.append((start, end))
+        return _synthetic_benchmark_navs(pd.bdate_range(start=start, end=end))
+
+    monkeypatch.setattr(
+        sweep_mod,
+        "_load_benchmark_navs",
+        _recording_benchmark_loader,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        sweep_mod,
+        "_get_strategy_combos",
+        lambda _factor_id, _universe_name: [
+            sweep_mod.StrategyCombo(decay=0, rebalance="1D", top_k=2),
+        ],
+    )
+    monkeypatch.setattr(sweep_mod, "ProcessPoolExecutor", _ImmediateExecutor)
+    monkeypatch.setattr(sweep_mod, "as_completed", _fake_as_completed)
+    monkeypatch.setattr(sweep_mod, "AutoQuantFactorRunner", _DummyRunner)
+
+    generated_dir = tmp_path / "alphas" / "exp" / "agent"
+    generated_dir.mkdir(parents=True)
+    factor_dir = generated_dir / "f_test_sweep"
+    factor_dir.mkdir()
+    factor_file = factor_dir / "factor.py"
+    _write_factor_file(factor_file)
+
+    sweep_mod.run_sweep(
+        factor_id="f_test_sweep",
+        factor_file=factor_file,
+        generated_dir=generated_dir,
+        results_root=tmp_path / "results",
+        workers=2,
+        validate_top_n=0,
+        universes={"default": None},
+    )
+
+    assert loaded_ranges == [(expected_start, expected_end)]
+
+
+def test_sweep_to_step_5_stops_after_strategy_config(tmp_path, monkeypatch):
+    _install_synthetic_batch_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sweep_mod,
+        "_get_strategy_combos",
+        lambda _factor_id, _universe_name: [
+            sweep_mod.StrategyCombo(decay=0, rebalance="1D", top_k=2),
+        ],
+    )
+    monkeypatch.setattr(sweep_mod, "ProcessPoolExecutor", _ImmediateExecutor)
+    monkeypatch.setattr(sweep_mod, "as_completed", _fake_as_completed)
+    monkeypatch.setattr(sweep_mod, "AutoQuantFactorRunner", _DummyRunner)
+
+    generated_dir = tmp_path / "alphas" / "exp" / "agent"
+    generated_dir.mkdir(parents=True)
+    factor_dir = generated_dir / "f_test_sweep"
+    factor_dir.mkdir()
+    factor_file = factor_dir / "factor.py"
+    _write_factor_file(factor_file)
+
+    results = sweep_mod.run_sweep(
+        factor_id="f_test_sweep",
+        factor_file=factor_file,
+        generated_dir=generated_dir,
+        results_root=tmp_path / "results",
+        workers=2,
+        validate_top_n=0,
+        universes={"default": None},
+        to_step=5,
+    )
+
+    payload = results["universes"]["default"]["all_results"][0]
+    state = PipelineState.load(tmp_path / "results" / payload["state_subdir"] / "pipeline_state.json")
+
+    assert payload["status"] == "partial"
+    assert state.step_results["step5"].passed is True
+    assert "step6" not in state.step_results
+    assert "signals" not in state.artifacts
+    assert "simple_bt" not in state.artifacts
 
 
 def test_sweep_validate_top_n_resumes_best_combo_from_step7(tmp_path, monkeypatch):
@@ -170,6 +500,15 @@ def test_sweep_validate_top_n_resumes_best_combo_from_step7(tmp_path, monkeypatc
             calls.append(from_step)
             return super().run(experiment, from_step=from_step, to_step=to_step, **kwargs)
 
+    _install_synthetic_batch_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sweep_mod,
+        "_get_strategy_combos",
+        lambda _factor_id, _universe_name: [
+            sweep_mod.StrategyCombo(decay=0, rebalance="1D", top_k=2),
+            sweep_mod.StrategyCombo(decay=3, rebalance="5D", top_k=3),
+        ],
+    )
     monkeypatch.setattr(sweep_mod, "ProcessPoolExecutor", _ImmediateExecutor)
     monkeypatch.setattr(sweep_mod, "as_completed", _fake_as_completed)
     monkeypatch.setattr(sweep_mod, "AutoQuantFactorRunner", TrackingRunner)
@@ -192,9 +531,53 @@ def test_sweep_validate_top_n_resumes_best_combo_from_step7(tmp_path, monkeypatc
     )
 
     assert calls.count(1) == 1
-    assert calls.count(5) == 12
+    assert calls.count(5) == 0
     assert calls.count(7) == 1
     assert results["best_overall"]["universe"] == "default"
+
+
+def test_sweep_explicit_to_step_7_uses_legacy_combo_workers(tmp_path, monkeypatch):
+    calls: list[int] = []
+
+    class TrackingRunner(_DummyRunner):
+        def run(self, experiment, *, from_step=1, to_step=None, **kwargs):
+            calls.append(from_step)
+            return super().run(experiment, from_step=from_step, to_step=to_step, **kwargs)
+
+    _install_synthetic_batch_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sweep_mod,
+        "_get_strategy_combos",
+        lambda _factor_id, _universe_name: [
+            sweep_mod.StrategyCombo(decay=0, rebalance="1D", top_k=2),
+            sweep_mod.StrategyCombo(decay=3, rebalance="5D", top_k=3),
+        ],
+    )
+    monkeypatch.setattr(sweep_mod, "ProcessPoolExecutor", _ImmediateExecutor)
+    monkeypatch.setattr(sweep_mod, "as_completed", _fake_as_completed)
+    monkeypatch.setattr(sweep_mod, "AutoQuantFactorRunner", TrackingRunner)
+
+    generated_dir = tmp_path / "alphas" / "exp" / "agent"
+    generated_dir.mkdir(parents=True)
+    factor_dir = generated_dir / "f_test_sweep"
+    factor_dir.mkdir()
+    factor_file = factor_dir / "factor.py"
+    _write_factor_file(factor_file)
+
+    sweep_mod.run_sweep(
+        factor_id="f_test_sweep",
+        factor_file=factor_file,
+        generated_dir=generated_dir,
+        results_root=tmp_path / "results",
+        workers=2,
+        validate_top_n=0,
+        universes={"default": None},
+        to_step=7,
+    )
+
+    assert calls.count(1) == 1
+    assert calls.count(5) == 2
+    assert calls.count(7) == 0
 
 
 def test_sweep_standard_universes_include_default_all_a():
@@ -202,6 +585,36 @@ def test_sweep_standard_universes_include_default_all_a():
 
 
 def test_index_universe_sweep_uses_top_pct(tmp_path, monkeypatch):
+    index_trade_dates = [
+        x.strftime("%Y%m%d")
+        for x in pd.bdate_range("2020-01-01", periods=10)
+    ]
+    index_member_symbols = {
+        "000001.SZ",
+        "000002.SZ",
+        "000003.SZ",
+        "000004.SZ",
+        "300001.SZ",
+        "688001.SH",
+    }
+    trade_dates, symbols = _install_synthetic_batch_env(
+        monkeypatch,
+        tmp_path,
+        n_symbols=12,
+        index_members={
+            date: set(index_member_symbols)
+            for date in index_trade_dates
+        },
+    )
+    assert trade_dates
+    assert symbols
+    monkeypatch.setattr(
+        sweep_mod,
+        "_get_strategy_combos",
+        lambda _factor_id, _universe_name: [
+            sweep_mod.StrategyCombo(decay=0, rebalance="1D", top_pct=0.25),
+        ],
+    )
     monkeypatch.setattr(sweep_mod, "ProcessPoolExecutor", _ImmediateExecutor)
     monkeypatch.setattr(sweep_mod, "as_completed", _fake_as_completed)
     monkeypatch.setattr(sweep_mod, "AutoQuantFactorRunner", _DummyRunner)
@@ -223,14 +636,24 @@ def test_index_universe_sweep_uses_top_pct(tmp_path, monkeypatch):
     )
 
     assert results["best_overall"]["universe"] == "hs300"
-    assert results["best_overall"]["combo_tag"] == "top10pct_1d_d5"
-    assert results["best_overall"]["top_pct"] == 0.1
-    assert results["universes"]["hs300"]["n_combos"] == 6
-    assert {r["params"].get("top_pct") for r in results["universes"]["hs300"]["all_results"]} == {0.1}
+    assert results["best_overall"]["combo_tag"] == "top25pct_1d_d0"
+    assert results["best_overall"]["top_pct"] == 0.25
+    assert results["universes"]["hs300"]["n_combos"] == 1
+    assert {r["params"].get("top_pct") for r in results["universes"]["hs300"]["all_results"]} == {0.25}
     assert all(
         "top_k" not in r["params"]
         for r in results["universes"]["hs300"]["all_results"]
     )
+    result = results["universes"]["hs300"]["all_results"][0]
+    state = PipelineState.load(tmp_path / "results" / result["state_subdir"] / "pipeline_state.json")
+    assert state.config.benchmark == "000300.SH"
+    assert state.strategy_config.backtest.benchmark == "000300.SH"
+    signals = pd.read_parquet(state.artifacts["signals"])
+    first_rebalance_symbols = set(
+        signals[signals["date"] == signals["date"].min()]["symbol"]
+    )
+    assert len(first_rebalance_symbols) == 1
+    assert first_rebalance_symbols <= {"688001.SH", "300001.SZ", "000004.SZ"}
 
 
 def test_seed_combo_state_copies_only_step1_to_step4(tmp_path):
