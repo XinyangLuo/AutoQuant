@@ -71,6 +71,28 @@ conda activate AutoQuant && python -m agents.kb_query --category <category> --li
 
 默认最多 10 轮，除非用户指定。
 
+### 自主迭代约束
+
+因子迭代是闭环执行任务，不是单轮报告任务。除非用户明确说“只分析”“先别改/别跑”
+或“暂停”，否则每次失败后都必须自己进入下一轮，直到满足终止条件。
+
+允许向用户提问的情况只有：
+
+- PDF/hypothesis 选择存在多个候选且无法从上下文唯一确定。
+- 下一步需要破坏性清理、admit、提交代码、长时间外部数据任务或付费/权限变更。
+- 已连续尝试到最大轮数，且没有新的、有根据的修复方向。
+- 运行环境阻塞，例如缺数据、缺权限、命令连续失败且无法本地修复。
+
+不允许停下提问的情况：
+
+- step1-step4 失败但 metrics 已指出缺口；应直接改公式或数据 proxy。
+- step5-step7 失败但因子统计强；应直接做 strategy 参数验证或 sweep。
+- sweep 没跑完或 top candidates 没验证；应继续等待/验证，而不是询问用户。
+- 只差一个门槛指标；应先尝试有逻辑依据的公式/参数邻域。
+- 已经想到 1 个以上合理 next experiment；应选最保守、信息量最大的一个执行。
+
+每轮结束要写明“下一步为什么这样选”，然后直接执行；只有达到终止条件才总结并交还用户。
+
 每轮：
 
 1. 读取已有 `results/<run_id>/trace.jsonl`，避免重复尝试。
@@ -98,6 +120,7 @@ conda activate AutoQuant && python -m agents.codex_cli sweep <factor_id> \
 
 5. 读取 `result.json` 或 `cross_universe.json`。
 6. 追加 trace；如果失败，生成 RC 诊断并决定 repair、strategy_only、params change 或 abandon。
+7. 只要未达到终止条件，立即执行所选下一步，不要以“是否继续”结束当前 turn。
 
 强因子但策略参数失败时，优先使用 sweep；不要手动逐个组合重复跑 step1-step4。
 
@@ -112,6 +135,13 @@ conda activate AutoQuant && python -m agents.codex_cli sweep <factor_id> \
 ```
 
 如果 sweep 仍在进行或尚未验证 top candidates，不要启动 RC。Sweep 只复用原始因子代码和 pipeline state，不会创建 `alphas/exp/agent/<factor_id>_sw_*` 这类 clone 因子目录。
+
+如果 sweep 被中断或只产生部分 universe/strategy 目录，本轮必须：
+
+1. 检查是否仍有后台进程。
+2. 清理半截 sweep artifacts，保留中断前已经存在的 canonical result。
+3. 记录未完成状态。
+4. 下一次继续时重跑完整 sweep，而不是依据半截 universe 下结论。
 
 ## 6. Trace 与 KB
 

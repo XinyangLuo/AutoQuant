@@ -16,7 +16,8 @@ Use this project skill to execute the AutoQuant factor research loop.
 5. Query schema before writing code with `conda activate AutoQuant && python -m agents.codex_cli schema --sources ...`.
 6. Write factor code and config only under `alphas/exp/agent/<factor_id>/`.
 7. Run the pipeline through `python -m agents.codex_cli run` or `sweep`, preserve trace in `results/<run_id>/trace.jsonl`, and update KB on pass/fail.
-8. Stop when the factor passes, the maximum rounds are exhausted, or the repair direction is abandoned.
+8. Continue autonomously across rounds. After each failure, inspect metrics, choose and execute the next repair/strategy/sweep step yourself. Do not stop to ask "should I continue?" while a reasonable next experiment exists.
+9. Stop only when the factor passes, the maximum rounds are exhausted, a required user choice is genuinely blocking, or the repair direction is abandoned with evidence.
 
 ## Boundaries
 
@@ -24,6 +25,7 @@ Use this project skill to execute the AutoQuant factor research loop.
 - Do not ask the user to hardcode `agents/pdf_hypotheses/...` paths unless they voluntarily provide one.
 - Do not relax pipeline thresholds to pass a factor.
 - Do not automatically admit a passed factor; leave admission as a separate human decision.
+- Do not end a turn after a failed run merely by proposing next steps. Execute the next justified round unless the user explicitly asked for analysis only or told you to pause.
 
 ## Reference
 
