@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import argparse
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from agents import claude_cli
 from agents.evaluator import (
     AutoQuantFactorEvaluator,
     EvaluationFeedback,
@@ -24,6 +26,87 @@ from agents.trace import TraceManager, TraceRecord
 # ---------------------------------------------------------------------------
 # Trace tests
 # ---------------------------------------------------------------------------
+
+
+def test_cmd_run_uses_results_root_not_run_dir_for_pipeline(tmp_path, monkeypatch) -> None:
+    factor_dir = tmp_path / "alphas" / "exp" / "agent" / "f_auto_layout"
+    factor_dir.mkdir(parents=True)
+    factor_file = factor_dir / "factor.py"
+    factor_file.write_text(
+        "from __future__ import annotations\n"
+        "import pandas as pd\n"
+        "from backtest.factor.registry import register\n\n"
+        "@register('f_auto_layout', name='layout', category='test', data_sources=['market_daily'])\n"
+        "def layout(panel: pd.DataFrame) -> pd.Series:\n"
+        "    return panel['close']\n",
+        encoding="utf-8",
+    )
+
+    captured: dict[str, Any] = {}
+
+    class DummyRunner:
+        def __init__(self, *args, **kwargs):
+            captured["results_root"] = Path(kwargs["results_root"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def run(self, experiment, **kwargs):
+            experiment.status = "quick_pass"
+            experiment.report_path = ""
+            return experiment
+
+        def cleanup_work_db(self, factor_id: str) -> None:
+            captured["cleanup"] = factor_id
+
+    class DummyEvaluator:
+        def evaluate(self, experiment):
+            return QuantFeedback.from_dict(
+                {
+                    "decision": False,
+                    "observation": "",
+                    "suggestion": "",
+                    "metrics": {},
+                    "passed_steps": [],
+                    "failed_step": None,
+                    "failure_reason": None,
+                }
+            )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(claude_cli, "AutoQuantFactorRunner", DummyRunner)
+    monkeypatch.setattr(claude_cli, "AutoQuantFactorEvaluator", DummyEvaluator)
+    monkeypatch.setattr(claude_cli, "validate_transforms_imports", lambda code: None)
+
+    args = argparse.Namespace(
+        factor_id="f_auto_layout",
+        run_dir="results/f_auto_layout",
+        generated_dir=str(tmp_path / "alphas" / "exp" / "agent"),
+        result_path=None,
+        factor_file=str(factor_file),
+        from_step=1,
+        to_step=4,
+        top_k=None,
+        top_pct=None,
+        decay=None,
+        universe=None,
+        rebalance=None,
+        keep_work_db=True,
+        feedback_format="layered",
+        auto_kb_update=False,
+        round=None,
+        parent_round=None,
+        branch_id=None,
+        category=None,
+        data_sources=None,
+    )
+
+    assert claude_cli.cmd_run(args) == 0
+    assert captured["results_root"] == Path("results")
+    assert not (tmp_path / "results" / "f_auto_layout" / "f_auto_layout").exists()
 
 
 class TestTraceManager:

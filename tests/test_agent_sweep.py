@@ -2,10 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pandas as pd
+
 from agents import sweep as sweep_mod
 from agents.experiment import AutoQuantFactorExperiment
 from backtest.pipeline.config import PipelineConfig
+from backtest.pipeline._report import _bt_metrics_table
 from backtest.pipeline.state import PipelineState, StepResult
+from backtest.pipeline.steps import _MARKET_CACHE_MEM, _read_market_cache_for_step6, step5_build_strategy
 
 
 class _ImmediateFuture:
@@ -102,6 +106,19 @@ def _write_factor_file(path: Path) -> None:
         "    return panel['close']\n",
         encoding="utf-8",
     )
+
+
+def test_pipeline_report_backtest_table_includes_csi2000_column():
+    lines = _bt_metrics_table({
+        "annual_return": 0.10,
+        "excess_annual_return_hs300": 0.01,
+        "excess_annual_return_csi500": 0.02,
+        "excess_annual_return_csi1000": 0.03,
+        "excess_annual_return_csi2000": 0.04,
+    })
+
+    assert "相对中证2000" in lines[0]
+    assert "4.00%" in "\n".join(lines)
 
 
 def test_sweep_does_not_create_clone_factor_dirs(tmp_path, monkeypatch):
@@ -251,6 +268,94 @@ def test_seed_combo_state_copies_only_step1_to_step4(tmp_path):
     assert loaded.current_step == "step4"
     assert loaded.status == "running"
     assert loaded.artifacts == {"eval_result": "eval.json"}
+
+
+def test_step5_explicit_top_pct_overrides_default_top_k(tmp_path):
+    cfg = PipelineConfig(
+        factor_id="f_seed",
+        start_date="20200101",
+        end_date="20200131",
+        results_root=str(tmp_path / "results"),
+        default_top_k=100,
+        default_top_pct=None,
+    )
+    state = PipelineState(factor_id="f_seed", config=cfg)
+
+    state = step5_build_strategy(
+        state,
+        top_pct=0.1,
+        universe="000300.SH",
+        decay=5,
+        rebalance="1D",
+    )
+
+    assert state.step_results["step5"].metrics["top_pct"] == 0.1
+    assert "top_k" not in state.step_results["step5"].metrics
+    assert state.strategy_config is not None
+    assert state.strategy_config.selection.top_pct == 0.1
+    assert state.strategy_config.selection.top_k is None
+
+
+def test_step6_market_cache_requires_adj_factor_and_filters_buffer(tmp_path, monkeypatch):
+    cfg = PipelineConfig(
+        factor_id="f_seed",
+        start_date="20200101",
+        end_date="20200103",
+        results_root=str(tmp_path / "results"),
+    )
+    cache_path = tmp_path / "market.parquet"
+    market = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                ["2019-12-31", "2020-01-01", "2020-01-13", "2020-01-20"]
+            ),
+            "symbol": ["000001.SZ", "000001.SZ", "000001.SZ", "000001.SZ"],
+            "close": [0.9, 1.0, 1.1, 1.2],
+            "open": [0.9, 1.0, 1.1, 1.2],
+            "high": [0.9, 1.0, 1.1, 1.2],
+            "low": [0.9, 1.0, 1.1, 1.2],
+            "adj_factor": [1.0, 1.0, 1.0, 1.0],
+            "circ_mv": [1.0, 1.0, 1.0, 1.0],
+            "amount": [1.0, 1.0, 1.0, 1.0],
+            "is_st": [False, False, False, False],
+            "list_date": ["20190101", "20190101", "20190101", "20190101"],
+            "limit_up": [1.0, 1.1, 1.2, 1.3],
+            "limit_down": [0.8, 0.9, 1.0, 1.1],
+        }
+    )
+    market.to_parquet(cache_path, index=False)
+    monkeypatch.setenv("AQ_MARKET_CACHE", str(cache_path))
+
+    cached = _read_market_cache_for_step6(cfg)
+
+    assert cached is not None
+    assert cached["date"].min() == pd.Timestamp("2020-01-01")
+    assert cached["date"].max() == pd.Timestamp("2020-01-13")
+    cache_key = str(cache_path.resolve())
+    assert cache_key in _MARKET_CACHE_MEM
+
+    cache_path.unlink()
+    cached_again = _read_market_cache_for_step6(cfg)
+
+    assert cached_again is not None
+    assert cached_again["date"].min() == pd.Timestamp("2020-01-01")
+    assert cached_again["date"].max() == pd.Timestamp("2020-01-13")
+
+
+def test_step6_market_cache_missing_required_column_returns_none(tmp_path, monkeypatch):
+    cache_path = tmp_path / "market.parquet"
+    pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2020-01-01"]),
+            "symbol": ["000001.SZ"],
+            "close": [1.0],
+        }
+    ).to_parquet(cache_path, index=False)
+    monkeypatch.setenv("AQ_MARKET_CACHE", str(cache_path))
+
+    cfg = PipelineConfig(factor_id="f_seed", start_date="20200101", end_date="20200103")
+
+    assert _read_market_cache_for_step6(cfg) is None
 
 
 def test_factor_iterate_prompt_prefers_pre_rc_sweep():

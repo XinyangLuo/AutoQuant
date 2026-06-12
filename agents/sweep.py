@@ -41,6 +41,8 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from agents.config import AgentConfig
 from agents.evaluator import AutoQuantFactorEvaluator
 from agents.experiment import AutoQuantFactorExperiment
@@ -528,6 +530,16 @@ _CACHE_ENV_FACTOR = "AQ_FACTOR_CACHE"
 _CACHE_ENV_MARKET = "AQ_MARKET_CACHE"
 
 
+def _parquet_columns(path: Path) -> set[str] | None:
+    """Return parquet columns without loading the full file when possible."""
+    try:
+        import pyarrow.parquet as pq
+
+        return set(pq.ParquetFile(path).schema.names)
+    except Exception:
+        return None
+
+
 def _warm_shared_cache(
     factor_id: str,
     cfg: "AgentConfig",
@@ -559,18 +571,24 @@ def _warm_shared_cache(
 
     # --- full market panel (all symbols) ---
     market_cache = cache_dir / "market_panel.parquet"
-    if not market_cache.exists():
+    market_columns = {
+        "date", "symbol", "close", "open", "high", "low", "adj_factor",
+        "circ_mv", "amount", "is_st", "list_date", "limit_up", "limit_down",
+    }
+    cached_columns = _parquet_columns(market_cache) if market_cache.exists() else None
+    if not market_cache.exists() or cached_columns is None or not market_columns <= cached_columns:
         from backtest.data.storage import MarketStorage
 
+        market_end = (
+            pd.to_datetime(cfg.end_date)
+            + pd.Timedelta(days=10)
+        ).strftime("%Y%m%d")
         with MarketStorage(read_only=True) as ms:
             market_panel = ms.get_bars(
                 symbols=None,
                 start=cfg.start_date,
-                end=cfg.end_date,
-                columns=[
-                    "close", "open", "high", "low", "circ_mv", "amount",
-                    "is_st", "list_date", "limit_up", "limit_down",
-                ],
+                end=market_end,
+                columns=sorted(market_columns - {"date", "symbol"}),
             )
         market_panel.to_parquet(market_cache, index=False)
 

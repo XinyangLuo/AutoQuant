@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from backtest.data.storage import MarketStorage
 from backtest.strategy.base import StrategyBase
 from backtest.strategy.config import StrategyConfig
 from backtest.strategy.selection import build_signals
@@ -35,6 +36,7 @@ class SingleFactorStrategy(StrategyBase):
         factor_panel: pd.DataFrame,
         market_panel: pd.DataFrame,
         rebalance_dates: list[str],
+        market_storage: MarketStorage | None = None,
     ) -> pd.DataFrame:
         """Generate signals for each rebalancing date."""
         factor_id = self.factor_config.id
@@ -75,7 +77,10 @@ class SingleFactorStrategy(StrategyBase):
                 continue
 
             filtered = self.universe_filter.filter(
-                date_str, grp, trade_date_to_idx=trade_date_to_idx,
+                date_str,
+                grp,
+                market_storage=market_storage,
+                trade_date_to_idx=trade_date_to_idx,
             )
             if filtered.empty:
                 continue

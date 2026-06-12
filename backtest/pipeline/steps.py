@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import warnings
 from pathlib import Path
 
@@ -615,9 +616,17 @@ def step5_build_strategy(
     """
     config = state.config
 
-    # Resolve params with priority: CLI > config defaults
-    _top_k = top_k if top_k is not None else config.default_top_k
-    _top_pct = top_pct if top_pct is not None else config.default_top_pct
+    # Resolve selection with priority: explicit CLI selection > config defaults.
+    # If top_pct is explicitly supplied, do not let config.default_top_k shadow it.
+    if top_k is not None:
+        _top_k = top_k
+        _top_pct = None
+    elif top_pct is not None:
+        _top_k = None
+        _top_pct = top_pct
+    else:
+        _top_k = config.default_top_k
+        _top_pct = config.default_top_pct
     _decay = decay if decay is not None else config.default_decay
     _rebalance = rebalance if rebalance is not None else config.default_rebalance
     _universe = _resolve_universe_override(universe, config.default_universe)
@@ -735,6 +744,39 @@ def _load_simulation_config(
 
 
 _MARKET_BUFFER_DAYS = 10
+_MARKET_CACHE_MEM: dict[str, pd.DataFrame] = {}
+
+
+def _read_market_cache_for_step6(config: PipelineConfig) -> pd.DataFrame | None:
+    """Read the sweep market cache when it satisfies step6 requirements."""
+    cache_path = os.environ.get("AQ_MARKET_CACHE")
+    if not cache_path:
+        return None
+    path = Path(cache_path)
+    cache_key = str(path.resolve())
+    market_panel = _MARKET_CACHE_MEM.get(cache_key)
+    if market_panel is None:
+        if not path.exists():
+            return None
+        market_panel = pd.read_parquet(path)
+        market_panel["date"] = pd.to_datetime(market_panel["date"])
+        _MARKET_CACHE_MEM[cache_key] = market_panel
+    required = {
+        "date", "symbol", "close", "open", "high", "low", "adj_factor",
+        "circ_mv", "amount", "is_st", "list_date", "limit_up", "limit_down",
+    }
+    if required - set(market_panel.columns):
+        return None
+
+    market_end = (
+        pd.to_datetime(config.end_date)
+        + pd.Timedelta(days=_MARKET_BUFFER_DAYS)
+    )
+    market_start = pd.to_datetime(config.start_date)
+    return market_panel[
+        (market_panel["date"] >= market_start)
+        & (market_panel["date"] <= market_end)
+    ]
 
 
 def step6_simple_backtest(state: PipelineState) -> PipelineState:
@@ -756,23 +798,35 @@ def step6_simple_backtest(state: PipelineState) -> PipelineState:
         pd.to_datetime(config.end_date)
         + pd.Timedelta(days=_MARKET_BUFFER_DAYS)
     ).strftime("%Y%m%d")
-    with MarketStorage(read_only=True) as ms:
-        market_panel = ms.get_bars(
-            symbols=None,
-            start=config.start_date, end=market_end,
-            columns=["close", "open", "high", "low", "adj_factor", "circ_mv", "amount",
-                     "is_st", "list_date", "limit_up", "limit_down"],
-        )
+    market_panel = _read_market_cache_for_step6(config)
+    if market_panel is None:
+        with MarketStorage(read_only=True) as ms:
+            market_panel = ms.get_bars(
+                symbols=None,
+                start=config.start_date, end=market_end,
+                columns=["close", "open", "high", "low", "adj_factor", "circ_mv", "amount",
+                         "is_st", "list_date", "limit_up", "limit_down"],
+            )
+            market_for_strategy = market_panel[
+                market_panel["date"] <= pd.to_datetime(config.end_date)
+            ]
+            signals = strategy.run(
+                config.start_date,
+                config.end_date,
+                market_storage=ms,
+                market_panel=market_for_strategy,
+            )
+    else:
         market_for_strategy = market_panel[
             market_panel["date"] <= pd.to_datetime(config.end_date)
         ]
-
-        signals = strategy.run(
-            config.start_date,
-            config.end_date,
-            market_storage=ms,
-            market_panel=market_for_strategy,
-        )
+        with MarketStorage(read_only=True) as ms:
+            signals = strategy.run(
+                config.start_date,
+                config.end_date,
+                market_storage=ms,
+                market_panel=market_for_strategy,
+            )
     state.signals = signals
 
     if signals.empty:

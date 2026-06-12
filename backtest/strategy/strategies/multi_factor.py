@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from backtest.data.storage import MarketStorage
 from backtest.strategy.base import StrategyBase
 from backtest.strategy.config import StrategyConfig
 from backtest.strategy.selection import build_signals
@@ -36,6 +37,7 @@ class MultiFactorStrategy(StrategyBase):
         factor_panel: pd.DataFrame,
         market_panel: pd.DataFrame,
         rebalance_dates: list[str],
+        market_storage: MarketStorage | None = None,
     ) -> pd.DataFrame:
         """Generate signals using multi-factor composite score."""
         signal_rows: list[dict] = []
@@ -50,7 +52,11 @@ class MultiFactorStrategy(StrategyBase):
             day_market = market_panel[market_panel["date"] == date].copy()
             merged = day_factors.merge(day_market, on=["date", "symbol"], how="left")
 
-            filtered = self.universe_filter.filter(date_str, merged)
+            filtered = self.universe_filter.filter(
+                date_str,
+                merged,
+                market_storage=market_storage,
+            )
             if filtered.empty:
                 continue
 

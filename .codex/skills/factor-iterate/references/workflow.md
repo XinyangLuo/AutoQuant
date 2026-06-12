@@ -83,6 +83,11 @@ conda activate AutoQuant && python -m agents.codex_cli run <factor_id> \
   --to-step 4 --keep-work-db
 ```
 
+默认不要为这条命令传 `--run-dir`；让执行层使用 canonical
+`results/<factor_id>/` 布局。`--run-dir` 只用于独立 round/trace 目录，
+例如 `results/runs/<factor_id>_round01/`，不要指向 `results/<factor_id>`，
+否则旧版实现会产生 `results/<factor_id>/<factor_id>/` 嵌套目录。
+
 4. 如果 step1-step4 通过，再根据因子类型运行策略参数测试或 sweep：
 
 ```bash
@@ -110,7 +115,13 @@ conda activate AutoQuant && python -m agents.codex_cli sweep <factor_id> \
 
 ## 6. Trace 与 KB
 
-Trace 写入 `results/<run_id>/trace.jsonl`。每条记录包含 round、status、failure_type、关键 metrics、code_summary、tried_params、RC 诊断和 fix strategy。
+Trace 写入独立 round 目录的 `trace.jsonl`，推荐路径为
+`results/runs/<factor_id>_roundXX/trace.jsonl`。不要把 trace 目录与
+canonical factor result dir `results/<factor_id>/` 混用；`results/<factor_id>/`
+只放 pipeline/sweep artifacts，例如 `result.json`、`pipeline_state.json`、
+`cross_universe.json` 和各 universe/strategy 子目录。每条 trace record
+包含 round、status、failure_type、关键 metrics、code_summary、tried_params、
+RC 诊断和 fix strategy。
 
 Pass 时：
 

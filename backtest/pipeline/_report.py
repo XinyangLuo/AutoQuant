@@ -214,7 +214,7 @@ def _summarise_metrics(metrics: dict, step_key: str) -> str:
         "step10": [],
     }
     keys = step_priorities.get(step_key, list(metrics.keys())[:2])
-    # Prioritise the first available excess_sharpe_* key (e.g. hs300, csi500, csi1000)
+    # Prioritise the first available excess_sharpe_* key (e.g. hs300, csi500, csi1000, csi2000)
     # so the summary shows the relative metric when present.
     if step_key in ("step6", "step7"):
         excess_keys = [k for k in metrics if k.startswith("excess_sharpe_")]
@@ -564,7 +564,12 @@ def _bt_metrics_table(metrics: dict) -> list[str]:
         ("最大回撤", "max_drawdown", "excess_max_drawdown", "pct"),
         ("Calmar", "calmar", "excess_calmar", "f3"),
     ]
-    aliases = [("hs300", "沪深300"), ("csi500", "中证500"), ("csi1000", "中证1000")]
+    aliases = [
+        ("hs300", "沪深300"),
+        ("csi500", "中证500"),
+        ("csi1000", "中证1000"),
+        ("csi2000", "中证2000"),
+    ]
     header = "| 指标 | 绝对 | " + " | ".join(f"相对{label}" for _, label in aliases) + " |"
     sep = "|------|------|" + "|".join("------" for _ in aliases) + "|"
     lines.extend([header, sep])

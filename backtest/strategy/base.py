@@ -48,6 +48,7 @@ class StrategyBase(ABC):
         factor_panel: pd.DataFrame,
         market_panel: pd.DataFrame,
         rebalance_dates: list[str],
+        market_storage: MarketStorage | None = None,
     ) -> pd.DataFrame:
         """Generate target position signals.
 
@@ -59,6 +60,9 @@ class StrategyBase(ABC):
             Wide DataFrame with columns ``[date, symbol, close, circ_mv, ...]``.
         rebalance_dates : list[str]
             List of YYYYMMDD rebalancing dates.
+        market_storage : MarketStorage | None
+            Optional market store for filters that need DB-backed metadata,
+            such as index membership.
 
         Returns
         -------
@@ -92,12 +96,13 @@ class StrategyBase(ABC):
             effective holding date (signal date + delay).
         """
         own_factor = factor_storage is None and factor_panel is None
-        own_market = market_storage is None and market_panel is None
+        needs_market_storage = market_panel is None or self.config.universe.index_members is not None
+        own_market = market_storage is None and needs_market_storage
 
         try:
             if factor_storage is None and factor_panel is None:
                 factor_storage = FactorStorage(read_only=True)
-            if market_storage is None and market_panel is None:
+            if market_storage is None and needs_market_storage:
                 market_storage = MarketStorage(read_only=True)
 
             factor_ids = [f.id for f in self.config.factors]
@@ -133,7 +138,12 @@ class StrategyBase(ABC):
             if self.config.decay is not None:
                 factor_panel = self._apply_decay(factor_panel, self.config.decay)
 
-            signals = self.generate_signals(factor_panel, market_panel, rebalance_dates)
+            signals = self.generate_signals(
+                factor_panel,
+                market_panel,
+                rebalance_dates,
+                market_storage=market_storage,
+            )
 
             # Apply delay: signal computed on rebalance_date → effective on rebalance_date + delay
             if self.config.delay > 0 and not signals.empty:

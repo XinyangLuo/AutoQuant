@@ -14,6 +14,7 @@ from backtest.data.fetcher.daily_fetcher import (
     merge_st_status,
     transform_daily,
 )
+from backtest.data.fetcher.index_members_fetcher import densify_to_trade_dates
 from backtest.data.fetcher.auction_fetcher import transform_stock_auction
 from backtest.data.backfill.stock_auction import backfill_stock_auction
 from backtest.data.tushare_client import _find_project_root
@@ -57,6 +58,66 @@ def test_tushare_client_finds_worktree_project_root():
 
     assert (root / "AGENTS.md").exists()
     assert (root / "environment.yml").exists()
+
+
+class TestIndexMembers:
+    def test_densify_uses_only_visible_snapshot_not_future_members(self):
+        monthly = pd.DataFrame(
+            [
+                {
+                    "index_code": "000300.SH",
+                    "symbol": "OLD.SZ",
+                    "trade_date": pd.Timestamp("2024-01-02").date(),
+                    "weight": 1.0,
+                },
+                {
+                    "index_code": "000300.SH",
+                    "symbol": "NEW.SZ",
+                    "trade_date": pd.Timestamp("2024-01-05").date(),
+                    "weight": 2.0,
+                },
+            ]
+        )
+        trade_dates = pd.to_datetime(
+            ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"]
+        ).date.tolist()
+
+        dense = densify_to_trade_dates(monthly, trade_dates)
+
+        by_date = {
+            pd.Timestamp(date).strftime("%Y%m%d"): set(grp["symbol"])
+            for date, grp in dense.groupby("trade_date")
+        }
+        assert by_date["20240103"] == {"OLD.SZ"}
+        assert by_date["20240104"] == {"OLD.SZ"}
+        assert by_date["20240105"] == {"NEW.SZ"}
+
+    def test_get_index_members_requires_exact_trade_date_no_latest_fallback(
+        self, tmp_market_storage
+    ):
+        storage = tmp_market_storage
+        storage.insert_index_members(
+            pd.DataFrame(
+                [
+                    {
+                        "index_code": "000300.SH",
+                        "symbol": "OLD.SZ",
+                        "trade_date": pd.Timestamp("2024-01-02").date(),
+                        "weight": 1.0,
+                    },
+                    {
+                        "index_code": "000300.SH",
+                        "symbol": "NEW.SZ",
+                        "trade_date": pd.Timestamp("2024-01-05").date(),
+                        "weight": 2.0,
+                    },
+                ]
+            )
+        )
+
+        assert storage.get_index_members("000300.SH", "20240102") == {"OLD.SZ"}
+        assert storage.get_index_members("000300.SH", "20240104") == set()
+        assert storage.get_index_members("000300.SH", "20240105") == {"NEW.SZ"}
 
 
 class TestMarketStorageFundamentals:

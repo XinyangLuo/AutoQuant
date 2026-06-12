@@ -144,7 +144,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if run_dir:
         result_path = Path(args.result_path) if args.result_path else run_dir / "result.json"
         sanitized_code_path = run_dir / "factor_sanitized.py"
-        results_root = run_dir
+        # ``--run-dir`` is a round/trace directory. Keep pipeline artifacts in
+        # the canonical results/<factor_id>/ tree; otherwise passing
+        # --run-dir results/<factor_id> creates results/<factor_id>/<factor_id>/.
+        results_root = Path("results")
     else:
         factor_results_dir = Path("results") / factor_id
         factor_results_dir.mkdir(parents=True, exist_ok=True)

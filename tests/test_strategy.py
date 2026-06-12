@@ -138,6 +138,307 @@ class TestConfig:
 
 
 class TestStrategyRun:
+    def test_run_applies_index_members_with_preloaded_panels(self, monkeypatch):
+        """Index-member universes must filter candidates before ranking."""
+        from backtest.strategy.config import (
+            BacktestConfig,
+            FactorConfig,
+            SelectionConfig,
+            StrategyConfig,
+            UniverseConfig,
+            WeightingConfig,
+        )
+        import backtest.strategy.base as strategy_base
+        import backtest.strategy.universe as strategy_universe
+        from backtest.strategy.strategies.single_factor import SingleFactorStrategy
+
+        date = pd.Timestamp("2024-01-02")
+        factor_panel = pd.DataFrame({
+            "date": [date, date],
+            "symbol": ["A", "B"],
+            "f_test": [2.0, 1.0],
+        })
+        market_panel = pd.DataFrame({
+            "date": [date, date],
+            "symbol": ["A", "B"],
+            "close": [10.0, 20.0],
+            "open": [10.0, 20.0],
+            "high": [10.0, 20.0],
+            "low": [10.0, 20.0],
+            "circ_mv": [1_000_000.0, 1_000_000.0],
+            "amount": [100_000_000.0, 100_000_000.0],
+            "is_st": [0, 0],
+            "list_date": ["20000101", "20000101"],
+            "limit_up": [11.0, 21.0],
+            "limit_down": [9.0, 19.0],
+        })
+
+        class FakeConn:
+            def execute(self, query):
+                return self
+
+            def fetchall(self):
+                return [("index_members",)]
+
+        class FakeMarketStorage:
+            conn = FakeConn()
+
+            def get_index_members(self, index_code, date):
+                assert index_code == "000300.SH"
+                assert date == "20240102"
+                return {"B"}
+
+        monkeypatch.setattr(
+            strategy_base,
+            "get_rebalance_dates",
+            lambda start, end, freq: ["20240102"],
+        )
+        monkeypatch.setattr(
+            strategy_base,
+            "get_trade_dates",
+            lambda start, end: ["20240102"],
+        )
+        monkeypatch.setattr(
+            strategy_universe,
+            "get_trade_dates",
+            lambda start, end: ["20240102"],
+        )
+
+        cfg = StrategyConfig(
+            name="index_members",
+            rebalance_freq="1D",
+            delay=0,
+            universe=UniverseConfig(
+                exclude_st=False,
+                exclude_new_ipo_days=0,
+                include_cyb=True,
+                include_kcb=True,
+                include_bse=True,
+                index_members="000300.SH",
+                min_market_cap=None,
+                min_avg_amount=None,
+            ),
+            factors=[FactorConfig(id="f_test", direction="desc")],
+            selection=SelectionConfig(method="topk", top_k=1),
+            weighting=WeightingConfig(method="equal"),
+            backtest=BacktestConfig(start_date="20240102", end_date="20240102"),
+            decay=None,
+        )
+
+        signals = SingleFactorStrategy(cfg).run(
+            "20240102",
+            "20240102",
+            market_storage=FakeMarketStorage(),
+            factor_panel=factor_panel,
+            market_panel=market_panel,
+        )
+
+        assert list(signals["symbol"]) == ["B"]
+        assert signals["target_weight"].tolist() == [1.0]
+
+    def test_run_opens_market_storage_for_index_members_with_preloaded_market(
+        self, monkeypatch
+    ):
+        """Preloaded market panels still need storage for index membership."""
+        from backtest.strategy.config import (
+            BacktestConfig,
+            FactorConfig,
+            SelectionConfig,
+            StrategyConfig,
+            UniverseConfig,
+            WeightingConfig,
+        )
+        import backtest.strategy.base as strategy_base
+        import backtest.strategy.universe as strategy_universe
+        from backtest.strategy.strategies.single_factor import SingleFactorStrategy
+
+        date = pd.Timestamp("2024-01-02")
+        factor_panel = pd.DataFrame({
+            "date": [date, date],
+            "symbol": ["A", "B"],
+            "f_test": [2.0, 1.0],
+        })
+        market_panel = pd.DataFrame({
+            "date": [date, date],
+            "symbol": ["A", "B"],
+            "close": [10.0, 20.0],
+            "open": [10.0, 20.0],
+            "high": [10.0, 20.0],
+            "low": [10.0, 20.0],
+            "circ_mv": [1_000_000.0, 1_000_000.0],
+            "amount": [100_000_000.0, 100_000_000.0],
+            "is_st": [0, 0],
+            "list_date": ["20000101", "20000101"],
+            "limit_up": [11.0, 21.0],
+            "limit_down": [9.0, 19.0],
+        })
+        calls = {"opened": 0, "closed": 0}
+
+        class FakeConn:
+            def execute(self, query):
+                return self
+
+            def fetchall(self):
+                return [("index_members",)]
+
+        class FakeMarketStorage:
+            conn = FakeConn()
+
+            def __init__(self, *args, **kwargs):
+                calls["opened"] += 1
+
+            def get_index_members(self, index_code, date):
+                return {"B"}
+
+            def close(self):
+                calls["closed"] += 1
+
+        monkeypatch.setattr(strategy_base, "MarketStorage", FakeMarketStorage)
+        monkeypatch.setattr(
+            strategy_base,
+            "get_rebalance_dates",
+            lambda start, end, freq: ["20240102"],
+        )
+        monkeypatch.setattr(
+            strategy_base,
+            "get_trade_dates",
+            lambda start, end: ["20240102"],
+        )
+        monkeypatch.setattr(
+            strategy_universe,
+            "get_trade_dates",
+            lambda start, end: ["20240102"],
+        )
+
+        cfg = StrategyConfig(
+            name="index_members_storage",
+            rebalance_freq="1D",
+            delay=0,
+            universe=UniverseConfig(
+                exclude_st=False,
+                exclude_new_ipo_days=0,
+                include_cyb=True,
+                include_kcb=True,
+                include_bse=True,
+                index_members="000300.SH",
+                min_market_cap=None,
+                min_avg_amount=None,
+            ),
+            factors=[FactorConfig(id="f_test", direction="desc")],
+            selection=SelectionConfig(method="topk", top_k=1),
+            weighting=WeightingConfig(method="equal"),
+            backtest=BacktestConfig(start_date="20240102", end_date="20240102"),
+            decay=None,
+        )
+
+        signals = SingleFactorStrategy(cfg).run(
+            "20240102",
+            "20240102",
+            factor_panel=factor_panel,
+            market_panel=market_panel,
+        )
+
+        assert list(signals["symbol"]) == ["B"]
+        assert calls == {"opened": 1, "closed": 1}
+
+    def test_top_pct_is_resolved_after_index_member_filter(self, monkeypatch):
+        """top_pct counts the filtered index universe, not the full market."""
+        from backtest.strategy.config import (
+            BacktestConfig,
+            FactorConfig,
+            SelectionConfig,
+            StrategyConfig,
+            UniverseConfig,
+            WeightingConfig,
+        )
+        import backtest.strategy.base as strategy_base
+        import backtest.strategy.universe as strategy_universe
+        from backtest.strategy.strategies.single_factor import SingleFactorStrategy
+
+        date = pd.Timestamp("2024-01-02")
+        symbols = [f"S{i:03d}.SZ" for i in range(100)]
+        factor_panel = pd.DataFrame({
+            "date": [date] * len(symbols),
+            "symbol": symbols,
+            "f_test": [100.0 - i for i in range(len(symbols))],
+        })
+        market_panel = pd.DataFrame({
+            "date": [date] * len(symbols),
+            "symbol": symbols,
+            "close": [10.0] * len(symbols),
+            "open": [10.0] * len(symbols),
+            "high": [10.0] * len(symbols),
+            "low": [10.0] * len(symbols),
+            "circ_mv": [1_000_000.0] * len(symbols),
+            "amount": [100_000_000.0] * len(symbols),
+            "is_st": [0] * len(symbols),
+            "list_date": ["20000101"] * len(symbols),
+            "limit_up": [11.0] * len(symbols),
+            "limit_down": [9.0] * len(symbols),
+        })
+        index_members = set(symbols[90:100])
+
+        class FakeConn:
+            def execute(self, query):
+                return self
+
+            def fetchall(self):
+                return [("index_members",)]
+
+        class FakeMarketStorage:
+            conn = FakeConn()
+
+            def get_index_members(self, index_code, date):
+                return index_members
+
+        monkeypatch.setattr(
+            strategy_base,
+            "get_rebalance_dates",
+            lambda start, end, freq: ["20240102"],
+        )
+        monkeypatch.setattr(
+            strategy_base,
+            "get_trade_dates",
+            lambda start, end: ["20240102"],
+        )
+        monkeypatch.setattr(
+            strategy_universe,
+            "get_trade_dates",
+            lambda start, end: ["20240102"],
+        )
+
+        cfg = StrategyConfig(
+            name="top_pct_after_filter",
+            rebalance_freq="1D",
+            delay=0,
+            universe=UniverseConfig(
+                exclude_st=False,
+                exclude_new_ipo_days=0,
+                include_cyb=True,
+                include_kcb=True,
+                include_bse=True,
+                index_members="000300.SH",
+                min_market_cap=None,
+                min_avg_amount=None,
+            ),
+            factors=[FactorConfig(id="f_test", direction="desc")],
+            selection=SelectionConfig(method="topk", top_pct=0.1),
+            weighting=WeightingConfig(method="equal"),
+            backtest=BacktestConfig(start_date="20240102", end_date="20240102"),
+            decay=None,
+        )
+
+        signals = SingleFactorStrategy(cfg).run(
+            "20240102",
+            "20240102",
+            market_storage=FakeMarketStorage(),
+            factor_panel=factor_panel,
+            market_panel=market_panel,
+        )
+
+        assert list(signals["symbol"]) == ["S090.SZ"]
+        assert signals["target_weight"].tolist() == [1.0]
+
     def test_run_accepts_preloaded_panels(self, monkeypatch):
         """Pipeline callers can reuse preloaded factor/market panels."""
         from backtest.strategy.config import (
